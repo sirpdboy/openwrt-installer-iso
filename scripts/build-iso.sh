@@ -148,7 +148,7 @@ setup_bootloaders() {
     
     # 复制ISOLINUX文件
     cp /usr/lib/ISOLINUX/isolinux.bin "${STAGING_DIR}/isolinux/"
-    cp /usr/lib/syslinux/modules/bios/*.c32 "${STAGING_DIR}/isolinux/"
+    cp /usr/lib/syslinux/modules/bios/*.c32 "${STAGING_DIR}/isolinux/" 2>/dev/null || true
     
     # ISOLINUX配置
     cat > "${STAGING_DIR}/isolinux/isolinux.cfg" << 'EOF'
