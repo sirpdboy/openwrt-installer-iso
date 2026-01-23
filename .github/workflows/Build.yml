@@ -114,7 +114,7 @@ jobs:
             file
           
           echo '=== 执行构建脚本 ==='
-          chmod +x /build.sh
+          # chmod +x /build.sh
           /build.sh
           
           echo '=== 构建完成 ==='
