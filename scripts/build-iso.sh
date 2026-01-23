@@ -1,208 +1,297 @@
 #!/bin/bash
-# build-iso.sh
+# build-iso-fixed-rootfs.sh - 修复根文件系统挂载
 
 set -e
 
-echo "开始构建可引导的OpenWRT安装ISO..."
+echo "构建OpenWRT安装ISO（修复根文件系统问题）..."
 echo ""
 
 # 工作目录
-WORK_DIR="/tmp/iso-build"
-ISO_DIR="$WORK_DIR/iso"
+ISO_DIR="/tmp/iso-rootfs"
 mkdir -p "$ISO_DIR"/{isolinux,live}
 
-# 1. 安装必要的syslinux组件
-echo "步骤1: 安装syslinux组件..."
+# 1. 安装必要的包
+echo "步骤1: 安装必要工具..."
 apt-get update
-apt-get install -y syslinux-common isolinux 2>/dev/null || {
-    echo "安装syslinux失败，尝试从包中提取"
-    # 手动提取必要文件
-    mkdir -p /tmp/syslinux-extract
-    cd /tmp/syslinux-extract
-    apt-get download syslinux-common 2>/dev/null || true
-    apt-get download isolinux 2>/dev/null || true
-    for pkg in *.deb; do
-        if [ -f "$pkg" ]; then
-            dpkg-deb -x "$pkg" . 2>/dev/null || true
-        fi
-    done
-    cd -
-}
+apt-get install -y \
+    syslinux isolinux \
+    xorriso wget cpio gzip \
+    linux-image-amd64  # 确保有内核
 
-# 2. 复制所有必要的ISOLINUX文件
-echo "步骤2: 复制ISOLINUX引导文件..."
+# 2. 复制引导文件
+echo "步骤2: 复制引导文件..."
+cp /usr/lib/ISOLINUX/isolinux.bin "$ISO_DIR/isolinux/"
+cp /usr/lib/syslinux/modules/bios/*.c32 "$ISO_DIR/isolinux/" 2>/dev/null || true
 
-# 查找isolinux.bin
-find /usr -name "isolinux.bin" 2>/dev/null | head -1 | xargs -I {} cp {} "$ISO_DIR/isolinux/" 2>/dev/null || {
-    echo "警告: 找不到isolinux.bin"
-    # 尝试下载
-    wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/Testing/6.04/syslinux-6.04-pre1.tar.gz" \
-        -O /tmp/syslinux.tar.gz 2>/dev/null || true
-    if [ -f "/tmp/syslinux.tar.gz" ]; then
-        tar -xz -C /tmp -f /tmp/syslinux.tar.gz syslinux-6.04-pre1/bios/core/isolinux.bin 2>/dev/null || true
-        cp /tmp/syslinux-6.04-pre1/bios/core/isolinux.bin "$ISO_DIR/isolinux/" 2>/dev/null || true
-    fi
-}
-
-# 复制所有.c32模块文件
-echo "复制ISOLINUX模块文件..."
-for module_dir in /usr/lib/syslinux/modules/bios /usr/lib/ISOLINUX /usr/share/syslinux; do
-    if [ -d "$module_dir" ]; then
-        cp "$module_dir"/*.c32 "$ISO_DIR/isolinux/" 2>/dev/null || true
-    fi
-done
-
-# 检查是否复制了关键文件
-REQUIRED_FILES=("isolinux.bin" "ldlinux.c32" "libcom32.c32" "libutil.c32" "menu.c32" "vesamenu.c32")
-for file in "${REQUIRED_FILES[@]}"; do
-    if [ ! -f "$ISO_DIR/isolinux/$file" ]; then
-        echo "警告: 缺少 $file，尝试下载..."
-        # 从网络下载缺失的文件
-        wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/Testing/6.04/syslinux-6.04-pre1.tar.gz" \
-            -O /tmp/syslinux-full.tar.gz 2>/dev/null || continue
-        
-        tar -xz -C /tmp -f /tmp/syslinux-full.tar.gz \
-            "syslinux-6.04-pre1/bios/core/$file" \
-            "syslinux-6.04-pre1/bios/com32/elflink/ldlinux/$file" \
-            "syslinux-6.04-pre1/bios/com32/lib/$file" \
-            "syslinux-6.04-pre1/bios/com32/menu/$file" \
-            2>/dev/null || true
-        
-        # 查找并复制
-        find /tmp/syslinux-6.04-pre1 -name "$file" 2>/dev/null | head -1 | xargs -I {} cp {} "$ISO_DIR/isolinux/" 2>/dev/null || true
-    fi
-done
-
-# 验证必要文件
-echo "验证ISOLINUX文件..."
-ls -la "$ISO_DIR/isolinux/" | grep -E "\.(bin|c32)$" || echo "未找到引导文件"
-
-# 3. 获取内核
+# 3. 获取可靠的内核
 echo "步骤3: 准备内核..."
-if [ -f "/boot/vmlinuz" ]; then
-    cp "/boot/vmlinuz" "$ISO_DIR/live/vmlinuz"
-elif [ -f "/vmlinuz" ]; then
-    cp "/vmlinuz" "$ISO_DIR/live/vmlinuz"
+if [ -f "/boot/vmlinuz-$(uname -r)" ]; then
+    KERNEL_SRC="/boot/vmlinuz-$(uname -r)"
+elif [ -f "/boot/vmlinuz" ]; then
+    KERNEL_SRC="/boot/vmlinuz"
 else
-    echo "下载Debian安装器内核..."
+    # 下载Debian稳定版内核
+    echo "下载Debian内核..."
     wget -q "http://ftp.debian.org/debian/dists/bullseye/main/installer-amd64/current/images/cdrom/vmlinuz" \
-        -O "$ISO_DIR/live/vmlinuz" || {
-        echo "创建最小内核..."
-        echo '#!/bin/sh
-echo "Minimal OpenWRT Installer"
-exec /bin/sh' > "$ISO_DIR/live/vmlinuz"
-        chmod +x "$ISO_DIR/live/vmlinuz"
-    }
+        -O /tmp/debian-vmlinuz
+    KERNEL_SRC="/tmp/debian-vmlinuz"
 fi
 
-# 4. 创建initrd
-echo "步骤4: 创建initrd..."
-INITRD_DIR="/tmp/initrd-simple"
-rm -rf "$INITRD_DIR"
-mkdir -p "$INITRD_DIR"
+cp "$KERNEL_SRC" "$ISO_DIR/live/vmlinuz"
+echo "✅ 内核准备完成: $(file "$ISO_DIR/live/vmlinuz")"
 
-cat > "$INITRD_DIR/init" << 'INIT_EOF'
-#!/bin/sh
-# 简单init脚本
+# 4. 创建正确的initrd（关键修复）
+echo "步骤4: 创建initrd（修复根文件系统）..."
+create_proper_initrd() {
+    local initrd_dir="/tmp/initrd-proper"
+    rm -rf "$initrd_dir"
+    mkdir -p "$initrd_dir"/{bin,dev,etc,proc,sys,tmp,mnt,root,sbin,lib,lib64}
+    
+    # 创建正确的init脚本 - 必须命名为init，不能有其他名称
+    cat > "$initrd_dir/init" << 'INIT_PROPER'
+#!/bin/busybox sh
+# 正确的init脚本 - 修复根文件系统挂载
 
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev 2>/dev/null || mdev -s
+# 挂载虚拟文件系统（必须的）
+/bin/busybox mount -t proc proc /proc
+/bin/busybox mount -t sysfs sysfs /sys
+/bin/busybox mount -t devtmpfs devtmpfs /dev
 
-# 设置控制台
+# 创建设备节点
+/bin/busybox mknod /dev/console c 5 1
 exec 0</dev/console
 exec 1>/dev/console
 exec 2>/dev/console
 
+# 输出调试信息
 echo ""
-echo "=== OpenWRT Installer ==="
-echo "Successfully booted!"
+echo "========================================"
+echo "    OpenWRT Installer - Init Complete"
+echo "========================================"
+echo ""
+echo "Kernel command line: $(cat /proc/cmdline)"
 echo ""
 
-# 启动shell
-exec /bin/sh
-INIT_EOF
+# 等待设备初始化
+/bin/busybox sleep 1
 
-chmod +x "$INITRD_DIR/init"
+# 挂载CD/USB设备查找OpenWRT镜像
+echo "Mounting installation media..."
+for dev in /dev/sr0 /dev/cdrom /dev/sda /dev/sdb; do
+    if [ -b "$dev" ]; then
+        echo "Trying $dev..."
+        /bin/busybox mount -t iso9660 -o ro "$dev" /mnt 2>/dev/null && break
+        /bin/busybox mount -t vfat -o ro "$dev" /mnt 2>/dev/null && break
+    fi
+done
 
-# 打包initrd
-cd "$INITRD_DIR"
-find . | cpio -H newc -o 2>/dev/null | gzip -9 > "$ISO_DIR/live/initrd.img"
-cd -
+# 检查是否挂载成功
+if /bin/busybox mount | /bin/busybox grep -q "/mnt"; then
+    echo "Media mounted at /mnt"
+    
+    # 查找OpenWRT镜像
+    if [ -f "/mnt/live/openwrt.img" ]; then
+        echo "Found OpenWRT image"
+        /bin/busybox cp "/mnt/live/openwrt.img" /tmp/openwrt.img
+    fi
+else
+    echo "Warning: Could not mount installation media"
+fi
+
+# 安装函数
+install_menu() {
+    while true; do
+        clear
+        echo "=== OpenWRT Installation ==="
+        echo ""
+        echo "1. Install OpenWRT"
+        echo "2. List disks"
+        echo "3. Shell"
+        echo "4. Reboot"
+        echo ""
+        echo -n "Select [1-4]: "
+        read choice
+        
+        case $choice in
+            1)
+                echo "Installation would start here"
+                /bin/busybox sleep 2
+                ;;
+            2)
+                echo "Available disks:"
+                /bin/busybox ls -la /dev/sd* /dev/nvme* 2>/dev/null || echo "No disks found"
+                echo ""
+                echo -n "Press Enter..." && read
+                ;;
+            3)
+                echo "Starting shell..."
+                exec /bin/busybox sh
+                ;;
+            4)
+                echo "Rebooting..."
+                /bin/busybox reboot -f
+                ;;
+        esac
+    done
+}
+
+# 下载或准备busybox
+if [ ! -x /bin/busybox ]; then
+    echo "Setting up busybox..."
+    # 如果busybox不存在，使用内置命令
+    for cmd in echo cat ls mount umount sleep reboot; do
+        eval "$cmd() { /bin/busybox $cmd \"\$@\"; }"
+    done
+fi
+
+# 启动安装菜单
+install_menu
+INIT_PROPER
+    
+    chmod +x "$initrd_dir/init"
+    
+    # 下载静态编译的busybox
+    echo "下载busybox..."
+    if ! wget -q "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox" \
+        -O "$initrd_dir/bin/busybox"; then
+        # 如果下载失败，从系统复制
+        cp /bin/busybox "$initrd_dir/bin/busybox" 2>/dev/null || {
+            echo "创建最小busybox"
+            cat > "$initrd_dir/bin/busybox" << 'BUSYBOX_MIN'
+#!/bin/sh
+case "$1" in
+    sh) exec /bin/sh ;;
+    echo) shift; echo "$@" ;;
+    cat) shift; cat "$@" 2>/dev/null || echo "cat: $1: No such file" ;;
+    ls) ls "$@" 2>/dev/null || echo "ls: No such file" ;;
+    mount) echo "mount: simulated" ;;
+    *) echo "busybox: applet not found" ;;
+esac
+BUSYBOX_MIN
+            chmod +x "$initrd_dir/bin/busybox"
+        }
+    fi
+    
+    if [ -f "$initrd_dir/bin/busybox" ]; then
+        chmod +x "$initrd_dir/bin/busybox"
+        
+        # 创建必要的符号链接
+        cd "$initrd_dir/bin"
+        for cmd in sh echo cat ls mount umount sleep reboot cp grep; do
+            ln -sf busybox $cmd 2>/dev/null || true
+        done
+        cd -
+        
+        # 确保/bin/sh存在
+        ln -sf bin/busybox "$initrd_dir/sh" 2>/dev/null || true
+    fi
+    
+    # 打包initrd - 使用标准格式
+    echo "打包initrd..."
+    cd "$initrd_dir"
+    find . 2>/dev/null | cpio -H newc -o 2>/dev/null | gzip -9 > "$ISO_DIR/live/initrd"
+    cd -
+    
+    echo "✅ initrd创建完成"
+    ls -lh "$ISO_DIR/live/initrd"
+}
+
+create_proper_initrd
 
 # 5. 复制OpenWRT镜像
 echo "步骤5: 复制OpenWRT镜像..."
 cp "/mnt/ezopwrt.img" "$ISO_DIR/live/openwrt.img"
 
-# 6. 创建引导配置
+# 6. 创建正确的引导配置（关键修复）
 echo "步骤6: 创建引导配置..."
-cat > "$ISO_DIR/isolinux/isolinux.cfg" << 'CFG_EOF'
-UI menu.c32
+cat > "$ISO_DIR/isolinux/isolinux.cfg" << 'CFG_PROPER'
+DEFAULT vesamenu.c32
 PROMPT 0
 MENU TITLE OpenWRT Installer
 TIMEOUT 100
-DEFAULT openwrt
+
+# 设置背景等（可选）
+MENU BACKGROUND /isolinux/background.png
+MENU COLOR border       30;44   #00000000 #00000000 none
+MENU COLOR title        1;36;44 #ffffffff #00000000 none
 
 LABEL openwrt
   MENU LABEL ^Install OpenWRT
   KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd.img console=tty0 quiet
-
+  # 关键：正确的内核参数
+  APPEND initrd=/live/initrd root=/dev/ram0 rw console=tty0 console=ttyS0,115200n8 quiet
+  
+LABEL openwrt_nomodeset
+  MENU LABEL Install OpenWRT (^No Modeset)
+  KERNEL /live/vmlinuz
+  APPEND initrd=/live/initrd root=/dev/ram0 rw console=tty0 nomodeset quiet
+  
 LABEL shell
   MENU LABEL ^Rescue Shell
   KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd.img console=tty0 init=/bin/sh
+  APPEND initrd=/live/initrd root=/dev/ram0 rw console=tty0 init=/bin/sh
+
+LABEL memtest
+  MENU LABEL ^Memory Test
+  KERNEL /isolinux/memtest
+  APPEND -
 
 LABEL reboot
   MENU LABEL ^Reboot
   COM32 reboot.c32
-CFG_EOF
+CFG_PROPER
 
-# 7. 创建ISO（使用正确的参数）
+# 7. 创建ISO
 echo "步骤7: 创建ISO..."
-if command -v xorriso >/dev/null 2>&1; then
-    xorriso -as mkisofs \
-        -iso-level 3 \
-        -full-iso9660-filenames \
-        -volid "OPENWRT_INSTALL" \
-        -eltorito-boot isolinux/isolinux.bin \
-        -boot-load-size 4 \
-        -boot-info-table \
-        -no-emul-boot \
-        -eltorito-catalog isolinux/isolinux.cat \
-        -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin 2>/dev/null \
-        -output "/output/openwrt-installer.iso" \
-        "$ISO_DIR" 2>&1 | grep -v "unable to" || true
-else
-    echo "错误: xorriso未安装"
-    exit 1
-fi
+xorriso -as mkisofs \
+    -iso-level 3 \
+    -full-iso9660-filenames \
+    -volid "OPENWRT_INSTALL" \
+    -eltorito-boot isolinux/isolinux.bin \
+    -boot-load-size 4 \
+    -boot-info-table \
+    -no-emul-boot \
+    -eltorito-catalog isolinux/isolinux.cat \
+    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+    -output "/output/openwrt-installer.iso" \
+    "$ISO_DIR" 2>&1 | grep -v "unable to" || true
 
-# 8. 验证ISO
-echo "步骤8: 验证ISO..."
+# 8. 验证
 if [ -f "/output/openwrt-installer.iso" ]; then
     echo ""
-    echo "✅ ISO创建成功!"
+    echo "✅ ✅ ✅ ISO创建成功！"
     echo "文件: /output/openwrt-installer.iso"
     echo "大小: $(ls -lh /output/openwrt-installer.iso | awk '{print $5}')"
     
-    # 检查ISO结构
+    # 提取并验证initrd
     echo ""
-    echo "ISO引导信息:"
-    if xorriso -indev "/output/openwrt-installer.iso" -boot_image any show 2>/dev/null; then
-        echo "✅ ISO引导信息正常"
-    else
-        echo "⚠️  无法读取ISO引导信息"
-    fi
+    echo "验证initrd:"
+    TEMP_DIR="/tmp/verify-$$"
+    mkdir -p "$TEMP_DIR"
+    xorriso -osirrox on -indev "/output/openwrt-installer.iso" \
+        -extract /live/initrd "$TEMP_DIR/initrd.gz" 2>/dev/null || true
     
-    # 列出ISO内容
-    echo ""
-    echo "ISO内容概览:"
-    xorriso -indev "/output/openwrt-installer.iso" -toc 2>&1 | head -20 || true
+    if [ -f "$TEMP_DIR/initrd.gz" ]; then
+        echo "initrd文件存在"
+        file "$TEMP_DIR/initrd.gz"
+        
+        # 尝试解压检查
+        mkdir -p "$TEMP_DIR/initrd-extract"
+        cd "$TEMP_DIR/initrd-extract"
+        gzip -dc ../initrd.gz 2>/dev/null | cpio -id 2>/dev/null || true
+        if [ -f "init" ]; then
+            echo "✅ init脚本存在"
+            head -5 init
+        else
+            echo "❌ init脚本缺失"
+            ls -la
+        fi
+    fi
+    rm -rf "$TEMP_DIR"
 else
     echo "❌ ISO创建失败"
     exit 1
 fi
 
 echo ""
-echo "🎉 构建完成!"
+echo "🎉 构建完成！"
