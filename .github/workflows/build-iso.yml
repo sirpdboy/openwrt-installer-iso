@@ -85,6 +85,7 @@ jobs:
       run: |
         mkdir -p output
         chmod 777 output
+        chmod +x build.sh /scripts/build-iso.sh
 
     - name: Run Docker build
       run: |
