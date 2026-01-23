@@ -4,7 +4,11 @@ on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
-
+    inputs:
+      openwrt_version:
+        description: 'OpenWRT版本'
+        required: false
+        default: '23.05.3'
 jobs:
   build:
     runs-on: ubuntu-latest
