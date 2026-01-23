@@ -221,10 +221,20 @@ Name=eth* en*
 DHCP=yes
 SYSTEMD_NET
 
+echo Enable autologin
+# mkdir -p -v $HOME/LIVE_BOOT/chroot/etc/systemd/system/getty@tty1.service.d/
+# cp -v /override.conf $HOME/LIVE_BOOT/chroot/etc/systemd/system/getty@tty1.service.d/override.conf
+
+cat > $CHROOT_DIR/etc/systemd/system/getty@tty1.service.d/override.conf << 'INSTALL_AUTO'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
+INSTALL_AUTO
+
 echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
-echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
-echo "PermitEmptyPasswords yes" >> /etc/ssh/sshd_config  # 新增
-echo "root::0:0:root:/root:/bin/bash" > /etc/shadow  # 清空root密码
+echo "PermitEmptyPasswords yes" >> /etc/ssh/sshd_config
+echo "root:1234" | chpasswd
+systemctl enable ssh
 
 # 创建OpenWRT安装脚本
 echo "📝 创建OpenWRT安装脚本..."
