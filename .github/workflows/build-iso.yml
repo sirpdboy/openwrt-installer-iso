@@ -86,47 +86,17 @@ jobs:
         mkdir -p output
         chmod 777 output
 
-    - name: Build ISO with working kernel
+    - name: Build working ISO
       run: |
+        chmod +x scripts/build-iso.sh
         docker run --privileged --rm \
           -v $(pwd)/output:/output \
           -v $(pwd)/scripts:/scripts \
           -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
           debian:bullseye-slim \
           bash -c "
-          set -e
-          export DEBIAN_FRONTEND=noninteractive
-      
-          echo '=== 安装必要的软件包 ==='
           apt-get update
-          apt-get install -y \
-            live-boot \          # 关键：Live系统引导
-            live-config \
-        live-tools \
-        linux-image-amd64 \  # 标准内核
-        xorriso \
-        isolinux \
-        syslinux-efi \
-        wget \
-        curl \
-        cpio \
-        gzip
-      
-          echo '=== 准备Live系统内核 ==='
-          # 使用live-boot提供的内核
-          if [ -f /lib/live/boot/vmlinuz ]; then
-            cp /lib/live/boot/vmlinuz /tmp/vmlinuz-live
-          elif [ -f /boot/vmlinuz-*-amd64 ]; then
-            cp /boot/vmlinuz-*-amd64 /tmp/vmlinuz-live
-          else
-        # 下载Debian安装器内核
-        wget -q http://ftp.debian.org/debian/dists/bullseye/main/installer-amd64/current/images/cdrom/vmlinuz \
-          -O /tmp/vmlinuz-live
-          fi
-      
-          echo '=== 执行构建脚本 ==='
-          # 传递内核路径给构建脚本
-          export WORKING_KERNEL=/tmp/vmlinuz-live
+          apt-get install -y xorriso isolinux wget
           /scripts/build-iso.sh
           "
     - name: Verify ISO
