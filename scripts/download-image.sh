@@ -137,8 +137,6 @@ main() {
     echo "    EzOpWrt 镜像下载工具"
     echo "========================================"
     
-    check_deps
-    
     # 清理旧文件
     rm -f "$FINAL_IMG"
     
