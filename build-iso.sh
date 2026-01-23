@@ -317,7 +317,9 @@ if mksquashfs "${CHROOT_DIR}" \
     "${STAGING_DIR}/live/filesystem.squashfs" \
     -comp gzip \
     -b 1M \
-    -noappend; then
+    -noappend \
+    -wildcards \
+    -e "proc/*" "sys/*" "dev/*" "run/*" "tmp/*"; then
     echo "✅ squashfs创建成功"
 else
     echo "❌ squashfs创建失败"
