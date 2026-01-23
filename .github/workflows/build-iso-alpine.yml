@@ -1,0 +1,147 @@
+name: Build Small OpenWRT ISO
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'build-iso-alpine.sh'
+      - '.github/workflows/build-iso-alpine.yml'
+  workflow_dispatch:
+    inputs:
+      alpine_version:
+        description: 'Alpine版本'
+        required: false
+        default: '3.20'
+
+jobs:
+  build-small:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+            wget \
+            curl \
+            xorriso \
+            syslinux \
+            mtools \
+            dosfstools \
+            squashfs-tools \
+            e2fsprogs \
+            parted \
+            gdisk \
+            jq
+    
+    - name: Setup Docker (Fixed)
+      run: |
+        # 清理已有Docker安装
+        sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+        sudo apt-get autoremove -y
+        
+        # 安装必要依赖
+        sudo apt-get update
+        sudo apt-get install -y \
+            ca-certificates \
+            curl \
+            gnupg \
+            lsb-release
+        
+        # 添加Docker官方GPG密钥
+        sudo mkdir -p /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        
+        # 设置仓库
+        echo \
+          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+          $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        
+        # 安装Docker
+        sudo apt-get update
+        sudo apt-get install -y \
+            docker-ce \
+            docker-ce-cli \
+            containerd.io \
+            docker-compose-plugin
+        
+        # 启动服务
+        sudo systemctl start docker
+        sudo systemctl enable docker
+        
+        # 验证
+        docker --version
+        echo "✅ Docker安装成功"
+    
+    - name: Download OpenWRT image
+      run: |
+        mkdir -p assets
+        
+        # 使用你的下载脚本或直接下载
+        if [ -f scripts/download-image.sh ]; then
+          chmod +x scripts/download-image.sh
+          ./scripts/download-image.sh
+        else
+          echo "下载OpenWRT镜像..."
+          REPO="sirpdboy/openwrt"
+          TAG=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.tag_name // empty')
+          DOWNLOAD_URLS=$(curl -sL "https://api.github.com/repos/$REPO/releases/tags/$TAG" | \
+                jq -r '.assets[] | select(.name | endswith("img.gz")) | .browser_download_url')
+          FIRST_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
+          echo "下载: $FIRST_URL"
+          wget -q $FIRST_URL  -O assets/ezopwrt.img.gz
+           if [ ! -f "assets/ezopwrt.img.gz" ]; then
+             curl -L -o "$OUTPUT_FILE"  --progress-bar --retry 3 "$FIRST_URL" 
+           fi
+        
+           if [ $? -eq 0 ]; then
+               echo "✅ 下载完成"
+               gzip -d assets/ezopwrt.img.gz
+            fi
+        fi
+        echo "✅ 镜像大小: $(stat -c%s assets/ezopwrt.img | numfmt --to=iec)"
+    
+    - name: Create output directory
+      run: |
+        mkdir -p output
+        chmod 777 output
+    
+    - name: build-iso-alpine
+      run: |
+        chmod +x build-iso-alpine.sh
+        ./build-iso-alpine.sh
+        
+        echo "ISO构建完成:"
+        ls -lh output/
+    
+    - name: Upload ISO artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: openwrt-installer-small
+        path: output/*.iso
+        retention-days: 30
+        if-no-files-found: error
+    
+    - name: Create release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: output/*.iso
+        body: |
+          # 小型OpenWRT安装器 (基于Alpine Linux)
+          
+          ## 特点
+          - 🐧 基于Alpine Linux，非常轻量
+          - 📦 ISO大小仅50-80MB
+          - 🚀 自动启动安装程序
+          - 🔧 无需用户名密码
+          - 💾 支持UEFI和传统BIOS
+          
+          ## 构建信息
+          - 版本: ${{ github.ref_name }}
+          - 时间: $(date -u)
+          - 大小: $(ls -lh output/*.iso | awk '{print $5}')
+          - 提交: ${{ github.sha }}
