@@ -5,6 +5,23 @@ set -e
 echo "🚀 开始构建小型OpenWRT安装ISO（基于Alpine）..."
 echo ""
 
+# 检查是否在Alpine系统中
+if ! command -v apk &> /dev/null; then
+    echo "⚠️  不在Alpine系统中，将在Docker容器中运行构建..."
+    
+    # 自动在Docker中运行
+    exec docker run --privileged --rm \
+        -v $(pwd)/output:/output \
+        -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
+        -v $(pwd)/$(basename $0):/$(basename $0):ro \
+        alpine:3.20 \
+        sh -c "
+        apk update && apk add alpine-sdk xorriso syslinux mtools dosfstools squashfs-tools wget curl e2fsprogs parted grub grub-efi bash
+        /$(basename $0)
+        "
+    exit 0
+fi
+
 # 基础配置
 WORK_DIR="/tmp/OPENWRT_LIVE"
 CHROOT_DIR="${WORK_DIR}/rootfs"
