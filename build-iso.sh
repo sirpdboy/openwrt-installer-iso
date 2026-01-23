@@ -221,10 +221,10 @@ Name=eth* en*
 DHCP=yes
 SYSTEMD_NET
 
-# 允许root登录
 echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
-echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
-echo "root:openwrt" | chpasswd
+echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
+echo "PermitEmptyPasswords yes" >> /etc/ssh/sshd_config  # 新增
+echo "root::0:0:root:/root:/bin/bash" > /etc/shadow  # 清空root密码
 
 # 创建OpenWRT安装脚本
 echo "📝 创建OpenWRT安装脚本..."
