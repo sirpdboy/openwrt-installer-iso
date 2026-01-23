@@ -88,34 +88,15 @@ jobs:
 
     - name: Build ISO
       run: |
-        chmod +x scripts/*.sh
-        ls -la scripts/*.sh
-    
-        # 2. 使用Docker构建（不需要在容器内修改权限）
+        chmod +x scripts/build-iso.sh
         docker run --privileged --rm \
         -v $(pwd)/output:/output \
-        -v $(pwd)/scripts:/scripts:ro \
+        -v $(pwd)/scripts:/scripts \
         -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
         debian:bullseye-slim \
         bash -c "
-        export DEBIAN_FRONTEND=noninteractive
-      
-        echo '安装构建工具...'
-        apt-get update
-        apt-get install -y \
-        xorriso isolinux syslinux-efi \
-        grub-pc-bin grub-efi-amd64-bin \
-        mtools dosfstools squashfs-tools \
-        wget curl cpio gzip \
-        kmod file 2>&1
-      
-        apt-get clean
-      
-        echo '检查脚本权限...'
-        ls -l /scripts/build-iso.sh
-      
-        echo '执行构建...'
-        exec /scripts/build-iso.sh
+        apt-get update && apt-get install -y linux-image-amd64 xorriso isolinux
+        /scripts/build-iso.sh
         "
     - name: Verify ISO
       run: |
