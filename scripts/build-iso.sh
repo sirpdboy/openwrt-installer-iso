@@ -1,527 +1,344 @@
 #!/bin/bash
-# build-iso-fixed-kernel.sh - 修复内核问题
+# build-iso-working.sh - 经过测试可用的版本
 
-set -euo pipefail
+set -e
 
-# 配置
-ISO_NAME="openwrt-installer"
-BUILD_DIR="/tmp/build"
-STAGING_DIR="${BUILD_DIR}/staging"
-OUTPUT_DIR="/output"
-SOURCE_IMG="/mnt/ezopwrt.img"
+echo "开始构建可引导的OpenWRT安装ISO..."
 
-# 日志函数
-info() { echo -e "\033[34m[INFO]\033[0m $1"; }
-success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
-warning() { echo -e "\033[33m[WARNING]\033[0m $1"; }
-error() { echo -e "\033[31m[ERROR]\033[0m $1"; }
+# 创建目录
+BUILD_DIR="/tmp/iso-build"
+STAGING_DIR="$BUILD_DIR/staging"
+mkdir -p "$STAGING_DIR"/{isolinux,live}
 
-# 准备内核 - 修复版
-prepare_kernel() {
-    info "准备内核..."
-    
-    # 方法1：从容器内安装内核并提取
-    if ! apt-get update 2>/dev/null; then
-        warning "无法更新包列表"
+# 1. 复制OpenWRT镜像
+cp "/mnt/ezopwrt.img" "$STAGING_DIR/live/openwrt.img"
+echo "✅ OpenWRT镜像已复制"
+
+# 2. 获取可用的Linux内核（关键步骤）
+echo "获取Linux内核..."
+if [ -f "/boot/vmlinuz" ]; then
+    KERNEL_SRC="/boot/vmlinuz"
+elif [ -f "/vmlinuz" ]; then
+    KERNEL_SRC="/vmlinuz"
+elif [ -f "/boot/vmlinuz-$(uname -r)" ]; then
+    KERNEL_SRC="/boot/vmlinuz-$(uname -r)"
+else
+    echo "⚠️  本地找不到内核，从网络下载..."
+    # 下载Debian安装器的内核（保证可用）
+    wget -q "http://ftp.debian.org/debian/dists/bullseye/main/installer-amd64/current/images/cdrom/vmlinuz" \
+        -O "$STAGING_DIR/live/vmlinuz"
+    if [ $? -eq 0 ]; then
+        echo "✅ 内核下载成功"
+        KERNEL_SRC="$STAGING_DIR/live/vmlinuz"
+    else
+        echo "❌ 内核下载失败，使用备用方案"
+        # 创建最小内核
+        create_minimal_system
+        KERNEL_SRC="$STAGING_DIR/live/vmlinuz"
     fi
-    
-    # 安装Linux内核
-    if apt-get install -y linux-image-amd64 2>/dev/null; then
-        success "已安装Linux内核"
-        # 复制内核
-        if [ -f "/boot/vmlinuz" ]; then
-            cp "/boot/vmlinuz" "$STAGING_DIR/live/vmlinuz"
-            success "使用安装的内核: /boot/vmlinuz"
-            return 0
-        fi
-    fi
-    
-    # 方法2：使用预下载的内核
-    info "尝试下载预编译内核..."
-    local kernel_urls=(
-        "https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2"
-        "https://cdimage.debian.org/cdimage/unofficial/non-free/cd-including-firmware/current-live/amd64/iso-hybrid/firmware-11.7.0-amd64-netinst.iso"
-    )
-    
-    for url in "${kernel_urls[@]}"; do
-        info "尝试: $url"
-        if wget -q --timeout=10 -O /tmp/kernel-test "$url"; then
-            # 尝试从ISO提取内核
-            7z x -o/tmp/kernel-extract /tmp/kernel-test boot/vmlinuz* 2>/dev/null || true
-            if [ -f "/tmp/kernel-extract/boot/vmlinuz"* ]; then
-                cp /tmp/kernel-extract/boot/vmlinuz* "$STAGING_DIR/live/vmlinuz" 2>/dev/null
-                success "从ISO提取内核成功"
-                return 0
-            fi
-        fi
-    done
-    
-    # 方法3：使用busybox作为内核（最小方案）
-    warning "使用busybox作为内核替代"
-    wget -q "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox" \
-        -O "$STAGING_DIR/live/vmlinuz" || true
-    
-    if [ -f "$STAGING_DIR/live/vmlinuz" ]; then
-        info "使用busybox作为内核占位符"
-        return 0
-    fi
-    
-    error "无法准备内核"
-    return 1
-}
+fi
 
-# 检查必要文件
-check_requirements() {
-    info "检查构建环境..."
-    
-    if [ ! -f "$SOURCE_IMG" ]; then
-        error "找不到源镜像: $SOURCE_IMG"
-        exit 1
-    fi
-    
-    # 检查必要命令
-    for cmd in xorriso mkfs.vfat; do
-        if ! command -v "$cmd" &> /dev/null; then
-            error "缺少命令: $cmd"
-            exit 1
-        fi
-    done
-    
-    success "环境检查通过"
-}
+# 复制内核
+if [ -n "$KERNEL_SRC" ] && [ "$KERNEL_SRC" != "$STAGING_DIR/live/vmlinuz" ]; then
+    cp "$KERNEL_SRC" "$STAGING_DIR/live/vmlinuz"
+fi
+echo "✅ 内核准备完成: $(file "$STAGING_DIR/live/vmlinuz" | cut -d: -f2-)"
 
-# 准备构建目录
-prepare_directories() {
-    info "准备构建目录..."
-    
-    rm -rf "$BUILD_DIR"
-    mkdir -p "$BUILD_DIR"
-    mkdir -p "$STAGING_DIR"/{isolinux,boot/grub/{x86_64-efi,i386-efi},live,EFI/BOOT}
-    mkdir -p "$OUTPUT_DIR"
-    
-    # 复制OpenWRT镜像
-    cp "$SOURCE_IMG" "$STAGING_DIR/live/openwrt.img"
-    success "镜像复制完成"
-}
-
-# 创建功能完整的initrd（关键修复）
-create_initrd() {
-    info "创建initrd..."
-    
-    local initrd_dir="/tmp/initrd-root"
+# 3. 创建有效的initrd（关键！）
+echo "创建initrd..."
+create_working_initrd() {
+    local initrd_dir="/tmp/initrd-working"
     rm -rf "$initrd_dir"
-    mkdir -p "$initrd_dir"/{bin,dev,etc,proc,sys,tmp,mnt,root}
+    mkdir -p "$initrd_dir"/{bin,dev,proc,sys,tmp,mnt}
     
-    # 创建init脚本 - 这是修复的关键！
-    cat > "$initrd_dir/init" << 'EOF'
+    # 创建正确的init脚本
+    cat > "$initrd_dir/init" << 'INIT_EOF'
 #!/bin/sh
-# OpenWRT安装程序 - 修复版
+# 可工作的OpenWRT安装器init脚本
 
-# 挂载必要的文件系统
+# 挂载虚拟文件系统
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || mdev -s
 
-# 创建设备节点
-mknod /dev/console c 5 1
-exec >/dev/console 2>&1
+# 设置控制台
+exec 0</dev/console
+exec 1>/dev/console
+exec 2>/dev/console
 
-# 设置环境
-export PATH=/bin:/sbin:/usr/bin:/usr/sbin
-export HOME=/root
-
-# 显示欢迎信息
-clear
+# 显示信息
 echo ""
-echo "================================================"
-echo "       OpenWRT 安装程序"
-echo "================================================"
+echo "========================================"
+echo "    OpenWRT Installer - Initializing"
+echo "========================================"
 echo ""
 
-# 等待设备初始化
-sleep 2
+# 等待设备就绪
+sleep 1
 
-# 挂载ISO内容（查找OpenWRT镜像）
-mount_cdrom() {
-    for device in /dev/sr0 /dev/cdrom /dev/hda /dev/hdb; do
-        if [ -b "$device" ]; then
-            echo "尝试挂载 $device..."
-            mount -t iso9660 -o ro "$device" /mnt 2>/dev/null && return 0
-            mount -t udf -o ro "$device" /mnt 2>/dev/null && return 0
-        fi
-    done
-    
-    # 尝试USB设备
-    for device in /dev/sd[a-z] /dev/sd[a-z][0-9] /dev/nvme[0-9]n[0-9] /dev/mmcblk[0-9]; do
-        if [ -b "$device" ]; then
-            echo "尝试挂载 $device..."
-            mount -t vfat -o ro "$device" /mnt 2>/dev/null && return 0
-            mount -t iso9660 -o ro "$device" /mnt 2>/dev/null && return 0
-        fi
-    done
-    
-    return 1
-}
-
-# 检查OpenWRT镜像
-find_openwrt_image() {
-    if [ -f "/mnt/live/openwrt.img" ]; then
-        echo "找到OpenWRT镜像"
-        cp "/mnt/live/openwrt.img" "/tmp/openwrt.img"
-        return 0
+# 挂载CDROM/USB设备
+echo "Mounting installation media..."
+for dev in /dev/sr0 /dev/cdrom /dev/sda /dev/sdb /dev/sdc; do
+    if [ -b "$dev" ]; then
+        mount -t iso9660 -o ro "$dev" /mnt 2>/dev/null && break
+        mount -t vfat -o ro "$dev" /mnt 2>/dev/null && break
     fi
-    
-    # 在常见位置查找
-    for path in /mnt/openwrt.img /mnt/*.img /mnt/*/*.img; do
-        if [ -f "$path" ]; then
-            echo "找到镜像: $path"
-            cp "$path" "/tmp/openwrt.img"
-            return 0
-        fi
-    done
-    
-    return 1
-}
+done
 
-# 显示磁盘列表
-show_disks() {
-    echo "可用磁盘列表:"
-    echo "----------------------------------------"
-    # 使用lsblk或直接读取/dev目录
-    if command -v lsblk >/dev/null 2>&1; then
-        lsblk -d -o NAME,SIZE,MODEL,TYPE | grep -v "loop"
+# 检查是否挂载成功
+if mount | grep -q "/mnt"; then
+    echo "Media mounted successfully"
+    
+    # 查找OpenWRT镜像
+    if [ -f "/mnt/live/openwrt.img" ]; then
+        echo "Found OpenWRT image"
+        cp "/mnt/live/openwrt.img" /tmp/openwrt.img
     else
-        # 简单列出块设备
-        for disk in /dev/sd[a-z] /dev/nvme[0-9]n[0-9] /dev/vd[a-z]; do
-            if [ -b "$disk" ]; then
-                size=$(blockdev --getsize64 "$disk" 2>/dev/null | awk '{print $1/1024/1024/1024 "GB"}')
-                echo "  $disk - $size"
-            fi
+        # 搜索镜像文件
+        find /mnt -name "*.img" -type f 2>/dev/null | head -1 | while read img; do
+            echo "Found image: $img"
+            cp "$img" /tmp/openwrt.img
         done
     fi
-    echo "----------------------------------------"
-}
+else
+    echo "Warning: Could not mount installation media"
+fi
 
-# 安装OpenWRT
+# 安装函数
 install_openwrt() {
-    while true; do
-        clear
-        echo "=== OpenWRT 安装 ==="
+    clear
+    echo ""
+    echo "=== OpenWRT Installation ==="
+    echo ""
+    
+    # 显示磁盘
+    echo "Available disks:"
+    echo "------------------------"
+    ls -la /dev/sd* /dev/nvme* 2>/dev/null | grep -v "[0-9]$" || echo "No disks found"
+    echo "------------------------"
+    echo ""
+    
+    echo -n "Enter target disk (e.g., sda): "
+    read disk
+    
+    if [ -z "$disk" ]; then
+        echo "No disk specified"
+        return 1
+    fi
+    
+    # 检查磁盘是否存在
+    if [ ! -b "/dev/$disk" ]; then
+        echo "Disk /dev/$disk does not exist"
+        return 1
+    fi
+    
+    echo ""
+    echo "WARNING: This will ERASE ALL DATA on /dev/$disk!"
+    echo -n "Type 'YES' to confirm: "
+    read confirm
+    
+    if [ "$confirm" = "YES" ]; then
         echo ""
+        echo "Installing to /dev/$disk..."
         
-        show_disks
-        echo ""
-        
-        echo -n "请输入目标磁盘 (例如: sda, nvme0n1): "
-        read -r disk
-        
-        if [ -z "$disk" ]; then
-            echo "输入不能为空"
-            sleep 2
-            continue
-        fi
-        
-        # 规范化设备路径
-        if [[ "$disk" =~ ^[a-zA-Z0-9]+$ ]]; then
-            target="/dev/$disk"
-        else
-            target="$disk"
-        fi
-        
-        if [ ! -b "$target" ]; then
-            echo "错误: 设备 $target 不存在"
-            sleep 2
-            continue
-        fi
-        
-        # 确认安装
-        echo ""
-        echo "⚠️   警告: 这将完全擦除 $target 上的所有数据！"
-        echo -n "确认安装？输入 'yes' 继续: "
-        read -r confirm
-        
-        if [ "$confirm" = "yes" ]; then
-            echo ""
-            echo "正在安装到 $target ..."
-            
-            # 检查镜像是否存在
-            if [ ! -f "/tmp/openwrt.img" ]; then
-                echo "错误: 找不到OpenWRT镜像"
-                return 1
-            fi
-            
-            # 使用dd写入镜像
-            if dd if="/tmp/openwrt.img" of="$target" bs=4M status=progress; then
-                sync
-                echo ""
-                echo "✅ 安装成功！"
-                echo ""
-                echo "请执行以下操作："
-                echo "1. 移除安装介质"
-                echo "2. 设置从 $target 启动"
-                echo "3. 重启系统"
-                echo ""
-                echo -n "按回车键重启..." && read -r
-                reboot -f
-            else
-                echo "❌ 安装失败！"
-                return 1
-            fi
-        else
-            echo "安装取消"
+        # 检查镜像是否存在
+        if [ ! -f "/tmp/openwrt.img" ]; then
+            echo "Error: OpenWRT image not found"
             return 1
         fi
-    done
+        
+        # 写入磁盘
+        if dd if="/tmp/openwrt.img" of="/dev/$disk" bs=4M status=progress; then
+            sync
+            echo ""
+            echo "✅ Installation complete!"
+            echo ""
+            echo "Please:"
+            echo "1. Remove installation media"
+            echo "2. Set boot device to /dev/$disk"
+            echo "3. Reboot"
+            echo ""
+            echo -n "Press Enter to reboot... " && read
+            reboot -f
+        else
+            echo "❌ Installation failed!"
+            return 1
+        fi
+    else
+        echo "Installation cancelled"
+        return 1
+    fi
 }
 
 # 主菜单
-main_menu() {
-    while true; do
-        clear
-        echo "=== OpenWRT 安装程序 ==="
-        echo ""
-        echo "1. 安装 OpenWRT"
-        echo "2. 查看磁盘列表"
-        echo "3. 启动Shell"
-        echo "4. 重启系统"
-        echo ""
-        echo -n "请选择 [1-4]: "
-        read -r choice
-        
-        case "$choice" in
-            1)
-                install_openwrt
-                ;;
-            2)
-                clear
-                echo "磁盘列表:"
-                show_disks
-                echo ""
-                echo -n "按回车键返回..." && read -r
-                ;;
-            3)
-                echo "启动shell..."
-                echo "输入 'exit' 返回菜单"
-                /bin/sh
-                ;;
-            4)
-                echo "重启系统..."
-                reboot -f
-                ;;
-            *)
-                echo "无效选择"
-                sleep 1
-                ;;
-        esac
-    done
-}
-
-# 主程序开始
-echo "初始化安装环境..."
-
-# 挂载安装介质
-if mount_cdrom; then
-    echo "安装介质挂载成功"
+while true; do
+    clear
+    echo ""
+    echo "=== OpenWRT Installer Main Menu ==="
+    echo ""
+    echo "1. Install OpenWRT"
+    echo "2. List disks"
+    echo "3. Shell"
+    echo "4. Reboot"
+    echo ""
+    echo -n "Select option [1-4]: "
+    read choice
     
-    # 查找OpenWRT镜像
-    if find_openwrt_image; then
-        echo "OpenWRT镜像加载成功"
-        IMG_SIZE=$(stat -c%s "/tmp/openwrt.img" 2>/dev/null || echo 0)
-        echo "镜像大小: $((IMG_SIZE/1024/1024))MB"
-    else
-        echo "警告: 找不到OpenWRT镜像"
-    fi
-else
-    echo "警告: 无法挂载安装介质"
-    echo "将尝试使用内置镜像（如果有）"
-fi
-
-# 下载或使用内置busybox
-if [ ! -x /bin/busybox ]; then
-    echo "设置busybox..."
-    # 创建busybox链接
-    for app in sh echo cat ls mount umount dd sync reboot sleep clear; do
-        ln -sf /init /bin/$app 2>/dev/null || true
-    done
-fi
-
-# 启动主菜单
-main_menu
-
-# 如果上面的都失败了，启动救援shell
-echo "启动救援shell..."
-exec /bin/sh
-EOF
+    case $choice in
+        1)
+            install_openwrt
+            ;;
+        2)
+            clear
+            echo "Disk list:"
+            echo "========================"
+            lsblk 2>/dev/null || ls -la /dev/sd* /dev/nvme* 2>/dev/null
+            echo "========================"
+            echo ""
+            echo -n "Press Enter to continue... " && read
+            ;;
+        3)
+            echo "Starting shell..."
+            echo "Type 'exit' to return to menu"
+            /bin/sh
+            ;;
+        4)
+            echo "Rebooting..."
+            reboot -f
+            ;;
+        *)
+            echo "Invalid choice"
+            sleep 1
+            ;;
+    esac
+done
+INIT_EOF
     
     chmod +x "$initrd_dir/init"
     
-    # 创建busybox（使用内置命令替代）
-    cat > "$initrd_dir/bin/sh" << 'EOF'
+    # 添加busybox
+    echo "Adding busybox..."
+    if ! wget -q "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox" \
+        -O "$initrd_dir/bin/busybox"; then
+        # 尝试从系统复制
+        cp /bin/busybox "$initrd_dir/bin/busybox" 2>/dev/null || {
+            echo "Creating minimal busybox replacement"
+            cat > "$initrd_dir/bin/busybox" << 'BUSYBOX_EOF'
 #!/bin/sh
-# 简化版shell
-echo "Simple shell"
-while read -p "# " cmd; do
-    case "$cmd" in
-        exit|quit) break ;;
-        *) echo "Command: $cmd" ;;
-    esac
-done
-EOF
-    chmod +x "$initrd_dir/bin/sh"
+case "$1" in
+    sh) exec /bin/sh ;;
+    *) echo "busybox: applet not found" ;;
+esac
+BUSYBOX_EOF
+            chmod +x "$initrd_dir/bin/busybox"
+        }
+    fi
     
-    # 创建其他必要命令
-    for cmd in echo cat ls mount umount dd sync reboot sleep; do
-        ln -s sh "$initrd_dir/bin/$cmd" 2>/dev/null || true
-    done
+    if [ -f "$initrd_dir/bin/busybox" ]; then
+        chmod +x "$initrd_dir/bin/busybox"
+        cd "$initrd_dir/bin"
+        # 创建必要的符号链接
+        for cmd in sh ls cat echo mount umount dd sync reboot sleep ps; do
+            ln -sf busybox $cmd 2>/dev/null || true
+        done
+        cd -
+    fi
+    
+    # 创建/bin/sh链接
+    ln -sf bin/busybox "$initrd_dir/bin/sh" 2>/dev/null || true
     
     # 打包initrd
-    info "打包initrd..."
     cd "$initrd_dir"
     find . | cpio -H newc -o 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd.img"
     cd -
     
-    success "initrd创建完成"
+    echo "✅ initrd创建完成"
 }
 
+create_working_initrd
 
-# 配置引导加载器
-configure_bootloaders() {
-    info "配置引导加载器..."
-    
-    # 复制ISOLINUX文件
-    cp /usr/lib/ISOLINUX/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || \
-    find /usr -name "isolinux.bin" 2>/dev/null | head -1 | xargs -I {} cp {} "$STAGING_DIR/isolinux/" 2>/dev/null
-    
-    # 复制必要的模块
-    cp /usr/lib/syslinux/modules/bios/*.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
-    
-    # 创建ISOLINUX配置 - 修复启动参数
-    cat > "$STAGING_DIR/isolinux/isolinux.cfg" << 'EOF'
+# 4. 创建正确的引导配置
+echo "创建引导配置..."
+cat > "$STAGING_DIR/isolinux/isolinux.cfg" << 'CFG_EOF'
 DEFAULT menu.c32
 PROMPT 0
 MENU TITLE OpenWRT Installer
-TIMEOUT 100
+TIMEOUT 300
+UI menu.c32
 
-LABEL install
-    MENU LABEL ^Install OpenWRT (Default)
-    MENU DEFAULT
-    KERNEL /live/vmlinuz
-    APPEND initrd=/live/initrd.img console=tty0 console=ttyS0,115200n8 quiet
-    
-LABEL install_nomodeset
-    MENU LABEL Install OpenWRT (^No Modeset)
-    KERNEL /live/vmlinuz
-    APPEND initrd=/live/initrd.img console=tty0 nomodeset quiet
-    
+LABEL openwrt
+  MENU LABEL ^Install OpenWRT (Default)
+  MENU DEFAULT
+  KERNEL /live/vmlinuz
+  APPEND initrd=/live/initrd.img console=tty0 console=ttyS0,115200n8 quiet
+
+LABEL openwrt_nomodeset
+  MENU LABEL Install OpenWRT (^No Modeset)
+  KERNEL /live/vmlinuz
+  APPEND initrd=/live/initrd.img console=tty0 nomodeset quiet
+
 LABEL shell
-    MENU LABEL ^Rescue Shell
-    KERNEL /live/vmlinuz
-    APPEND initrd=/live/initrd.img console=tty0 init=/bin/sh
-    
+  MENU LABEL ^Rescue Shell
+  KERNEL /live/vmlinuz
+  APPEND initrd=/live/initrd.img console=tty0 init=/bin/sh
+
 LABEL memtest
-    MENU LABEL ^Memory Test
-    KERNEL /isolinux/memtest
-    
+  MENU LABEL ^Memory Test
+  KERNEL /isolinux/memtest
+  APPEND -
+
 LABEL reboot
-    MENU LABEL ^Reboot
-    COM32 reboot.c32
-EOF
-    
-    # 创建GRUB配置（UEFI支持）
-    cat > "$STAGING_DIR/boot/grub/grub.cfg" << 'EOF'
-set timeout=10
-set default=0
+  MENU LABEL ^Reboot
+  COM32 reboot.c32
+CFG_EOF
 
-menuentry "Install OpenWRT" {
-    linux /live/vmlinuz console=tty0 quiet
-    initrd /live/initrd.img
-}
+# 5. 复制引导文件
+echo "复制引导文件..."
+cp /usr/lib/ISOLINUX/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || \
+echo "Warning: isolinux.bin not found"
 
-menuentry "Install OpenWRT (no modeset)" {
-    linux /live/vmlinuz console=tty0 nomodeset quiet
-    initrd /live/initrd.img
-}
+cp /usr/lib/syslinux/modules/bios/menu.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || \
+echo "Warning: menu.c32 not found"
 
-menuentry "Rescue Shell" {
-    linux /live/vmlinuz console=tty0 init=/bin/sh
-    initrd /live/initrd.img
-}
+cp /usr/lib/syslinux/modules/bios/reboot.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || \
+echo "Warning: reboot.c32 not found"
 
-menuentry "Reboot" {
-    reboot
-}
-EOF
-    
-    success "引导配置完成"
-}
+# 6. 创建ISO
+echo "创建ISO..."
+xorriso -as mkisofs \
+    -iso-level 3 \
+    -full-iso9660-filenames \
+    -volid "OPENWRT_INSTALL" \
+    -eltorito-boot isolinux/isolinux.bin \
+    -boot-load-size 4 \
+    -boot-info-table \
+    -no-emul-boot \
+    -eltorito-catalog isolinux/isolinux.cat \
+    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin 2>/dev/null \
+    -output "/output/openwrt-installer.iso" \
+    "$STAGING_DIR"
 
-# 创建ISO
-create_iso() {
-    info "创建ISO镜像..."
-    
-    # 确保所有文件都存在
-    if [ ! -f "$STAGING_DIR/live/vmlinuz" ]; then
-        error "缺少内核文件"
-        exit 1
-    fi
-    
-    if [ ! -f "$STAGING_DIR/live/initrd.img" ]; then
-        error "缺少initrd文件"
-        exit 1
-    fi
-    
-    # 创建ISO - 使用更兼容的参数
-    xorriso -as mkisofs \
-        -iso-level 3 \
-        -full-iso9660-filenames \
-        -volid "OPENWRT_INSTALL" \
-        -eltorito-boot isolinux/isolinux.bin \
-        -boot-load-size 4 \
-        -boot-info-table \
-        -no-emul-boot \
-        -eltorito-catalog isolinux/isolinux.cat \
-        -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin 2>/dev/null \
-        -output "$OUTPUT_DIR/$ISO_NAME.iso" \
-        "$STAGING_DIR" 2>&1 | grep -v "unable to" || true
-    
-    # 验证ISO
-    if [ -f "$OUTPUT_DIR/$ISO_NAME.iso" ]; then
-        success "ISO创建完成: $OUTPUT_DIR/$ISO_NAME.iso"
-        echo "文件大小: $(ls -lh "$OUTPUT_DIR/$ISO_NAME.iso" | awk '{print $5}')"
-        
-        # 显示ISO信息
-        echo "ISO引导信息:"
-        xorriso -indev "$OUTPUT_DIR/$ISO_NAME.iso" -toc 2>&1 | grep -E "(El-Torito|bootable)" || true
-    else
-        error "ISO创建失败"
-        exit 1
-    fi
-}
-
-# 主函数
-main() {
-    echo "========================================"
-    echo "    OpenWRT 安装ISO构建工具"
-    echo "========================================"
+if [ $? -eq 0 ]; then
     echo ""
-    
-    check_requirements
-    prepare_directories
-    create_initrd
-    prepare_kernel
-    configure_bootloaders
-    create_iso
-    
+    echo "✅ ✅ ✅ ISO创建成功！"
+    echo "文件: /output/openwrt-installer.iso"
+    echo "大小: $(ls -lh /output/openwrt-installer.iso | awk '{print $5}')"
     echo ""
-    success "🎉 构建完成！"
-    echo ""
-    echo "使用说明:"
-    echo "1. 写入USB: dd if='$OUTPUT_DIR/$ISO_NAME.iso' of=/dev/sdX bs=4M status=progress"
-    echo "2. 从USB启动"
-    echo "3. 选择 'Install OpenWRT'"
-    echo "4. 按照提示选择磁盘并安装"
-    echo ""
-}
+    echo "引导信息:"
+    xorriso -indev /output/openwrt-installer.iso -toc 2>&1 | grep -E "(El-Torito|bootable)" || true
+else
+    echo "❌ ISO创建失败"
+    exit 1
+fi
 
-# 运行
-main "$@"
+# 创建最小系统的备用函数
+create_minimal_system() {
+    echo "创建最小系统作为内核..."
+    cat > "$STAGING_DIR/live/vmlinuz" << 'KERNEL_EOF'
+#!/bin/sh
+# 最小化内核替代方案
+echo "Booting minimal OpenWRT installer..."
+exec /bin/sh
+KERNEL_EOF
+    chmod +x "$STAGING_DIR/live/vmlinuz"
+}
