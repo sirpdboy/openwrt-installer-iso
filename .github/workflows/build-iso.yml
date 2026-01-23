@@ -87,13 +87,24 @@ jobs:
         chmod 777 output
     - name: Build ISO with proper rootfs
       run: |
-        chmod +x build-iso.sh
+            # 1. 确保脚本有权限
+            chmod +x build-iso.sh
     
-        docker run --privileged --rm \
-           -v $(pwd)/output:/output \
-           -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
-           debian:buster \
-           /build-iso.sh
+            # 2. 复制脚本到容器内执行
+            docker run --privileged --rm \
+              -v $(pwd)/output:/output \
+              -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
+              -v $(pwd)/build-iso.sh:/build-iso.sh:ro \
+              debian:buster \
+              bash -c "
+              # 安装必要工具
+              apt-get update
+              apt-get install -y \
+                debootstrap squashfs-tools xorriso isolinux syslinux-efi \
+                grub-pc-bin grub-efi-amd64-bin mtools dosfstools parted wget curl
+       
+              /build-iso.sh
+              "
 
     - name: Upload ISO artifact
       uses: actions/upload-artifact@v4
