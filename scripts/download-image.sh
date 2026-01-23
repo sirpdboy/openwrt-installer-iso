@@ -52,9 +52,10 @@ if [ $? -eq 0 ]; then
     # 解压
     echo "解压镜像..."
     gzip -d "$OUTPUT_FILE"
-    
+
+    ls -lh "${ASSETS_DIR}
     # 重命名
-    mv "${OUTPUT_FILE%.gz}" "${ASSETS_DIR}/ezopwrt.img"
+    # mv "${OUTPUT_FILE%.*}" "${ASSETS_DIR}/ezopwrt.img" || true
     
     echo "✅ 镜像准备完成: ${ASSETS_DIR}/ezopwrt.img"
     ls -lh "${ASSETS_DIR}/ezopwrt.img"
