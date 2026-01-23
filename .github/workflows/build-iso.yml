@@ -121,7 +121,7 @@ jobs:
           ls -la /boot/initrd*
       
           echo '=== 执行修复版构建脚本 ==='
-          /scripts/build-iso-fixed-rootfs.sh
+          /scripts/build-iso.sh
       
           echo '=== 验证生成的ISO ==='
           if [ -f /output/openwrt-installer.iso ]; then
