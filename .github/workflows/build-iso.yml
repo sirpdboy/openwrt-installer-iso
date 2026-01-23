@@ -1,140 +1,119 @@
-name: Build OpenWRT Installer ISO
+name: Build EzOpWrt ISO
 
 on:
   push:
     branches: [ main, master ]
-    tags: [ 'v*' ]
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:  # 手动触发
-    inputs:
-      openwrt_version:
-        description: 'OpenWRT版本号 (如: 23.05.2)'
-        required: false
-        default: 'latest'
-      openwrt_image_url:
-        description: 'OpenWRT镜像URL (可选)'
-        required: false
+  workflow_dispatch:
 
-env:
-  ISO_NAME: "openwrt-installer"
-  WORKSPACE: "/tmp/iso-build"
-  
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout repository
+    - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        submodules: 'recursive'
-        fetch-depth: 0
 
-    - name: Setup build environment
+    - name: Setup Docker
       run: |
         sudo apt-get update
-        sudo apt-get install -y \
-          wget curl xorriso isolinux syslinux-efi \
-          grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin \
-          mtools dosfstools squashfs-tools \
-          p7zip-full git build-essential \
-          kernel-package fakeroot libncurses5-dev libssl-dev \
-          bc kmod cpio gcc g++ make libc6-dev
+        sudo apt-get install -y docker.io
+        sudo systemctl start docker
+        sudo systemctl enable docker
 
     - name: Download OpenWRT image
-      id: download_image
       run: |
-        mkdir -p ./assets
+        mkdir -p assets
         
-        # 如果有自定义URL，使用自定义URL
-        if [[ -n "${{ github.event.inputs.openwrt_image_url }}" ]]; then
-          echo "使用自定义镜像URL"
-          wget -q "${{ github.event.inputs.openwrt_image_url }}" -O ./assets/openwrt.img
-          
-        # 否则下载官方OpenWRT镜像
+        # 使用你的下载脚本或直接下载
+        if [ -f scripts/download-image.sh ]; then
+          chmod +x scripts/download-image.sh
+          ./scripts/download-image.sh
         else
-          # 获取最新稳定版
-          if [[ "${{ github.event.inputs.openwrt_version }}" == "latest" ]]; then
-            RELEASE=$(curl -s https://downloads.openwrt.org/releases/ | grep -E 'href="[0-9]+\.[0-9]+\.[0-9]+/"' | tail -1 | sed 's/.*href="\([^"]*\)".*/\1/' | tr -d '/')
-          else
-            RELEASE="${{ github.event.inputs.openwrt_version }}"
-          fi
-          
-          echo "下载OpenWRT $RELEASE"
-          # 下载x86_64通用镜像
-          URL="https://downloads.openwrt.org/releases/${RELEASE}/targets/x86/64/openwrt-${RELEASE}-x86-64-generic-ext4-combined.img.gz"
-          
-          if ! wget -q --spider "$URL"; then
-            # 尝试squashfs格式
-            URL="https://downloads.openwrt.org/releases/${RELEASE}/targets/x86/64/openwrt-${RELEASE}-x86-64-generic-squashfs-combined.img.gz"
-          fi
-          
-          wget -q "$URL" -O ./assets/openwrt.img.gz
-          gunzip ./assets/openwrt.img.gz
-        fi
+          echo "下载OpenWRT镜像..."
+          REPO="sirpdboy/openwrt"
+          TAG=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.tag_name // empty')
+          DOWNLOAD_URLS=$(curl -sL "https://api.github.com/repos/$REPO/releases/tags/$TAG" | \
+                jq -r '.assets[] | select(.name | endswith("img.gz")) | .browser_download_url')
+          FIRST_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
+          echo "下载: $FIRST_URL"
+          wget -q $FIRST_URL  -O assets/ezopwrt.img.gz
+           if [ ! -f "assets/ezopwrt.img.gz" ]; then
+             curl -L -o "$OUTPUT_FILE"  --progress-bar --retry 3 "$FIRST_URL" 
+           fi
         
-        # 检查镜像大小
-        IMG_SIZE=$(stat -c%s ./assets/openwrt.img)
-        echo "镜像大小: $(($IMG_SIZE/1024/1024))MB"
-        
-        # 输出供后续步骤使用
-        echo "img_size=$IMG_SIZE" >> $GITHUB_OUTPUT
-        if [ -f ./assets/openwrt.img ]; then
-          echo "image_downloaded=true" >> $GITHUB_OUTPUT
-        else
-          echo "image_downloaded=false" >> $GITHUB_OUTPUT
-          exit 1
+           if [ $? -eq 0 ]; then
+               echo "✅ 下载完成"
+               gzip -d assets/ezopwrt.img.gz
+            fi
+            
         fi
+        echo "✅ 镜像大小: $(stat -c%s assets/ezopwrt.img | numfmt --to=iec)"
 
-    - name: Run ISO build script
+    - name: Create output directory
       run: |
-        chmod +x ./scripts/*
-        ./scripts/build-iso.sh
-        
-    - name: Verify ISO file
+        mkdir -p output
+        chmod 777 output
+
+    - name: Run Docker build
       run: |
-        if [ -f "/tmp/${ISO_NAME}.iso" ]; then
-          echo "ISO文件生成成功"
-          ls -lh "/tmp/${ISO_NAME}.iso"
-          # 验证ISO结构
-          xorriso -indev "/tmp/${ISO_NAME}.iso" -toc 2>&1 | head -20
+        docker run --privileged --rm \
+          -v $(pwd)/output:/output \
+          -v $(pwd)/scripts:/scripts:ro \
+          -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
+          debian:bullseye-slim \
+          /bin/bash -c "
+          # 安装必要工具
+          apt-get update && apt-get install -y \
+            xorriso isolinux syslinux-efi \
+            grub-pc-bin grub-efi-amd64-bin \
+            mtools dosfstools squashfs-tools \
+            wget curl cpio gzip jq \
+            build-essential kmod file \
+            && apt-get clean
+          
+          # 运行构建脚本
+          /scripts/build-iso.sh
+          "
+
+    - name: Verify ISO
+      run: |
+        if ls output/*.iso 1> /dev/null 2>&1; then
+          ISO_FILE=$(ls -t output/*.iso | head -1)
+          echo "✅ ISO生成成功: $ISO_FILE"
+          ls -lh output/
+          
+          # 验证ISO
+          echo "ISO信息:"
+          file "$ISO_FILE"
+          echo "MD5: $(md5sum "$ISO_FILE" | cut -d' ' -f1)"
         else
-          echo "错误: ISO文件未生成"
+          echo "❌ ISO生成失败"
+          ls -la output/
           exit 1
         fi
 
     - name: Upload ISO artifact
       uses: actions/upload-artifact@v4
       with:
-        name: openwrt-installer-iso
-        path: /tmp/${ISO_NAME}.iso
-        retention-days: 7
+        name: ezopwrt-installer
+        path: output/*.iso
+        retention-days: 30
 
-    - name: Create GitHub Release (仅tag触发)
+    - name: Create GitHub Release (tag触发)
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v1
       with:
-        files: /tmp/${ISO_NAME}.iso
+        files: output/*.iso
         body: |
-          OpenWRT安装ISO - 自动构建
+          # EzOpWrt 安装器
           
-          构建信息:
-          - 时间: ${{ github.event.repository.updated_at }}
+          ## 构建信息
+          - 版本: ${{ github.ref_name }}
+          - 时间: $(date)
           - 提交: ${{ github.sha }}
-          - 触发器: ${{ github.event_name }}
           
-          使用说明:
-          1. 下载ISO文件并写入USB: `dd if=openwrt-installer.iso of=/dev/sdX bs=4M status=progress`
-          2. 从USB启动
-          3. 按照提示安装OpenWRT
-
-    - name: Deploy to Pages (可选)
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-      uses: peaceiris/actions-gh-pages@v3
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: ./releases
-        destination_dir: .
-        keep_files: false
+          ## 使用说明
+          1. 下载ISO文件
+          2. 写入USB: `sudo dd if=ezopwrt-installer.iso of=/dev/sdX bs=4M status=progress`
+          3. 从USB启动
+          4. 按照屏幕提示安装
