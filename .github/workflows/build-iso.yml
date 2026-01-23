@@ -90,45 +90,10 @@ jobs:
         chmod +x scripts/build-iso.sh
     
         docker run --privileged --rm \
-          -v $(pwd)/output:/output \
-          -v $(pwd)/scripts:/scripts \
-          -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
-          debian:bullseye-slim \
-          bash -c "
-          set -e
-          export DEBIAN_FRONTEND=noninteractive
-      
-          echo '=== 安装完整系统 ==='
-          apt-get update
-       
-          apt-get install -y \
-            linux-image-amd64 \          # 完整内核
-            initramfs-tools \            # initrd工具
-            live-boot \                  # Live系统引导
-            syslinux isolinux \          # 引导加载器
-            xorriso \                    # ISO创建
-            wget cpio gzip \             # 打包工具
-            busybox-static               # 静态busybox
-      
-          echo '=== 验证内核和initrd ==='
-          echo '内核版本:'
-          uname -r
-          echo ''
-          echo '内核文件:'
-          ls -la /boot/vmlinuz*
-          echo ''
-          echo 'initrd文件:'
-          ls -la /boot/initrd*
-      
-          echo '=== 执行修复版构建脚本 ==='
-          /scripts/build-iso.sh
-      
-          echo '=== 验证生成的ISO ==='
-          if [ -f /output/openwrt-installer.iso ]; then
-            echo 'ISO验证:'
-            xorriso -indev /output/openwrt-installer.iso -toc 2>&1 | head -10
-          fi
-          "
+           -v $(pwd)/output:/output \
+           -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
+           debian:buster \
+           /scripts/build-iso.sh
 
     - name: Upload ISO artifact
       uses: actions/upload-artifact@v4
