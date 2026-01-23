@@ -183,7 +183,7 @@ main() {
     local extracted_file
     if extracted_file=$(extract_file "$gz_file"); then
         # 重命名为标准名称
-        mv "$extracted_file" "$final_img"
+        mv "${ASSETS_DIR}/ezopwrt.*" "$final_img"
         log_success "镜像准备完成: $final_img"
         
         # 显示信息
