@@ -85,26 +85,33 @@ jobs:
       run: |
         mkdir -p output
         chmod 777 output
-        chmod +x build.sh /scripts/build-iso.sh
-
-    - name: Run Docker build
+    - name: Build ISO
       run: |
         docker run --privileged --rm \
           -v $(pwd)/output:/output \
           -v $(pwd)/scripts:/scripts:ro \
           -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
           debian:bullseye-slim \
-          /bin/bash -c "
-          # 安装必要工具
-          apt-get update && apt-get install -y \
+          bash -c "
+          # 设置非交互环境
+          export DEBIAN_FRONTEND=noninteractive
+          
+          echo '安装构建工具...'
+          apt-get update
+          apt-get install -y \
             xorriso isolinux syslinux-efi \
             grub-pc-bin grub-efi-amd64-bin \
-            mtools dosfstools squashfs-tools \
-            wget curl cpio gzip jq \
-            build-essential kmod file \
-            && apt-get clean
+            mtools dosfstools \
+            wget curl cpio gzip \
+            kmod file 2>&1 | grep -v 'debconf'
           
-          # 运行构建脚本
+          apt-get clean
+          
+          echo '检查脚本...'
+          ls -l /scripts/build-iso.sh
+          file /scripts/build-iso.sh
+          chmod +x /scripts/*.sh
+          echo '开始构建...'
           /scripts/build-iso.sh
           "
 
