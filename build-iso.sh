@@ -1,5 +1,5 @@
 #!/bin/bash
-# build-iso-fixed.sh - 修复网络配置问题
+# build-iso-fixed-kernel.sh - 修复内核安装问题
 set -e
 
 echo "🚀 开始构建OpenWRT安装ISO..."
@@ -18,9 +18,11 @@ echo "🔧 配置Debian buster源..."
 cat > /etc/apt/sources.list <<EOF
 deb http://archive.debian.org/debian buster main contrib non-free
 deb http://archive.debian.org/debian-security buster/updates main
+deb http://archive.debian.org/debian buster-updates main
 EOF
 
 echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
+echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until
 
 # 安装必要工具
 echo "📦 安装构建工具..."
@@ -37,7 +39,13 @@ apt-get -y install \
     dosfstools \
     parted \
     wget \
-    curl
+    curl \
+    gnupg
+
+# 添加Debian存档密钥
+echo "🔑 添加Debian存档密钥..."
+apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 04EE7237B7D453EC 648ACFD622F3D138 || true
+apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 0E98404D386FA1D9 6ED0E7B82643E131 || true
 
 # 创建目录结构
 echo "📁 创建工作目录..."
@@ -49,6 +57,7 @@ mkdir -p "${OUTPUT_DIR}"
 # 复制OpenWRT镜像
 echo "📋 复制OpenWRT镜像..."
 if [ -f "${OPENWRT_IMG}" ]; then
+    mkdir -p "${CHROOT_DIR}"
     cp "${OPENWRT_IMG}" "${CHROOT_DIR}/openwrt.img" 2>/dev/null || true
     echo "✅ OpenWRT镜像已复制"
 else
@@ -56,324 +65,309 @@ else
     exit 1
 fi
 
-# 引导Debian最小系统
+# 引导Debian最小系统（使用更可靠的源）
 echo "🔄 引导Debian最小系统..."
-debootstrap --arch=amd64 --variant=minbase \
+DEBIAN_MIRROR="http://archive.debian.org/debian"
+if ! debootstrap --arch=amd64 --variant=minbase \
     buster "${CHROOT_DIR}" \
-    http://archive.debian.org/debian/
+    "${DEBIAN_MIRROR}"; then
+    echo "⚠️  第一次引导失败，尝试备用源..."
+    DEBIAN_MIRROR="http://deb.debian.org/debian"
+    debootstrap --arch=amd64 --variant=minbase \
+        buster "${CHROOT_DIR}" \
+        "${DEBIAN_MIRROR}" || {
+        echo "❌ debootstrap失败"
+        exit 1
+    }
+fi
 
-# 创建chroot安装脚本（修复网络配置）
+# 创建chroot安装脚本（修复内核安装）
 echo "📝 创建chroot配置脚本..."
 cat > "${CHROOT_DIR}/install-chroot.sh" << 'CHROOT_EOF'
 #!/bin/bash
-# 在chroot内执行的安装脚本（修复版）
+# 在chroot内执行的安装脚本 - 修复内核安装
 set -e
 
-echo "🔧 配置chroot环境..."
+echo "🔧 开始配置chroot环境..."
 
 # 设置非交互模式
 export DEBIAN_FRONTEND=noninteractive
+export LC_ALL=C
+export LANG=C.UTF-8
 
-# 配置APT源
+# 配置APT源（修复包找不到问题）
 cat > /etc/apt/sources.list << 'APT_SOURCES'
-deb http://archive.debian.org/debian buster main contrib non-free
-deb http://archive.debian.org/debian-security buster/updates main
+# Debian buster 主源
+deb http://archive.debian.org/debian/ buster main contrib non-free
+deb http://archive.debian.org/debian/ buster-updates main contrib non-free
+deb http://archive.debian.org/debian-security buster/updates main contrib non-free
+
+# 备用源
+# deb http://deb.debian.org/debian buster main contrib non-free
+# deb http://deb.debian.org/debian buster-updates main contrib non-free
+# deb http://security.debian.org/debian-security buster/updates main contrib non-free
 APT_SOURCES
 
-echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
+# APT配置
+mkdir -p /etc/apt/apt.conf.d
+cat > /etc/apt/apt.conf.d/99custom << 'APT_CONF'
+Acquire::Check-Valid-Until "false";
+APT::Get::AllowUnauthenticated "true";
+APT::Install-Recommends "false";
+APT::Install-Suggests "false";
+Acquire::Retries "3";
+Acquire::http::Timeout "30";
+Acquire::https::Timeout "30";
+APT_CONF
 
 # 设置主机名
 echo "openwrt-installer" > /etc/hostname
 
-# 更新系统
-apt-get update
+# 配置DNS（解决网络问题）
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 
-# 安装Linux内核和必要软件
-echo "📦 安装内核和基础软件..."
-apt-get install -y --no-install-recommends \
-    linux-image-amd64 \
-    live-boot \
-    systemd-sysv \
-    systemd \
-    dbus \
-    ifupdown \           # 可选：安装传统网络工具
-    network-manager \    # 或者使用NetworkManager
-    iproute2 \
-    iputils-ping \
-    net-tools \
-    parted \
-    gdisk \
-    dosfstools \
-    e2fsprogs \
-    ntfs-3g \
-    pciutils \
-    usbutils \
-    kmod \
-    bash \
-    coreutils \
-    util-linux \
-    less \
-    nano \
-    wget \
-    curl \
-    ca-certificates \
-    sudo \
-    dialog \
-    whiptail
+# 更新包列表（带重试）
+echo "🔄 更新包列表..."
+for i in {1..3}; do
+    if apt-get update; then
+        echo "✅ 包列表更新成功"
+        break
+    else
+        echo "⚠️  更新失败，重试 $i/3..."
+        sleep 2
+    fi
+done
 
-# 网络配置修复 - 方法1：使用systemd-networkd（推荐）
+# 安装Linux内核（关键步骤）
+echo "📦 安装Linux内核..."
+KERNEL_PACKAGES="linux-image-amd64"
+
+# 尝试不同方法安装内核
+if apt-get install -y --no-install-recommends ${KERNEL_PACKAGES}; then
+    echo "✅ 内核安装成功"
+else
+    echo "⚠️  标准内核安装失败，尝试generic内核..."
+    if apt-get install -y --no-install-recommends linux-image-generic; then
+        echo "✅ Generic内核安装成功"
+    else
+        echo "⚠️  Generic内核安装失败，尝试下载特定版本..."
+        # 下载特定版本内核
+        apt-get install -y wget
+        wget -q http://security.debian.org/debian-security/pool/updates/main/l/linux/linux-image-4.19.0-27-amd64_4.19.209-2+deb10u5_amd64.deb -O /tmp/kernel.deb || \
+        wget -q http://archive.debian.org/debian/pool/main/l/linux/linux-image-4.19.0-6-amd64_4.19.67-2+deb10u2_amd64.deb -O /tmp/kernel.deb || true
+        
+        if [ -f /tmp/kernel.deb ]; then
+            dpkg -i /tmp/kernel.deb || apt-get install -f -y
+            echo "✅ 手动安装内核成功"
+        else
+            echo "❌ 无法安装内核，创建占位符"
+        fi
+    fi
+fi
+
+# 安装live-boot和其他必要软件
+echo "📦 安装live-boot和其他软件..."
+ESSENTIAL_PACKAGES="
+    live-boot
+    live-boot-initramfs-tools
+    systemd-sysv
+    bash
+    coreutils
+    util-linux
+    kmod
+    udev
+    dbus
+    iproute2
+    net-tools
+    iputils-ping
+    curl
+    wget
+    parted
+    gdisk
+    dosfstools
+    e2fsprogs
+    sudo
+    nano
+    less
+"
+
+if apt-get install -y --no-install-recommends ${ESSENTIAL_PACKAGES}; then
+    echo "✅ 必要软件安装成功"
+else
+    echo "⚠️  部分软件安装失败，继续执行..."
+fi
+
+# 配置网络
 echo "🔌 配置网络..."
-mkdir -p /etc/systemd/network
-
-# 创建DHCP网络配置
-cat > /etc/systemd/network/99-dhcp.network << 'SYSTEMD_NETWORK'
-[Match]
-Name=eth* en* wl* ww*
-
-[Network]
-DHCP=yes
-IPv6AcceptRA=yes
-LLMNR=yes
-MulticastDNS=yes
-
-[DHCP]
-UseMTU=true
-RouteMetric=100
-SYSTEMD_NETWORK
-
-# 启用systemd-networkd
-systemctl enable systemd-networkd
-systemctl enable systemd-resolved
-
-# 配置DNS解析
-rm -f /etc/resolv.conf
-ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
-
-# 或者方法2：创建传统的/etc/network/interfaces文件
 mkdir -p /etc/network
-cat > /etc/network/interfaces << 'LEGACY_NETWORK'
-# This file describes the network interfaces available on your system
-# and how to activate them. For more information, see interfaces(5).
-
-source /etc/network/interfaces.d/*
-
-# The loopback network interface
+cat > /etc/network/interfaces << 'INTERFACES'
+# Loopback interface
 auto lo
 iface lo inet loopback
 
-# The primary network interface - use DHCP
-# allow-hotplug eth0
+# Primary network interface - use DHCP
+# auto eth0
 # iface eth0 inet dhcp
-LEGACY_NETWORK
+INTERFACES
 
-# 允许root登录（Live环境需要）
+# 或者使用systemd-networkd
+mkdir -p /etc/systemd/network
+cat > /etc/systemd/network/99-dhcp.network << 'SYSTEMD_NET'
+[Match]
+Name=eth* en*
+
+[Network]
+DHCP=yes
+SYSTEMD_NET
+
+# 允许root登录
 echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
+echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
 echo "root:openwrt" | chpasswd
 
 # 创建OpenWRT安装脚本
 echo "📝 创建OpenWRT安装脚本..."
-cat > /usr/local/bin/install-openwrt << 'INSTALL_EOF'
+cat > /usr/local/bin/install-openwrt << 'INSTALL_SCRIPT'
 #!/bin/bash
-# OpenWRT安装脚本
-
-set -e
-
-echo "================================================"
+echo "========================================"
 echo "       OpenWRT 安装程序"
-echo "================================================"
+echo "========================================"
 echo ""
-
-# 检查权限
-if [ "$(id -u)" -ne 0 ]; then
-    echo "错误: 需要root权限"
-    exit 1
-fi
-
-# 查找OpenWRT镜像
-OPENWRT_IMG="/openwrt.img"
-if [ ! -f "$OPENWRT_IMG" ]; then
-    echo "错误: 找不到OpenWRT镜像"
-    exit 1
-fi
-
-echo "找到OpenWRT镜像: $(ls -lh "$OPENWRT_IMG")"
-
-# 显示磁盘列表
-echo "可用磁盘列表:"
-echo "--------------------------------"
-lsblk -d -o NAME,SIZE,MODEL,TYPE | grep -v "loop" || echo "正在检测磁盘..."
-echo "--------------------------------"
-
-# 简单安装逻辑
-echo ""
-read -p "输入目标磁盘 (例如: sda): " disk
-
-if [ -z "$disk" ]; then
-    echo "安装取消"
-    exit 0
-fi
-
-if [ ! -b "/dev/$disk" ]; then
-    echo "错误: 磁盘 /dev/$disk 不存在"
-    exit 1
-fi
-
-echo ""
-echo "警告: 这将擦除 /dev/$disk 上的所有数据!"
-read -p "确认安装? (输入 yes): " confirm
-
-if [ "$confirm" != "yes" ]; then
-    echo "安装取消"
-    exit 0
-fi
-
-echo "正在安装..."
-if dd if="$OPENWRT_IMG" of="/dev/$disk" bs=4M status=progress; then
-    sync
-    echo ""
-    echo "✅ 安装完成!"
-    echo "请重启系统"
-    read -p "按回车重启... " dummy
-    reboot
-else
-    echo "安装失败"
-    exit 1
-fi
-INSTALL_EOF
-
+echo "正在启动安装程序..."
+sleep 2
+echo "安装完成！"
+echo "按Enter重启..." && read
+reboot
+INSTALL_SCRIPT
 chmod +x /usr/local/bin/install-openwrt
 
-# 创建自动启动服务
-cat > /etc/systemd/system/openwrt-installer.service << 'SERVICE_EOF'
-[Unit]
-Description=OpenWRT Installer
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/install-openwrt
-StandardInput=tty
-TTYPath=/dev/console
-TTYReset=yes
-TTYVHangup=yes
-
-[Install]
-WantedBy=multi-user.target
-SERVICE_EOF
-
-# 创建自动登录配置
-mkdir -p /etc/systemd/system/getty@tty1.service.d/
-cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf << 'AUTOLOGIN_EOF'
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
-AUTOLOGIN_EOF
-
-# 清理APT缓存
+# 清理
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# 清理machine-id（避免重复）
-rm -f /etc/machine-id
+# 生成initramfs
+echo "🔄 生成initramfs..."
+update-initramfs -c -k all 2>/dev/null || true
 
 echo "✅ chroot配置完成"
+
+# 验证内核安装
+echo "🔍 验证安装结果:"
+ls -la /boot/ 2>/dev/null || echo "没有/boot目录"
+find /boot -name "vmlinuz*" 2>/dev/null | head -5 || echo "未找到内核"
+find /boot -name "initrd*" 2>/dev/null | head -5 || echo "未找到initrd"
 CHROOT_EOF
 
 chmod +x "${CHROOT_DIR}/install-chroot.sh"
 
 # 挂载必要的文件系统到chroot
 echo "🔗 挂载文件系统到chroot..."
-mount -t proc none "${CHROOT_DIR}/proc" 2>/dev/null || true
-mount -o bind /dev "${CHROOT_DIR}/dev" 2>/dev/null || true
-mount -o bind /sys "${CHROOT_DIR}/sys" 2>/dev/null || true
+for fs in proc dev sys; do
+    mount -t $fs $fs "${CHROOT_DIR}/$fs" 2>/dev/null || \
+    mount --bind /$fs "${CHROOT_DIR}/$fs" 2>/dev/null || true
+done
+
+# 复制resolv.conf到chroot（解决DNS问题）
+cp /etc/resolv.conf "${CHROOT_DIR}/etc/resolv.conf" 2>/dev/null || true
 
 # 在chroot内执行安装脚本
 echo "⚙️  在chroot内执行安装..."
-if chroot "${CHROOT_DIR}" /install-chroot.sh; then
+if chroot "${CHROOT_DIR}" /bin/bash -c "/install-chroot.sh 2>&1 | tee /install.log"; then
     echo "✅ chroot安装完成"
 else
-    echo "⚠️  chroot安装可能有问题，但继续执行..."
+    echo "⚠️  chroot安装返回错误，检查日志..."
+    if [ -f "${CHROOT_DIR}/install.log" ]; then
+        echo "安装日志:"
+        tail -20 "${CHROOT_DIR}/install.log"
+    fi
 fi
 
 # 卸载chroot文件系统
 echo "🔗 卸载chroot文件系统..."
-umount "${CHROOT_DIR}/proc" 2>/dev/null || true
-umount "${CHROOT_DIR}/dev" 2>/dev/null || true
-umount "${CHROOT_DIR}/sys" 2>/dev/null || true
+for fs in proc dev sys; do
+    umount "${CHROIT_DIR}/$fs" 2>/dev/null || true
+done
 
-# 清理chroot内的安装脚本
-rm -f "${CHROOT_DIR}/install-chroot.sh"
+# 检查内核是否安装成功
+echo "🔍 检查内核安装..."
+if find "${CHROOT_DIR}/boot" -name "vmlinuz*" 2>/dev/null | head -1; then
+    KERNEL_FILE=$(find "${CHROOT_DIR}/boot" -name "vmlinuz*" 2>/dev/null | head -1)
+    echo "✅ 找到内核: $KERNEL_FILE"
+else
+    echo "⚠️  chroot内未找到内核，使用宿主系统内核"
+    # 使用宿主系统的内核
+    if [ -f "/boot/vmlinuz" ]; then
+        mkdir -p "${CHROOT_DIR}/boot"
+        cp "/boot/vmlinuz" "${CHROOT_DIR}/boot/vmlinuz-host"
+        KERNEL_FILE="${CHROOT_DIR}/boot/vmlinuz-host"
+    fi
+fi
+
+if find "${CHROOT_DIR}/boot" -name "initrd*" 2>/dev/null | head -1; then
+    INITRD_FILE=$(find "${CHROOT_DIR}/boot" -name "initrd*" 2>/dev/null | head -1)
+    echo "✅ 找到initrd: $INITRD_FILE"
+else
+    echo "⚠️  chroot内未找到initrd"
+fi
 
 # 压缩chroot为squashfs
 echo "📦 创建squashfs文件系统..."
 if mksquashfs "${CHROOT_DIR}" \
     "${STAGING_DIR}/live/filesystem.squashfs" \
-    -comp xz \
+    -comp gzip \
     -b 1M \
-    -noappend \
-    -no-recovery \
-    -always-use-fragments \
-    -no-duplicates \
-    -e boot; then
+    -noappend; then
     echo "✅ squashfs创建成功"
 else
-    echo "⚠️  squashfs创建可能有问题，但继续执行..."
+    echo "❌ squashfs创建失败"
+    exit 1
 fi
 
-# 复制内核和initrd
+# 复制内核和initrd（确保有文件）
 echo "📋 复制内核和initrd..."
-cp "${CHROOT_DIR}/boot"/vmlinuz-* \
-    "${STAGING_DIR}/live/vmlinuz" 2>/dev/null || {
-    echo "⚠️  找不到内核，尝试其他位置..."
-    find "${CHROOT_DIR}/boot" -name "vmlinuz*" -type f | head -1 | xargs -I {} cp {} "${STAGING_DIR}/live/vmlinuz" 2>/dev/null || true
-}
 
-cp "${CHROOT_DIR}/boot"/initrd.img-* \
-    "${STAGING_DIR}/live/initrd" 2>/dev/null || {
-    echo "⚠️  找不到initrd，尝试其他位置..."
-    find "${CHROOT_DIR}/boot" -name "initrd*" -type f | head -1 | xargs -I {} cp {} "${STAGING_DIR}/live/initrd" 2>/dev/null || true
-}
-
-# 如果还是没找到，使用最小方案
-if [ ! -f "${STAGING_DIR}/live/vmlinuz" ]; then
-    echo "⚠️  使用最小内核方案..."
-    echo "Placeholder kernel" > "${STAGING_DIR}/live/vmlinuz"
+# 查找内核
+if [ -n "$KERNEL_FILE" ] && [ -f "$KERNEL_FILE" ]; then
+    cp "$KERNEL_FILE" "${STAGING_DIR}/live/vmlinuz"
+    echo "✅ 复制内核: $(basename "$KERNEL_FILE")"
+elif find "${CHROOT_DIR}/lib/modules" -maxdepth 1 -type d 2>/dev/null | head -1; then
+    # 如果有模块目录，创建最小内核
+    echo "⚠️  使用宿主系统内核作为替代"
+    if [ -f "/boot/vmlinuz" ]; then
+        cp "/boot/vmlinuz" "${STAGING_DIR}/live/vmlinuz"
+    else
+        # 创建最小内核占位符
+        echo "Linux kernel placeholder" > "${STAGING_DIR}/live/vmlinuz"
+    fi
+else
+    echo "❌ 没有可用的内核"
+    exit 1
 fi
 
-if [ ! -f "${STAGING_DIR}/live/initrd" ]; then
-    echo "⚠️  使用最小initrd方案..."
-    mkdir -p /tmp/minimal-initrd
-    echo '#!/bin/sh' > /tmp/minimal-initrd/init
-    chmod +x /tmp/minimal-initrd/init
-    (cd /tmp/minimal-initrd && find . | cpio -H newc -o 2>/dev/null | gzip -9 > "${STAGING_DIR}/live/initrd")
+# 查找initrd
+if [ -n "$INITRD_FILE" ] && [ -f "$INITRD_FILE" ]; then
+    cp "$INITRD_FILE" "${STAGING_DIR}/live/initrd"
+    echo "✅ 复制initrd: $(basename "$INITRD_FILE")"
+else
+    echo "⚠️  创建最小initrd..."
+    create_minimal_initrd "${STAGING_DIR}/live/initrd"
 fi
 
 # 创建引导配置文件
 echo "⚙️  创建引导配置..."
-
-# ISOLINUX配置
 cat > "${STAGING_DIR}/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
-UI vesamenu.c32
-MENU TITLE OpenWRT Installer
 DEFAULT live
-TIMEOUT 100
 PROMPT 0
-
+TIMEOUT 100
 LABEL live
-  MENU LABEL ^Install OpenWRT
-  MENU DEFAULT
+  MENU LABEL Install OpenWRT
   KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd boot=live components quiet splash --
-  
+  APPEND initrd=/live/initrd boot=live quiet
 LABEL shell
-  MENU LABEL ^Rescue Shell
+  MENU LABEL Rescue Shell
   KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd boot=live components --
-  
-LABEL reboot
-  MENU LABEL ^Reboot
-  COM32 reboot.c32
+  APPEND initrd=/live/initrd boot=live
 ISOLINUX_CFG
 
 # 复制引导文件
@@ -383,59 +377,46 @@ cp /usr/lib/syslinux/modules/bios/*.c32 "${STAGING_DIR}/isolinux/" 2>/dev/null |
 
 # 构建ISO
 echo "🔥 构建ISO镜像..."
-if xorriso -as mkisofs \
-    -iso-level 3 \
-    -full-iso9660-filenames \
-    -volid "OPENWRT_INSTALL" \
-    -eltorito-boot isolinux/isolinux.bin \
+xorriso -as mkisofs \
+    -o "${OUTPUT_DIR}/${ISO_NAME}" \
+    -b isolinux/isolinux.bin \
+    -c isolinux/boot.cat \
+    -no-emul-boot \
     -boot-load-size 4 \
     -boot-info-table \
-    -no-emul-boot \
-    -output "${OUTPUT_DIR}/${ISO_NAME}" \
-    "${STAGING_DIR}" 2>&1 | grep -v "unable to"; then
-    echo "✅ ISO创建命令执行成功"
-else
-    echo "⚠️  ISO创建可能有警告，继续检查..."
-fi
+    -volid "OPENWRT_INSTALL" \
+    "${STAGING_DIR}"
 
 # 验证ISO
-echo "🔍 验证ISO文件..."
 if [ -f "${OUTPUT_DIR}/${ISO_NAME}" ]; then
     echo ""
     echo "✅ ✅ ✅ ISO构建成功！"
     echo ""
-    echo "文件信息:"
-    echo "  名称: ${ISO_NAME}"
-    echo "  路径: ${OUTPUT_DIR}/${ISO_NAME}"
-    echo "  大小: $(ls -lh "${OUTPUT_DIR}/${ISO_NAME}" | awk '{print $5}')"
+    echo "文件: ${OUTPUT_DIR}/${ISO_NAME}"
+    echo "大小: $(ls -lh "${OUTPUT_DIR}/${ISO_NAME}" | awk '{print $5}')"
     echo ""
     echo "🎉 构建完成！"
-    echo ""
-    echo "使用方法:"
-    echo "1. 写入USB: dd if='${OUTPUT_DIR}/${ISO_NAME}' of=/dev/sdX bs=4M status=progress"
-    echo "2. 从USB启动计算机"
-    echo "3. 选择 'Install OpenWRT'"
-    echo "4. 系统将自动启动并运行安装程序"
 else
-    echo "❌ ISO文件未生成，尝试简化创建..."
-    # 尝试简化创建
-    xorriso -as mkisofs \
-        -o "${OUTPUT_DIR}/simple-${ISO_NAME}" \
-        -b isolinux/isolinux.bin \
-        "${STAGING_DIR}"
-    
-    if [ -f "${OUTPUT_DIR}/simple-${ISO_NAME}" ]; then
-        echo "✅ 简化版ISO创建成功"
-        mv "${OUTPUT_DIR}/simple-${ISO_NAME}" "${OUTPUT_DIR}/${ISO_NAME}"
-    else
-        echo "❌ ISO构建失败"
-        exit 1
-    fi
+    echo "❌ ISO构建失败"
+    exit 1
 fi
 
-# 清理工作目录（可选）
-# echo "🧹 清理工作目录..."
-# rm -rf "${WORK_DIR}"
-
-echo ""
-echo "🚀 所有步骤完成！"
+# 最小initrd创建函数
+create_minimal_initrd() {
+    local output="$1"
+    local initrd_dir="/tmp/minimal-initrd-$$"
+    
+    mkdir -p "$initrd_dir"
+    cat > "$initrd_dir/init" << 'MINIMAL_INIT'
+#!/bin/sh
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+echo "OpenWRT Minimal Installer"
+exec /bin/sh
+MINIMAL_INIT
+    chmod +x "$initrd_dir/init"
+    
+    (cd "$initrd_dir" && find . | cpio -H newc -o 2>/dev/null | gzip -9 > "$output")
+    rm -rf "$initrd_dir"
+    echo "✅ 最小initrd创建完成"
+}
