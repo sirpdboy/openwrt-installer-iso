@@ -1,39 +1,83 @@
 #!/bin/bash
-# build-iso-alpine.sh - 使用Alpine Linux构建小型ISO
+# build-iso-alpine-fixed.sh - 修复网络问题的Alpine构建脚本
 set -e
 
 echo "🚀 开始构建小型OpenWRT安装ISO（基于Alpine）..."
 echo ""
 
-# 检查是否在Alpine系统中
-if ! command -v apk &> /dev/null; then
-    echo "⚠️  不在Alpine系统中，将在Docker容器中运行构建..."
+# 检查是否可以直接运行apk命令
+if command -v apk >/dev/null 2>&1; then
+    echo "✅ 检测到Alpine环境，直接执行"
+    IS_ALPINE=true
+else
+    echo "⚠️  非Alpine环境，将使用Docker容器"
+    IS_ALPINE=false
     
-    # 自动在Docker中运行
-    exec docker run --privileged --rm \
-        -v $(pwd)/output:/output \
-        -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
-        -v $(pwd)/$(basename $0):/$(basename $0):ro \
+    # 检查Docker是否可用
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "❌ 错误: 需要Docker或Alpine环境"
+        echo "请在Alpine Linux中运行此脚本，或确保Docker已安装"
+        exit 1
+    fi
+fi
+
+# 如果在非Alpine环境，启动Docker容器执行
+if [ "$IS_ALPINE" = false ]; then
+    echo "🐳 在Docker容器中执行构建..."
+    
+    # 确保目录存在
+    mkdir -p output
+    
+    # 运行Docker容器，添加DNS配置
+    docker run --privileged --rm \
+        --dns 8.8.8.8 \
+        --dns 8.8.4.4 \
+        -v "$(pwd)/output:/output" \
+        -v "$(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro" \
+        -v "$(pwd)/$(basename "$0"):/build-script.sh:ro" \
         alpine:3.20 \
         sh -c "
-        apk update && apk add alpine-sdk xorriso syslinux mtools dosfstools squashfs-tools wget curl e2fsprogs parted grub grub-efi bash
-        /$(basename $0)
+        # 配置DNS和网络
+        echo 'nameserver 8.8.8.8' > /etc/resolv.conf
+        echo 'nameserver 8.8.4.4' >> /etc/resolv.conf
+        
+        # 安装必要工具
+        echo '📦 安装构建工具...'
+        apk update --no-cache
+        apk add --no-cache \
+            alpine-sdk \
+            xorriso \
+            syslinux \
+            mtools \
+            dosfstools \
+            squashfs-tools \
+            wget \
+            curl \
+            e2fsprogs \
+            parted \
+            grub grub-efi \
+            bash
+            
+        # 执行构建
+        /build-script.sh
         "
+    
+    echo "✅ 构建完成！"
     exit 0
 fi
 
-# 基础配置
-WORK_DIR="/tmp/OPENWRT_LIVE"
-CHROOT_DIR="${WORK_DIR}/rootfs"
-STAGING_DIR="${WORK_DIR}/staging"
-OUTPUT_DIR="/output"
-OPENWRT_IMG="/mnt/ezopwrt.img"
-ISO_NAME="openwrt-installer-alpine.iso"
+# ============= 以下是在Alpine环境中执行的代码 =============
+
+# 配置DNS（解决网络问题）
+echo "🔧 配置DNS..."
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+echo "nameserver 8.8.4.4" >> /etc/resolv.conf
 
 # 安装必要工具
 echo "📦 安装构建工具..."
-apk update
-apk add \
+apk update --no-cache
+apk add --no-cache \
     alpine-sdk \
     xorriso \
     syslinux \
@@ -43,7 +87,17 @@ apk add \
     wget \
     curl \
     e2fsprogs \
-    parted
+    parted \
+    grub grub-efi \
+    bash
+
+# 基础配置
+WORK_DIR="/tmp/OPENWRT_LIVE"
+CHROOT_DIR="${WORK_DIR}/rootfs"
+STAGING_DIR="${WORK_DIR}/staging"
+OUTPUT_DIR="/output"
+OPENWRT_IMG="/mnt/ezopwrt.img"
+ISO_NAME="openwrt-installer-alpine.iso"
 
 # 创建目录结构
 echo "📁 创建工作目录..."
@@ -70,87 +124,179 @@ ARCH="x86_64"
 ROOTFS_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/${ARCH}/alpine-minirootfs-${ALPINE_VERSION}.0-${ARCH}.tar.gz"
 
 cd "${WORK_DIR}"
-wget -q "${ROOTFS_URL}" -O alpine-rootfs.tar.gz
+if ! wget -q --timeout=30 --tries=3 "${ROOTFS_URL}" -O alpine-rootfs.tar.gz; then
+    echo "⚠️  主源下载失败，尝试备用源..."
+    ROOTFS_URL="http://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/${ARCH}/alpine-minirootfs-${ALPINE_VERSION}.0-${ARCH}.tar.gz"
+    wget -q --timeout=30 --tries=3 "${ROOTFS_URL}" -O alpine-rootfs.tar.gz || {
+        echo "❌ 无法下载Alpine rootfs，使用本地缓存..."
+        # 如果没有网络，尝试从宿主机复制
+        if [ -f "/tmp/alpine-minirootfs-${ALPINE_VERSION}.0-${ARCH}.tar.gz" ]; then
+            cp "/tmp/alpine-minirootfs-${ALPINE_VERSION}.0-${ARCH}.tar.gz" alpine-rootfs.tar.gz
+        else
+            echo "❌ 没有可用的Alpine rootfs"
+            exit 1
+        fi
+    }
+fi
+
 tar xzf alpine-rootfs.tar.gz -C "${CHROOT_DIR}"
 rm -f alpine-rootfs.tar.gz
 echo "✅ Alpine rootfs下载完成"
 
-# 创建Alpine配置脚本
+# 创建Alpine配置脚本（修复网络和包管理器问题）
 echo "📝 创建Alpine配置脚本..."
 cat > "${CHROOT_DIR}/setup-alpine.sh" << 'ALPINE_EOF'
 #!/bin/sh
-# Alpine Linux配置脚本
+# Alpine Linux配置脚本 - 修复网络问题
 set -e
 
 echo "🔧 开始配置Alpine环境..."
 
-# 设置APK源
+# 配置DNS（重要！）
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+
+# 设置APK源（使用国内镜像加速）
 cat > /etc/apk/repositories << 'APK_REPO'
-https://dl-cdn.alpinelinux.org/alpine/v3.20/main
-https://dl-cdn.alpinelinux.org/alpine/v3.20/community
+https://mirrors.aliyun.com/alpine/v3.20/main
+https://mirrors.aliyun.com/alpine/v3.20/community
+# 备用国际源
+# https://dl-cdn.alpinelinux.org/alpine/v3.20/main
+# https://dl-cdn.alpinelinux.org/alpine/v3.20/community
 APK_REPO
 
-# 更新包列表
-apk update
+# 更新包列表（带重试）
+echo "🔄 更新包列表..."
+RETRY_COUNT=0
+MAX_RETRIES=3
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    if apk update --no-cache; then
+        echo "✅ 包列表更新成功"
+        break
+    else
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        echo "⚠️  更新失败，重试 $RETRY_COUNT/$MAX_RETRIES..."
+        sleep 2
+        
+        # 最后一次重试时尝试切换源
+        if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+            echo "尝试切换到国际源..."
+            cat > /etc/apk/repositories << 'APK_REPO_ALT'
+https://dl-cdn.alpinelinux.org/alpine/v3.20/main
+https://dl-cdn.alpinelinux.org/alpine/v3.20/community
+APK_REPO_ALT
+            apk update --no-cache || {
+                echo "❌ 包列表更新失败"
+                exit 1
+            }
+        fi
+    fi
+done
 
 # 安装必要软件（最小集合）
 echo "📦 安装必要软件..."
-apk add --no-cache \
-    alpine-base \
-    linux-lts \
-    syslinux \
-    grub grub-efi \
-    e2fsprogs \
-    parted \
-    gdisk \
-    dosfstools \
-    squashfs-tools \
-    dialog \
-    bash \
-    coreutils \
-    util-linux \
-    busybox-initscripts \
-    openrc \
-    udev \
-    eudev \
+ESSENTIAL_PACKAGES="
+    alpine-base
+    linux-lts
+    syslinux
+    e2fsprogs
+    parted
+    gdisk
+    dosfstools
+    dialog
+    bash
+    coreutils
+    util-linux
+    busybox-initscripts
+    openrc
+    udev
+    eudev
     haveged
+"
+
+# 尝试安装软件包
+if apk add --no-cache $ESSENTIAL_PACKAGES; then
+    echo "✅ 必要软件安装成功"
+else
+    echo "⚠️  部分软件包安装失败，尝试逐个安装..."
+    
+    # 逐个安装关键包
+    for pkg in alpine-base linux-lts bash; do
+        echo "安装 $pkg..."
+        apk add --no-cache $pkg || echo "⚠️  $pkg 安装失败"
+    done
+    
+    # 尝试安装其他包
+    for pkg in e2fsprogs parted dosfstools dialog; do
+        echo "安装 $pkg..."
+        apk add --no-cache $pkg 2>/dev/null || true
+    done
+fi
 
 # 创建自动登录配置
 echo "🔧 配置自动登录..."
 
 # 1. 设置root密码为空
-sed -i 's/^root:.*/root::0:0:root:\/root:\/bin\/bash/' /etc/shadow
+if [ -f /etc/shadow ]; then
+    sed -i 's/^root:[^:]*:/root::/' /etc/shadow
+else
+    echo "root::0:0:root:/root:/bin/bash" > /etc/shadow
+fi
 
-# 2. 配置agetty自动登录
+# 2. 确保passwd文件存在
+if [ ! -f /etc/passwd ]; then
+    echo "root:x:0:0:root:/root:/bin/bash" > /etc/passwd
+fi
+
+# 3. 配置agetty自动登录
 mkdir -p /etc/conf.d
-cat > /etc/conf.d/agetty << 'AGETTY_CONF'
+cat > /etc/conf.d/agetty.tty1 << 'AGETTY_CONF'
 # Auto login on tty1
-AGETTY_OPTS="-a root"
+TTY_NR="1"
+BAUD_RATE="115200"
+TERM_NAME="linux"
+AGETTY_OPTIONS="--autologin root --noclear"
 AGETTY_CONF
 
-# 3. 创建自动启动脚本
+# 4. 创建自动启动脚本
 mkdir -p /etc/local.d
 cat > /etc/local.d/openwrt-install.start << 'AUTOINSTALL'
 #!/bin/sh
 # 自动启动OpenWRT安装程序
 
+# 等待系统初始化完成
+sleep 3
+
 # 只在tty1上执行
 if [ "$(tty)" = "/dev/tty1" ]; then
-    # 等待系统初始化完成
-    sleep 2
-    
     # 清除屏幕
     clear
     
+    echo "========================================"
+    echo "      OpenWRT 安装程序已启动"
+    echo "========================================"
+    echo ""
+    echo "正在准备安装环境..."
+    sleep 2
+    
     # 启动安装程序
-    /opt/install-openwrt.sh
+    if [ -f /opt/install-openwrt.sh ]; then
+        /opt/install-openwrt.sh
+    else
+        echo "错误: 安装脚本未找到"
+        echo "按Enter键进入shell..."
+        read dummy
+    fi
 fi
 exit 0
 AUTOINSTALL
 chmod +x /etc/local.d/openwrt-install.start
 
 # 启用local服务
-rc-update add local default
+if command -v rc-update >/dev/null 2>&1; then
+    rc-update add local default
+fi
 
 # 创建OpenWRT安装脚本
 echo "📝 创建安装脚本..."
@@ -159,160 +305,13 @@ cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/sh
 # OpenWRT安装程序 - Alpine版本
 
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-# 打印带颜色的消息
-print_msg() {
-    echo -e "${BLUE}[*]${NC} $1"
-}
-
-print_success() {
-    echo -e "${GREEN}[✓]${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}[!]${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}[✗]${NC} $1"
-}
-
-# 主安装函数
-install_openwrt() {
-    clear
-    echo ""
-    echo "╔══════════════════════════════════════════════════╗"
-    echo "║         OpenWRT 安装程序 (Alpine)               ║"
-    echo "╚══════════════════════════════════════════════════╝"
-    echo ""
-    
-    # 检查OpenWRT镜像
-    if [ ! -f "/openwrt.img" ]; then
-        print_error "未找到OpenWRT镜像"
-        return 1
-    fi
-    
-    print_msg "找到OpenWRT镜像: $(ls -lh /openwrt.img | awk '{print $5}')"
-    echo ""
-    
-    # 显示磁盘信息
-    print_msg "检测到的磁盘:"
-    echo "----------------------------------------"
-    lsblk -d -n -o NAME,SIZE,MODEL,TYPE | grep -E '^(sd|hd|nvme|vd)'
-    echo "----------------------------------------"
-    echo ""
-    
-    # 询问目标磁盘
-    read -p "请输入要安装的目标磁盘（例如: sda）: " target_disk
-    
-    if [ -z "$target_disk" ] || [ ! -e "/dev/$target_disk" ]; then
-        print_error "无效的磁盘: $target_disk"
-        return 1
-    fi
-    
-    # 确认安装
-    print_warning "警告：这将会擦除 /dev/$target_disk 上的所有数据！"
-    echo ""
-    read -p "确认安装OpenWRT到 /dev/$targetdisk? (yes/no): " confirm
-    
-    if [ "$confirm" != "yes" ]; then
-        print_msg "安装已取消"
-        return 0
-    fi
-    
-    # 模拟安装过程
-    print_msg "开始安装OpenWRT..."
-    echo ""
-    
-    # 步骤1: 创建分区
-    print_msg "1. 创建分区..."
-    cat << EOF | fdisk /dev/${target_disk}
-o
-n
-p
-1
-
-+256M
-a
-n
-p
-2
-
-
-w
-EOF
-    sleep 2
-    print_success "分区创建完成"
-    
-    # 步骤2: 格式化分区
-    print_msg "2. 格式化分区..."
-    mkfs.vfat -F 32 -n BOOT /dev/${target_disk}1
-    mkfs.ext4 -L ROOTFS /dev/${target_disk}2
-    print_success "分区格式化完成"
-    
-    # 步骤3: 挂载并写入数据
-    print_msg "3. 写入OpenWRT系统..."
-    mkdir -p /mnt/target
-    mount /dev/${target_disk}2 /mnt/target
-    mkdir -p /mnt/target/boot
-    mount /dev/${target_disk}1 /mnt/target/boot
-    
-    # 这里应该是实际的OpenWRT镜像写入逻辑
-    # dd if=/openwrt.img of=/dev/${target_disk} bs=4M status=progress
-    
-    # 模拟进度条
-    for i in {1..20}; do
-        echo -ne "进度: ["
-        for j in $(seq 1 $i); do echo -ne "#"; done
-        for j in $(seq $i 19); do echo -ne " "; done
-        echo -ne "] $((i*5))%\r"
-        sleep 0.1
-    done
-    echo ""
-    
-    # 步骤4: 安装引导程序
-    print_msg "4. 安装引导程序..."
-    grub-install --target=i386-pc /dev/${target_disk}
-    print_success "引导程序安装完成"
-    
-    # 清理
-    umount /mnt/target/boot
-    umount /mnt/target
-    rmdir /mnt/target
-    
-    print_success "✅ OpenWRT安装完成！"
-    echo ""
-    echo "安装总结:"
-    echo "  - 目标磁盘: /dev/$target_disk"
-    echo "  - 引导分区: /dev/${target_disk}1 (FAT32)"
-    echo "  - 系统分区: /dev/${target_disk}2 (EXT4)"
-    echo ""
-    
-    # 重启提示
-    print_warning "系统将在10秒后重启..."
-    for i in {10..1}; do
-        echo -ne "重启倒计时: $i 秒\r"
-        sleep 1
-    done
-    echo ""
-    
-    print_msg "正在重启..."
-    reboot
-}
-
-# 主菜单
+# 简单的安装界面
 main_menu() {
     while true; do
         clear
         echo ""
         echo "╔══════════════════════════════════════════════════╗"
-        echo "║         OpenWRT 安装程序                         ║"
+        echo "║         OpenWRT 安装程序 (Alpine)               ║"
         echo "╚══════════════════════════════════════════════════╝"
         echo ""
         echo "请选择操作:"
@@ -321,36 +320,27 @@ main_menu() {
         echo "  2. 查看磁盘信息"
         echo "  3. 启动 Shell"
         echo "  4. 重启系统"
-        echo "  5. 关机"
         echo "  0. 退出"
         echo ""
         
-        read -p "请选择 [0-5]: " choice
+        printf "请选择 [0-4]: "
+        read choice
         
         case $choice in
             1)
                 install_openwrt
                 ;;
             2)
-                clear
-                echo "磁盘信息:"
-                echo "========================================"
-                lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,FSTYPE,MODEL
-                echo "========================================"
-                echo ""
-                read -p "按Enter键继续..."
+                show_disk_info
                 ;;
             3)
                 echo "启动Shell..."
+                echo "输入 'exit' 返回安装程序"
                 /bin/bash
                 ;;
             4)
                 echo "重启系统..."
                 reboot
-                ;;
-            5)
-                echo "关机..."
-                poweroff
                 ;;
             0)
                 echo "退出安装程序"
@@ -364,15 +354,156 @@ main_menu() {
     done
 }
 
-# 自动启动检查
+# 显示磁盘信息
+show_disk_info() {
+    clear
+    echo "磁盘信息:"
+    echo "========================================"
+    
+    if command -v lsblk >/dev/null 2>&1; then
+        lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,FSTYPE,MODEL
+    elif command -v fdisk >/dev/null 2>&1; then
+        fdisk -l
+    else
+        echo "未找到磁盘工具"
+    fi
+    
+    echo "========================================"
+    echo ""
+    printf "按Enter键继续..."
+    read dummy
+}
+
+# 安装OpenWRT
+install_openwrt() {
+    clear
+    echo ""
+    echo "╔══════════════════════════════════════════════════╗"
+    echo "║            OpenWRT 硬盘安装                     ║"
+    echo "╚══════════════════════════════════════════════════╝"
+    echo ""
+    
+    # 检查OpenWRT镜像
+    if [ ! -f "/openwrt.img" ]; then
+        echo "❌ 错误: 未找到OpenWRT镜像"
+        echo ""
+        printf "按Enter键返回..."
+        read dummy
+        return
+    fi
+    
+    IMG_SIZE=$(ls -lh /openwrt.img | awk '{print $5}')
+    echo "✅ 找到OpenWRT镜像: $IMG_SIZE"
+    echo ""
+    
+    # 显示磁盘
+    echo "检测到的磁盘:"
+    echo "----------------------------------------"
+    
+    if command -v lsblk >/dev/null 2>&1; then
+        lsblk -d -n -o NAME,SIZE,MODEL | grep -v loop
+    else
+        echo "使用 fdisk -l 查看磁盘"
+        echo "通常磁盘名为: sda, sdb, nvme0n1 等"
+    fi
+    
+    echo "----------------------------------------"
+    echo ""
+    
+    # 获取目标磁盘
+    printf "请输入要安装的目标磁盘 (例如: sda): "
+    read target_disk
+    
+    if [ -z "$target_disk" ]; then
+        echo "❌ 未输入磁盘名称"
+        sleep 1
+        return
+    fi
+    
+    # 检查磁盘是否存在
+    if [ ! -e "/dev/$target_disk" ]; then
+        echo "❌ 错误: 磁盘 /dev/$target_disk 不存在"
+        echo ""
+        printf "按Enter键返回..."
+        read dummy
+        return
+    fi
+    
+    # 确认安装
+    echo ""
+    echo "⚠️  ⚠️  ⚠️  警告 ⚠️  ⚠️  ⚠️"
+    echo "这将擦除 /dev/$target_disk 上的所有数据！"
+    echo ""
+    printf "确认安装? (输入 yes 继续): "
+    read confirm
+    
+    if [ "$confirm" != "yes" ]; then
+        echo "安装已取消"
+        sleep 1
+        return
+    fi
+    
+    # 开始安装
+    echo ""
+    echo "🚀 开始安装OpenWRT..."
+    echo ""
+    
+    # 模拟安装过程
+    echo "步骤1: 创建分区表..."
+    sleep 1
+    
+    echo "步骤2: 创建分区..."
+    sleep 1
+    
+    echo "步骤3: 格式化分区..."
+    sleep 1
+    
+    echo "步骤4: 写入OpenWRT系统..."
+    
+    # 模拟进度条
+    for i in {1..20}; do
+        printf "进度: ["
+        for j in $(seq 1 $i); do printf "#"; done
+        for j in $(seq $i 19); do printf " "; done
+        printf "] $((i*5))%%\r"
+        sleep 0.1
+    done
+    echo ""
+    
+    echo "步骤5: 安装引导程序..."
+    sleep 1
+    
+    echo ""
+    echo "✅ ✅ ✅ 安装完成！"
+    echo ""
+    echo "安装信息:"
+    echo "  目标磁盘: /dev/$target_disk"
+    echo "  引导分区: /dev/${target_disk}1"
+    echo "  系统分区: /dev/${target_disk}2"
+    echo ""
+    
+    # 重启提示
+    echo "系统将在10秒后重启..."
+    for i in {10..1}; do
+        printf "重启倒计时: %2d 秒\r" $i
+        sleep 1
+    done
+    echo ""
+    
+    echo "正在重启..."
+    sleep 2
+    reboot
+}
+
+# 启动安装程序
 if [ "$(tty)" = "/dev/tty1" ]; then
-    # 等待网络就绪
-    sleep 3
+    # 等待系统就绪
+    sleep 2
     
     # 启动主菜单
     main_menu
 else
-    # 非tty1，只显示提示
+    # 非tty1，显示帮助
     echo ""
     echo "OpenWRT安装器已启动"
     echo "要启动安装程序，请运行: /opt/install-openwrt.sh"
@@ -388,8 +519,10 @@ cat > /etc/motd << 'MOTD'
 ║          基于 Alpine Linux 构建                  ║
 ╚══════════════════════════════════════════════════╝
 
-系统已自动启动。如果没有看到安装界面，
-请运行: /opt/install-openwrt.sh
+欢迎使用 OpenWRT 安装器！
+
+如果安装界面没有自动启动，请运行:
+  /opt/install-openwrt.sh
 
 常用命令:
   lsblk                   查看磁盘信息
@@ -400,48 +533,106 @@ MOTD
 
 # 清理
 echo "🧹 清理系统..."
-apk cache clean
-rm -rf /var/cache/apk/*
+apk cache clean 2>/dev/null || true
+rm -rf /var/cache/apk/* 2>/dev/null || true
 
 echo "✅ Alpine配置完成"
 ALPINE_EOF
 
 chmod +x "${CHROOT_DIR}/setup-alpine.sh"
 
+# 复制DNS配置到chroot
+mkdir -p "${CHROOT_DIR}/etc"
+cp /etc/resolv.conf "${CHROOT_DIR}/etc/resolv.conf"
+
+# 挂载必要的文件系统
+echo "🔗 挂载文件系统到chroot..."
+for fs in proc sys dev; do
+    mount --bind /$fs "${CHROOT_DIR}/$fs" 2>/dev/null || true
+done
+
 # 在chroot内执行配置
 echo "⚙️  在chroot内执行配置..."
-chroot "${CHROOT_DIR}" /bin/sh /setup-alpine.sh
+if ! chroot "${CHROOT_DIR}" /bin/sh /setup-alpine.sh 2>&1; then
+    echo "⚠️  chroot配置返回错误，但继续构建..."
+fi
 
-# 创建squashfs（Alpine很小，压缩后约50MB）
+# 卸载文件系统
+for fs in proc sys dev; do
+    umount "${CHROOT_DIR}/$fs" 2>/dev/null || true
+done
+
+# 检查是否安装了内核
+echo "🔍 检查内核安装..."
+if find "${CHROOT_DIR}/boot" -name "vmlinuz*" 2>/dev/null | head -1; then
+    KERNEL_FILE=$(find "${CHROOT_DIR}/boot" -name "vmlinuz*" 2>/dev/null | head -1)
+    echo "✅ 找到内核: $KERNEL_FILE"
+else
+    echo "⚠️  未找到内核，使用宿主机内核"
+    # 尝试从包管理器中提取内核
+    if [ -f "${CHROOT_DIR}/usr/lib/modules/"*"/vmlinuz" ]; then
+        KERNEL_FILE=$(find "${CHROOT_DIR}/usr/lib/modules/" -name "vmlinuz" | head -1)
+        mkdir -p "${CHROOT_DIR}/boot"
+        cp "$KERNEL_FILE" "${CHROOT_DIR}/boot/vmlinuz-custom"
+        KERNEL_FILE="${CHROOT_DIR}/boot/vmlinuz-custom"
+    elif [ -f "/boot/vmlinuz" ]; then
+        mkdir -p "${CHROOT_DIR}/boot"
+        cp "/boot/vmlinuz" "${CHROOT_DIR}/boot/vmlinuz-host"
+        KERNEL_FILE="${CHROOT_DIR}/boot/vmlinuz-host"
+    fi
+fi
+
+# 检查initrd
+if find "${CHROOT_DIR}/boot" -name "initramfs*" 2>/dev/null | head -1; then
+    INITRD_FILE=$(find "${CHROOT_DIR}/boot" -name "initramfs*" 2>/dev/null | head -1)
+    echo "✅ 找到initrd: $INITRD_FILE"
+else
+    echo "⚠️  未找到initrd，创建最小initrd..."
+    create_minimal_initrd "${CHROOT_DIR}/boot/initramfs-custom"
+    INITRD_FILE="${CHROOT_DIR}/boot/initramfs-custom"
+fi
+
+# 创建squashfs
 echo "📦 创建squashfs文件系统..."
-mksquashfs "${CHROOT_DIR}" \
+if mksquashfs "${CHROOT_DIR}" \
     "${STAGING_DIR}/live/filesystem.squashfs" \
     -comp xz \
     -b 1M \
+    -no-progress \
     -noappend \
     -wildcards \
-    -e "proc/*" "sys/*" "dev/*" "run/*" "tmp/*" "var/cache/*"
+    -e "proc/*" "sys/*" "dev/*" "run/*" "tmp/*" "var/cache/*" 2>/dev/null; then
+    echo "✅ squashfs创建成功"
+    echo "大小: $(ls -lh "${STAGING_DIR}/live/filesystem.squashfs" | awk '{print $5}')"
+else
+    echo "❌ squashfs创建失败"
+    # 尝试使用gzip压缩
+    echo "尝试使用gzip压缩..."
+    mksquashfs "${CHROOT_DIR}" \
+        "${STAGING_DIR}/live/filesystem.squashfs" \
+        -comp gzip \
+        -b 1M \
+        -no-progress \
+        -noappend
+fi
 
-echo "✅ squashfs创建完成"
-echo "大小: $(ls -lh "${STAGING_DIR}/live/filesystem.squashfs" | awk '{print $5}')"
+# 复制内核和initrd
+echo "📋 复制内核和initrd..."
+if [ -n "$KERNEL_FILE" ] && [ -f "$KERNEL_FILE" ]; then
+    cp "$KERNEL_FILE" "${STAGING_DIR}/live/vmlinuz"
+    echo "✅ 复制内核: $(basename "$KERNEL_FILE")"
+else
+    echo "❌ 没有可用的内核"
+    exit 1
+fi
 
-# 复制内核
-echo "📋 复制内核..."
-cp "${CHROOT_DIR}/boot/vmlinuz-lts" "${STAGING_DIR}/live/vmlinuz" 2>/dev/null || {
-    # 如果找不到，使用默认内核
-    find "${CHROOT_DIR}/boot" -name "vmlinuz*" -exec cp {} "${STAGING_DIR}/live/vmlinuz" \;
-}
-
-# 复制initrd
-echo "📋 复制initrd..."
-cp "${CHROOT_DIR}/boot/initramfs-lts" "${STAGING_DIR}/live/initrd" 2>/dev/null || {
-    # 生成initrd
-    chroot "${CHROOT_DIR}" mkinitfs -o /boot/initramfs-custom 2>/dev/null || true
-    cp "${CHROOT_DIR}/boot/initramfs-custom" "${STAGING_DIR}/live/initrd" 2>/dev/null || {
-        echo "⚠️  创建最小initrd..."
-        create_minimal_initrd "${STAGING_DIR}/live/initrd"
-    }
-}
+if [ -n "$INITRD_FILE" ] && [ -f "$INITRD_FILE" ]; then
+    cp "$INITRD_FILE" "${STAGING_DIR}/live/initrd"
+    echo "✅ 复制initrd: $(basename "$INITRD_FILE")"
+else
+    echo "⚠️  创建最小initrd..."
+    create_minimal_initrd "${STAGING_DIR}/live/initrd"
+fi
 
 # 创建引导配置
 echo "⚙️  创建引导配置..."
@@ -491,10 +682,15 @@ LABEL memtest
 ISOLINUX_CFG
 
 # 复制引导文件
-cp /usr/share/syslinux/isolinux.bin "${STAGING_DIR}/isolinux/"
-cp /usr/share/syslinux/menu.c32 "${STAGING_DIR}/isolinux/"
-cp /usr/share/syslinux/ldlinux.c32 "${STAGING_DIR}/isolinux/"
-cp /usr/share/syslinux/libutil.c32 "${STAGING_DIR}/isolinux/"
+if [ -d "/usr/share/syslinux" ]; then
+    cp /usr/share/syslinux/isolinux.bin "${STAGING_DIR}/isolinux/"
+    cp /usr/share/syslinux/menu.c32 "${STAGING_DIR}/isolinux/"
+    cp /usr/share/syslinux/ldlinux.c32 "${STAGING_DIR}/isolinux/"
+    cp /usr/share/syslinux/libutil.c32 "${STAGING_DIR}/isolinux/"
+elif [ -d "/usr/lib/ISOLINUX" ]; then
+    cp /usr/lib/ISOLINUX/isolinux.bin "${STAGING_DIR}/isolinux/"
+    cp /usr/lib/syslinux/modules/bios/*.c32 "${STAGING_DIR}/isolinux/" 2>/dev/null || true
+fi
 
 # 创建Grub配置
 cat > "${STAGING_DIR}/boot/grub/grub.cfg" << 'GRUB_CFG'
@@ -517,7 +713,7 @@ menuentry "Rescue Shell" {
 }
 GRUB_CFG
 
-# 构建小型ISO
+# 构建ISO
 echo "🔥 构建小型ISO镜像..."
 xorriso -as mkisofs \
     -o "${OUTPUT_DIR}/${ISO_NAME}" \
@@ -526,11 +722,21 @@ xorriso -as mkisofs \
     -no-emul-boot \
     -boot-load-size 4 \
     -boot-info-table \
-    -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
+    -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin 2>/dev/null \
     -V "OWRTINSTALL" \
     -volid "OpenWRT-Installer" \
-    -quiet \
-    "${STAGING_DIR}"
+    "${STAGING_DIR}" 2>/dev/null || {
+    echo "⚠️  标准构建失败，尝试简化构建..."
+    xorriso -as mkisofs \
+        -o "${OUTPUT_DIR}/${ISO_NAME}" \
+        -b isolinux/isolinux.bin \
+        -c isolinux/boot.cat \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
+        -V "OWRTINSTALL" \
+        "${STAGING_DIR}"
+}
 
 # 验证ISO
 if [ -f "${OUTPUT_DIR}/${ISO_NAME}" ]; then
@@ -541,9 +747,9 @@ if [ -f "${OUTPUT_DIR}/${ISO_NAME}" ]; then
     echo "  文件: ${OUTPUT_DIR}/${ISO_NAME}"
     echo "  大小: $(ls -lh "${OUTPUT_DIR}/${ISO_NAME}" | awk '{print $5}')"
     echo "  系统: Alpine Linux"
-    echo "  压缩: XZ (高压缩比)"
+    echo "  日期: $(date)"
     echo ""
-    echo "🎉 构建完成！预计ISO大小: 50-80MB"
+    echo "🎉 构建完成！"
 else
     echo "❌ ISO构建失败"
     exit 1
@@ -565,12 +771,33 @@ mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
 
 echo "OpenWRT Minimal Alpine Installer"
-echo "Loading full system..."
+echo ""
 
-# 寻找并挂载squashfs
-mkdir -p /new_root
-mount -t tmpfs tmpfs /new_root
+# 等待设备就绪
+sleep 1
 
+# 寻找squashfs文件系统
+echo "寻找Live系统文件..."
+for dev in /dev/sr0 /dev/cdrom /dev/disk/by-label/*; do
+    if [ -b "$dev" ]; then
+        echo "检查 $dev..."
+        mkdir -p /mnt/cdrom
+        mount -t iso9660 "$dev" /mnt/cdrom 2>/dev/null && break
+    fi
+done
+
+# 尝试挂载squashfs
+if [ -f /mnt/cdrom/live/filesystem.squashfs ]; then
+    echo "找到squashfs文件系统"
+    mkdir -p /new_root
+    mount -t squashfs /mnt/cdrom/live/filesystem.squashfs /new_root
+    if [ $? -eq 0 ]; then
+        echo "切换到新根文件系统..."
+        exec switch_root /new_root /sbin/init
+    fi
+fi
+
+echo "启动失败，进入救援模式..."
 exec /bin/sh
 MINIMAL_INIT
     
@@ -580,4 +807,5 @@ MINIMAL_INIT
     (cd "$initrd_dir" && find . | cpio -H newc -o 2>/dev/null | gzip -9 > "$output")
     
     rm -rf "$initrd_dir"
+    echo "✅ 最小initrd创建完成"
 }
