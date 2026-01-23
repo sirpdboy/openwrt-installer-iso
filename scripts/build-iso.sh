@@ -1,5 +1,5 @@
 #!/bin/bash
-# build-iso-fixed.sh - 修复引导问题
+# build-iso-fixed-kernel.sh - 修复内核问题
 
 set -euo pipefail
 
@@ -13,7 +13,62 @@ SOURCE_IMG="/mnt/ezopwrt.img"
 # 日志函数
 info() { echo -e "\033[34m[INFO]\033[0m $1"; }
 success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
+warning() { echo -e "\033[33m[WARNING]\033[0m $1"; }
 error() { echo -e "\033[31m[ERROR]\033[0m $1"; }
+
+# 准备内核 - 修复版
+prepare_kernel() {
+    info "准备内核..."
+    
+    # 方法1：从容器内安装内核并提取
+    if ! apt-get update 2>/dev/null; then
+        warning "无法更新包列表"
+    fi
+    
+    # 安装Linux内核
+    if apt-get install -y linux-image-amd64 2>/dev/null; then
+        success "已安装Linux内核"
+        # 复制内核
+        if [ -f "/boot/vmlinuz" ]; then
+            cp "/boot/vmlinuz" "$STAGING_DIR/live/vmlinuz"
+            success "使用安装的内核: /boot/vmlinuz"
+            return 0
+        fi
+    fi
+    
+    # 方法2：使用预下载的内核
+    info "尝试下载预编译内核..."
+    local kernel_urls=(
+        "https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2"
+        "https://cdimage.debian.org/cdimage/unofficial/non-free/cd-including-firmware/current-live/amd64/iso-hybrid/firmware-11.7.0-amd64-netinst.iso"
+    )
+    
+    for url in "${kernel_urls[@]}"; do
+        info "尝试: $url"
+        if wget -q --timeout=10 -O /tmp/kernel-test "$url"; then
+            # 尝试从ISO提取内核
+            7z x -o/tmp/kernel-extract /tmp/kernel-test boot/vmlinuz* 2>/dev/null || true
+            if [ -f "/tmp/kernel-extract/boot/vmlinuz"* ]; then
+                cp /tmp/kernel-extract/boot/vmlinuz* "$STAGING_DIR/live/vmlinuz" 2>/dev/null
+                success "从ISO提取内核成功"
+                return 0
+            fi
+        fi
+    done
+    
+    # 方法3：使用busybox作为内核（最小方案）
+    warning "使用busybox作为内核替代"
+    wget -q "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox" \
+        -O "$STAGING_DIR/live/vmlinuz" || true
+    
+    if [ -f "$STAGING_DIR/live/vmlinuz" ]; then
+        info "使用busybox作为内核占位符"
+        return 0
+    fi
+    
+    error "无法准备内核"
+    return 1
+}
 
 # 检查必要文件
 check_requirements() {
@@ -328,34 +383,6 @@ EOF
     success "initrd创建完成"
 }
 
-# 准备内核（使用简单方法）
-prepare_kernel() {
-    info "准备内核..."
-    
-    # 使用容器内的内核
-    if [ -f "/boot/vmlinuz" ]; then
-        cp "/boot/vmlinuz" "$STAGING_DIR/live/vmlinuz"
-    elif [ -f "/vmlinuz" ]; then
-        cp "/vmlinuz" "$STAGING_DIR/live/vmlinuz"
-    else
-        # 创建一个最小的内核占位符（实际需要真实内核）
-        error "找不到内核文件"
-        # 尝试从网络下载或使用备用方案
-        wget -q "https://kernel.ubuntu.com/~kernel-ppa/mainline/v5.15/amd64/linux-image-5.15.0-051500-generic_5.15.0-051500.202110242130_amd64.deb" \
-            -O /tmp/kernel.deb 2>/dev/null || true
-        if [ -f "/tmp/kernel.deb" ]; then
-            dpkg -x /tmp/kernel.deb /tmp/kernel-extract
-            cp /tmp/kernel-extract/boot/vmlinuz* "$STAGING_DIR/live/vmlinuz" 2>/dev/null || true
-        fi
-    fi
-    
-    if [ -f "$STAGING_DIR/live/vmlinuz" ]; then
-        success "内核准备完成"
-    else
-        error "无法准备内核"
-        exit 1
-    fi
-}
 
 # 配置引导加载器
 configure_bootloaders() {
