@@ -108,14 +108,36 @@ jobs:
       run: |
         mkdir -p output
         chmod 777 output
-    
-    - name: build-iso-alpine
+    - name: Build small ISO with Alpine in Docker
       run: |
         chmod +x build-iso-alpine.sh
-        ./build-iso-alpine.sh
         
-        echo "ISO构建完成:"
-        ls -lh output/
+        # 在Alpine Docker容器中运行构建
+        docker run --privileged --rm \
+          -v $(pwd)/output:/output \
+          -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
+          -v $(pwd)/build-iso-alpine.sh:/build-iso-alpine.sh:ro \
+          alpine:3.20 \
+          sh -c "
+          # 安装必要工具
+          apk update
+          apk add --no-cache \
+            alpine-sdk \
+            xorriso \
+            syslinux \
+            mtools \
+            dosfstools \
+            squashfs-tools \
+            wget \
+            curl \
+            e2fsprogs \
+            parted \
+            grub grub-efi \
+            bash
+          
+          # 执行构建脚本
+          /build-iso-alpine.sh
+          "
     
     - name: Upload ISO artifact
       uses: actions/upload-artifact@v4
