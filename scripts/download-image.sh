@@ -55,10 +55,10 @@ if [ $? -eq 0 ]; then
 
     ls -lh "${ASSETS_DIR}
     # 重命名
-    # mv "${OUTPUT_FILE%.*}" "${ASSETS_DIR}/ezopwrt.img" || true
+    # mv "${OUTPUT_FILE}" "${ASSETS_DIR}/ezopwrt.img"
     
     echo "✅ 镜像准备完成: ${ASSETS_DIR}/ezopwrt.img"
-    ls -lh "${ASSETS_DIR}/ezopwrt.img"
+    ls -lh "${ASSETS_DIR}"
 else
     echo "❌ 下载失败"
     exit 1
