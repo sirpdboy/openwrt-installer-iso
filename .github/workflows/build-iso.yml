@@ -87,13 +87,13 @@ jobs:
         chmod 777 output
     - name: Build ISO with proper rootfs
       run: |
-        chmod +x scripts/build-iso.sh
+        chmod +x build-iso.sh
     
         docker run --privileged --rm \
            -v $(pwd)/output:/output \
            -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
            debian:buster \
-           /scripts/build-iso.sh
+           /build-iso.sh
 
     - name: Upload ISO artifact
       uses: actions/upload-artifact@v4
