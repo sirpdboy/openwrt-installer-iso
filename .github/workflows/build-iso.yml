@@ -88,16 +88,29 @@ jobs:
 
     - name: Build ISO
       run: |
-        chmod +x scripts/build-iso.sh
+        chmod +x scripts/*.sh
+  
         docker run --privileged --rm \
         -v $(pwd)/output:/output \
-        -v $(pwd)/scripts:/scripts \
-        -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
-        debian:bullseye-slim \
-        bash -c "
-        apt-get update && apt-get install -y linux-image-amd64 xorriso isolinux
-        /scripts/build-iso.sh
-        "
+          -v $(pwd)/scripts:/scripts:ro \
+         -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
+          debian:bullseye-slim \
+          bash -c "
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y \
+          xorriso isolinux syslinux-efi \
+          grub-pc-bin grub-efi-amd64-bin \
+          mtools dosfstools squashfs-tools \
+          wget curl cpio gzip \
+          kmod file 2>&1
+  
+          apt-get clean
+  
+          ls -l /scripts/build-iso.sh
+  
+          exec /scripts/build-iso.sh
+          "
     - name: Verify ISO
       run: |
         if ls output/*.iso 1> /dev/null 2>&1; then
