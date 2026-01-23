@@ -1,4 +1,4 @@
-name: Build Small OpenWRT ISO
+name: build-iso-alpine
 
 on:
   push:
@@ -120,7 +120,7 @@ jobs:
     - name: Upload ISO artifact
       uses: actions/upload-artifact@v4
       with:
-        name: openwrt-installer-small
+        name: openwrt-installer-alpine
         path: output/*.iso
         retention-days: 30
         if-no-files-found: error
