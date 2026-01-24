@@ -3,12 +3,15 @@ name: build-iso-alpine
 on:
   push:
     branches: [ main, master ]
+    paths:
+      - 'build-iso-alpine.sh'
+      - '.github/workflows/build-iso-alpine.yml'
   workflow_dispatch:
     inputs:
-      openwrt_version:
-        description: 'OpenWRT版本'
+      alpine_version:
+        description: 'ubuntu版本'
         required: false
-        default: '23.05.3'
+        default: '3.20'
 
 jobs:
   build-alpine-iso:
