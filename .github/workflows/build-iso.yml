@@ -1,14 +1,18 @@
 name: build-iso
 
+
 on:
   push:
     branches: [ main, master ]
+    paths:
+      - 'build-iso.sh'
+      - '.github/workflows/build-iso.yml'
   workflow_dispatch:
     inputs:
-      openwrt_version:
-        description: 'OpenWRT版本'
+      alpine_version:
+        description: 'ubuntu版本'
         required: false
-        default: '23.05.3'
+        default: '3.20'
 jobs:
   build:
     runs-on: ubuntu-latest
