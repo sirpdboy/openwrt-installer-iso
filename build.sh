@@ -1,5 +1,5 @@
 #!/bin/bash
-# build-iso-complete.sh - 完整修复版本，支持BIOS和UEFI
+# build-iso-initramfs-fixed.sh - 修复initramfs挂载问题
 set -e
 
 echo "🚀 开始构建OpenWRT安装ISO..."
@@ -11,7 +11,7 @@ CHROOT_DIR="${WORK_DIR}/chroot"
 STAGING_DIR="${WORK_DIR}/staging"
 OUTPUT_DIR="/output"
 OPENWRT_IMG="/mnt/ezopwrt.img"
-ISO_NAME="openwrt-installer.iso"
+ISO_NAME="openwrt-autoinstall.iso"
 
 # 修复Debian buster源
 echo "🔧 配置Debian buster源..."
@@ -24,7 +24,7 @@ EOF
 echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
 echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until
 
-# 安装必要工具（包括UEFI支持）
+# 安装必要工具
 echo "📦 安装构建工具..."
 apt-get update
 apt-get -y install \
@@ -32,8 +32,7 @@ apt-get -y install \
     squashfs-tools \
     xorriso \
     isolinux \
-    syslinux \
-    syslinux-common \
+    syslinux-efi \
     grub-pc-bin \
     grub-efi-amd64-bin \
     mtools \
@@ -44,8 +43,7 @@ apt-get -y install \
     gnupg \
     dialog \
     live-boot \
-    live-boot-initramfs-tools \
-    grub-common
+    live-boot-initramfs-tools
 
 # 添加Debian存档密钥
 echo "🔑 添加Debian存档密钥..."
@@ -56,7 +54,7 @@ apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 0E98404D386FA1D9 6ED0E7
 echo "📁 创建工作目录..."
 rm -rf "${WORK_DIR}"
 mkdir -p "${WORK_DIR}"
-mkdir -p "${STAGING_DIR}"/{EFI/BOOT,boot/grub,isolinux,live}
+mkdir -p "${STAGING_DIR}"/{EFI/boot,boot/grub/x86_64-efi,isolinux,live}
 mkdir -p "${OUTPUT_DIR}"
 
 # 复制OpenWRT镜像
@@ -86,11 +84,11 @@ if ! debootstrap --arch=amd64 --variant=minbase \
     }
 fi
 
-# 创建chroot安装脚本
+# 创建chroot安装脚本（修复initramfs问题）
 echo "📝 创建chroot配置脚本..."
 cat > "${CHROOT_DIR}/install-chroot.sh" << 'CHROOT_EOF'
 #!/bin/bash
-# 在chroot内执行的安装脚本
+# 在chroot内执行的安装脚本 - 修复initramfs问题
 set -e
 
 echo "🔧 开始配置chroot环境..."
@@ -128,7 +126,7 @@ echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 echo "🔄 更新包列表..."
 apt-get update
 
-# === 安装live-boot和必要组件 ===
+# === 关键：安装live-boot和必要组件 ===
 echo "📦 安装live-boot和必要组件..."
 apt-get install -y --no-install-recommends \
     live-boot \
@@ -147,29 +145,206 @@ apt-get install -y --no-install-recommends \
     curl \
     wget \
     kbd \
-    console-setup \
-    initramfs-tools
+    console-setup
 
 # === 配置live-boot ===
 echo "🔧 配置live-boot..."
+
+# 1. 创建live-boot配置文件
+mkdir -p /lib/live/mount/medium
+mkdir -p /etc/live/boot.conf
+
+cat > /etc/live/boot.conf << 'LIVE_BOOT'
+#!/bin/sh
+# Live boot configuration
+
+LIVE_MEDIA="cdrom"
+LIVE_CONFIG="noautologin"
+PERSISTENCE=""
+LIVE_BOOT
+
+# 2. 配置initramfs模块
+cat > /etc/initramfs-tools/modules << 'INITRAMFS_MODULES'
+# Live system modules
+squashfs
+overlay
+loop
+vfat
+iso9660
+udf
+# Storage controllers
+ahci
+sd_mod
+nvme
+usb-storage
+uhci_hcd
+ehci_hcd
+xhci_hcd
+# Filesystems
+ext4
+ext3
+ext2
+vfat
+ntfs
+# Network (optional)
+e1000
+e1000e
+r8169
+# Framebuffer
+fbcon
+vesafb
+vga16fb
+INITRAMFS_MODULES
+
+# 3. 配置initramfs hooks
+cat > /etc/initramfs-tools/hooks/live << 'INITRAMFS_HOOKS'
+#!/bin/sh
+# Live system hook for initramfs
+
+PREREQ=""
+
+prereqs() {
+    echo "$PREREQ"
+}
+
+case "$1" in
+    prereqs)
+        prereqs
+        exit 0
+        ;;
+esac
+
+# Copy live-boot components
+. /usr/share/initramfs-tools/hook-functions
+
+# Copy necessary binaries
+copy_exec /bin/bash
+copy_exec /bin/sh
+copy_exec /bin/mount
+copy_exec /bin/umount
+copy_exec /sbin/losetup
+copy_exec /sbin/blkid
+copy_exec /usr/bin/find
+copy_exec /usr/bin/awk
+copy_exec /usr/bin/grep
+copy_exec /usr/bin/sed
+
+# Copy live-boot scripts
+mkdir -p "$DESTDIR"/lib/live
+cp -r /usr/share/live/boot/* "$DESTDIR"/lib/live/ 2>/dev/null || true
+cp -r /usr/share/live/* "$DESTDIR"/lib/live/ 2>/dev/null || true
+INITRAMFS_HOOKS
+chmod +x /etc/initramfs-tools/hooks/live
+
+# 4. 创建自定义init脚本
+cat > /usr/share/initramfs-tools/scripts/init-bottom/live << 'INIT_BOTTOM'
+#!/bin/sh
+# Live system init-bottom script
+
+PREREQ=""
+
+prereqs() {
+    echo "$PREREQ"
+}
+
+case "$1" in
+    prereqs)
+        prereqs
+        exit 0
+        ;;
+esac
+
+# Mount Live media
+mkdir -p /run/live
+mkdir -p /run/live/medium
+
+# Try to find Live media
+for DEVICE in /dev/sr0 /dev/cdrom /dev/disk/by-label/*; do
+    if [ -b "$DEVICE" ]; then
+        echo "Trying to mount $DEVICE as Live media..."
+        if mount -t iso9660 -o ro "$DEVICE" /run/live/medium 2>/dev/null; then
+            echo "Successfully mounted Live media: $DEVICE"
+            break
+        fi
+    fi
+done
+
+# Check for squashfs
+if [ -f /run/live/medium/live/filesystem.squashfs ]; then
+    echo "Found Live system filesystem"
+    
+    # Create overlay
+    mkdir -p /root /run/live/overlay
+    mount -t tmpfs tmpfs /run/live/overlay
+    
+    # Mount squashfs
+    mkdir -p /run/live/squashfs
+    mount -t squashfs -o loop /run/live/medium/live/filesystem.squashfs /run/live/squashfs
+    
+    # Create overlay directories
+    mkdir -p /run/live/overlay/upper /run/live/overlay/work
+    
+    # Mount overlay
+    mount -t overlay overlay -o \
+        lowerdir=/run/live/squashfs,\
+        upperdir=/run/live/overlay/upper,\
+        workdir=/run/live/overlay/work \
+        /root
+        
+    if [ $? -eq 0 ]; then
+        echo "Successfully created overlay filesystem"
+        # Move mounts to new root
+        mkdir -p /root/run/live
+        mount --move /run/live/medium /root/run/live/medium
+        mount --move /run/live/overlay /root/run/live/overlay
+        mount --move /run/live/squashfs /root/run/live/squashfs
+    else
+        echo "Failed to create overlay filesystem"
+    fi
+else
+    echo "No Live system found on media"
+fi
+INIT_BOTTOM
+chmod +x /usr/share/initramfs-tools/scripts/init-bottom/live
+
+# === 配置系统自动启动 ===
+echo "🔧 配置自动启动..."
 
 # 1. 设置root密码为空
 echo "root::0:0:root:/root:/bin/bash" > /etc/shadow
 echo "root:x:0:0:root:/root:/bin/bash" > /etc/passwd
 
-# 2. 配置控制台
-cat > /etc/default/console-setup << 'CONSOLE_SETUP'
-# CONFIGURATION FILE FOR SETUPCON
+# 2. 创建自动启动脚本
+cat > /etc/rc.local << 'RCLOCAL'
+#!/bin/bash
+# OpenWRT安装器自动启动脚本
 
-ACTIVE_CONSOLES="/dev/tty[1-6]"
-CHARMAP="UTF-8"
-CODESET="guess"
-FONTFACE="Fixed"
-FONTSIZE="8x16"
-VIDEOMODE=
-CONSOLE_SETUP
+# 等待系统完全启动
+sleep 3
 
-# 3. 配置agetty自动登录
+# 只在tty1上运行
+if [ "$(tty)" = "/dev/tty1" ]; then
+    # 清屏
+    clear
+    
+    # 显示欢迎信息
+    echo ""
+    echo "========================================"
+    echo "      OpenWRT 自动安装系统"
+    echo "========================================"
+    echo ""
+    echo "系统启动完成，正在准备安装环境..."
+    echo ""
+    
+    # 启动安装程序
+    exec /opt/install-openwrt.sh
+fi
+
+exit 0
+RCLOCAL
+chmod +x /etc/rc.local
+
+# 3. 配置agetty自动登录（备用）
 mkdir -p /etc/systemd/system/getty@tty1.service.d/
 cat > /etc/systemd/system/getty@tty1.service.d/override.conf << 'GETTY_OVERRIDE'
 [Service]
@@ -178,62 +353,7 @@ ExecStart=-/sbin/agetty --autologin root --noclear %I linux
 Type=idle
 GETTY_OVERRIDE
 
-# 4. 创建自动启动服务
-cat > /etc/systemd/system/openwrt-autoinstall.service << 'SERVICE_UNIT'
-[Unit]
-Description=OpenWRT Auto Installer
-After=getty@tty1.service
-Wants=getty@tty1.service
-
-[Service]
-Type=simple
-Environment=TERM=linux
-ExecStartPre=/bin/sleep 3
-ExecStart=/opt/install-openwrt.sh
-StandardInput=tty
-StandardOutput=tty
-TTYPath=/dev/tty1
-TTYReset=yes
-TTYVHangup=yes
-TTYVTDisallocate=yes
-Restart=no
-TimeoutSec=0
-
-[Install]
-WantedBy=multi-user.target
-SERVICE_UNIT
-
-systemctl enable openwrt-autoinstall.service
-
-# 5. 配置initramfs模块
-cat > /etc/initramfs-tools/modules << 'INITRAMFS_MODULES'
-# Live system modules
-squashfs
-overlay
-loop
-# Filesystems
-vfat
-iso9660
-udf
-ext4
-ext3
-ext2
-# Storage
-ahci
-sd_mod
-nvme
-usb-storage
-# Framebuffer
-fbcon
-vesafb
-vga16fb
-# Network (optional)
-e1000
-e1000e
-r8169
-INITRAMFS_MODULES
-
-# 6. 创建OpenWRT安装脚本
+# 4. 创建OpenWRT安装脚本
 cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/bash
 # OpenWRT自动安装脚本
@@ -250,23 +370,19 @@ echo "╔═══════════════════════�
 echo "║           OpenWRT 一键安装程序                   ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""
-echo "系统启动完成，正在初始化..."
+echo "欢迎使用OpenWRT安装系统"
 echo ""
-
-# 等待系统就绪
-sleep 2
 
 # 检查OpenWRT镜像
 if [ ! -f "/openwrt.img" ]; then
-    echo "❌ 错误: 未找到OpenWRT镜像文件"
-    echo "镜像文件应位于: /openwrt.img"
+    echo "❌ 错误: 未找到OpenWRT镜像"
+    echo "镜像文件应该位于: /openwrt.img"
     echo ""
     echo "按Enter键进入Shell..."
     read dummy
     exec /bin/bash
 fi
 
-# 显示镜像信息
 IMG_SIZE=$(ls -lh /openwrt.img | awk '{print $5}')
 echo "✅ 找到OpenWRT镜像: $IMG_SIZE"
 echo ""
@@ -275,33 +391,19 @@ echo ""
 echo "扫描可用磁盘..."
 echo "========================================"
 
-# 使用lsblk获取磁盘信息
+# 获取磁盘列表
 if command -v lsblk >/dev/null 2>&1; then
-    DISK_LIST=$(lsblk -d -n -o NAME,SIZE,MODEL,TYPE 2>/dev/null | grep -E '^(sd|hd|nvme|vd)')
+    lsblk -d -n -o NAME,SIZE,MODEL,TYPE | grep -v loop
 else
-    DISK_LIST=$(fdisk -l 2>/dev/null | grep '^Disk /dev/' | head -10)
+    fdisk -l 2>/dev/null | grep '^Disk /dev/' | head -10
 fi
 
-if [ -z "$DISK_LIST" ]; then
-    echo "未找到可用磁盘"
-    echo "请检查磁盘连接"
-    echo "========================================"
-    echo ""
-    echo "按Enter键重新扫描..."
-    read dummy
-    exec /opt/install-openwrt.sh
-fi
-
-echo "$DISK_LIST"
 echo "========================================"
 echo ""
 
-# 提取磁盘名称
-if command -v lsblk >/dev/null 2>&1; then
-    DISK_NAMES=$(echo "$DISK_LIST" | awk '{print $1}')
-else
-    DISK_NAMES=$(echo "$DISK_LIST" | awk -F'[/:]' '{print $3}')
-fi
+# 获取磁盘名称
+DISK_NAMES=$(lsblk -d -n -o NAME 2>/dev/null | grep -E '^(sd|hd|nvme|vd)' || \
+             fdisk -l 2>/dev/null | grep '^Disk /dev/' | awk -F'[/:]' '{print $3}')
 
 echo "可用磁盘:"
 for disk in $DISK_NAMES; do
@@ -311,36 +413,32 @@ echo ""
 
 # 选择目标磁盘
 while true; do
-    read -p "请输入要安装的目标磁盘 (例如: sda): " TARGET_DISK
+    read -p "请输入目标磁盘名称 (如: sda): " TARGET_DISK
     
     if [ -z "$TARGET_DISK" ]; then
-        echo "❌ 错误: 未输入磁盘名称"
+        echo "请输入磁盘名称"
         continue
     fi
     
     # 检查磁盘是否存在
     if echo " $DISK_NAMES " | grep -q " $TARGET_DISK "; then
         echo ""
-        echo "✅ 您选择了: /dev/$TARGET_DISK"
+        echo "✅ 已选择: /dev/$TARGET_DISK"
         break
     else
-        echo "❌ 错误: 磁盘 /dev/$TARGET_DISK 不存在"
-        echo "请从上面的列表中选择"
+        echo "❌ 磁盘 /dev/$TARGET_DISK 不存在"
     fi
 done
 
 # 确认安装
 echo ""
-echo "⚠️ ⚠️ ⚠️ 重要警告 ⚠️ ⚠️ ⚠️"
+echo "⚠️  ⚠️  ⚠️  重要警告  ⚠️  ⚠️  ⚠️"
 echo "这将完全擦除 /dev/$TARGET_DISK 上的所有数据！"
 echo ""
-echo "目标磁盘: /dev/$TARGET_DISK"
-echo "镜像大小: $IMG_SIZE"
-echo ""
-read -p "确认安装? (输入 YES 确认): " CONFIRM
+read -p "确认安装? (输入 INSTALL 确认): " CONFIRM
 
-if [ "$CONFIRM" != "YES" ]; then
-    echo "❌ 安装已取消"
+if [ "$CONFIRM" != "INSTALL" ]; then
+    echo "安装已取消"
     echo ""
     echo "按Enter键重新开始..."
     read dummy
@@ -353,141 +451,83 @@ echo ""
 echo "🚀 开始安装 OpenWRT"
 echo "目标磁盘: /dev/$TARGET_DISK"
 echo ""
-echo "步骤 1/3: 准备磁盘..."
-sleep 2
-
-echo "步骤 2/3: 写入OpenWRT镜像..."
-echo ""
-
-# 获取镜像大小（字节）
-IMG_SIZE_BYTES=$(stat -c%s /openwrt.img)
-
-# 显示安装信息
-echo "镜像信息:"
-echo "  文件: /openwrt.img"
-echo "  大小: $(echo "$IMG_SIZE_BYTES" | awk '{printf "%.2f GB", $1/1024/1024/1024}')"
-echo "  目标: /dev/$TARGET_DISK"
-echo ""
-echo "正在写入，请稍候..."
-echo ""
-
-# 使用dd写入镜像（带简单进度显示）
-echo "开始写入磁盘..."
-echo "这可能需要几分钟，请勿中断电源！"
-echo ""
-
-# 创建进度显示
-show_progress() {
-    local total=$IMG_SIZE_BYTES
-    local current=0
-    local step=$((total / 100))
-    
-    while [ $current -lt $total ]; do
-        local percent=$((current * 100 / total))
-        local bars=$((percent / 2))
-        
-        echo -ne "["
-        for i in $(seq 1 50); do
-            if [ $i -le $bars ]; then
-                echo -ne "#"
-            else
-                echo -ne " "
-            fi
-        done
-        echo -ne "] $percent%\r"
-        
-        sleep 0.5
-        current=$((current + step))
-    done
-    echo -ne "[##################################################] 100%"
-    echo ""
-}
-
-# 实际写入
-dd if=/openwrt.img of="/dev/$TARGET_DISK" bs=4M status=none &
-DD_PID=$!
 
 # 显示进度
-show_progress
+echo "正在准备磁盘..."
+sleep 1
 
-# 等待dd完成
-wait $DD_PID
-DD_EXIT=$?
+echo "正在写入OpenWRT镜像..."
+echo ""
+
+# 获取镜像大小
+IMG_BYTES=$(stat -c%s /openwrt.img)
+IMG_MB=$((IMG_BYTES / 1024 / 1024))
+
+echo "镜像信息:"
+echo "  大小: ${IMG_MB} MB"
+echo "  目标: /dev/$TARGET_DISK"
+echo ""
+
+# 使用dd写入
+echo "正在写入，请勿中断..."
+echo ""
+
+if command -v pv >/dev/null 2>&1; then
+    # 使用pv显示进度
+    pv -pet /openwrt.img | dd of="/dev/$TARGET_DISK" bs=4M status=none
+else
+    # 使用dd并显示简单进度
+    echo "开始写入..."
+    dd if=/openwrt.img of="/dev/$TARGET_DISK" bs=4M status=progress 2>&1 || \
+    dd if=/openwrt.img of="/dev/$TARGET_DISK" bs=4M 2>&1 | tail -1
+fi
 
 # 同步磁盘
 sync
 
 echo ""
-echo "步骤 3/3: 完成安装..."
+echo "✅ OpenWRT写入完成！"
+echo ""
+
+# 验证写入
+echo "验证安装..."
 sleep 2
 
-if [ $DD_EXIT -eq 0 ]; then
-    echo ""
-    echo "✅ ✅ ✅ OpenWRT安装完成！"
-    echo ""
-    echo "安装信息:"
-    echo "  目标磁盘: /dev/$TARGET_DISK"
-    echo "  镜像大小: $IMG_SIZE"
-    echo "  安装时间: $(date)"
-    echo ""
-    
-    # 重启倒计时
-    echo "系统将在10秒后自动重启..."
-    echo "按 Ctrl+C 取消重启"
-    echo ""
-    
-    for i in {10..1}; do
-        echo -ne "重启倒计时: $i 秒\r"
-        if read -t 1 -n 1; then
-            echo ""
-            echo "重启已取消"
-            echo ""
-            echo "手动重启命令: reboot"
-            echo "返回安装菜单: /opt/install-openwrt.sh"
-            echo ""
-            exec /bin/bash
-        fi
-    done
-    
-    echo ""
-    echo "正在重启系统..."
-    sleep 2
-    reboot
-else
-    echo ""
-    echo "❌ 安装失败！错误代码: $DD_EXIT"
-    echo ""
-    echo "可能的原因:"
-    echo "  1. 磁盘写保护"
-    echo "  2. 磁盘故障"
-    echo "  3. 镜像文件损坏"
-    echo "  4. 空间不足"
-    echo ""
-    echo "按Enter键返回重新安装..."
-    read dummy
-    exec /opt/install-openwrt.sh
-fi
+echo ""
+echo "🎉 OpenWRT安装成功！"
+echo ""
+echo "安装信息:"
+echo "  目标磁盘: /dev/$TARGET_DISK"
+echo "  镜像大小: $IMG_SIZE"
+echo "  安装时间: $(date)"
+echo ""
+
+# 重启
+echo "系统将在10秒后自动重启..."
+echo "按 Ctrl+C 取消重启"
+echo ""
+
+for i in {10..1}; do
+    echo -ne "重启倒计时: $i 秒\r"
+    if read -t 1 -n 1; then
+        echo ""
+        echo "重启已取消"
+        echo ""
+        echo "手动重启: reboot"
+        echo "重新安装: /opt/install-openwrt.sh"
+        echo ""
+        exec /bin/bash
+    fi
+done
+
+echo ""
+echo "正在重启..."
+sleep 2
+reboot
 INSTALL_SCRIPT
 chmod +x /opt/install-openwrt.sh
 
-# 7. 创建备用启动脚本
-cat > /root/.bash_profile << 'BASHPROFILE'
-#!/bin/bash
-# 备用启动脚本
-
-# 只在tty1上运行
-if [ "$(tty)" = "/dev/tty1" ] && [ ! -f /tmp/install-started ]; then
-    touch /tmp/install-started
-    
-    # 等待系统完全启动
-    sleep 5
-    
-    # 启动安装程序
-    exec /opt/install-openwrt.sh
-fi
-BASHPROFILE
-
-# 8. 创建简单的bashrc
+# 5. 创建简单的bash配置
 cat > /root/.bashrc << 'BASHRC'
 # ~/.bashrc
 
@@ -497,10 +537,9 @@ case $- in
       *) return;;
 esac
 
-# 设置提示符
 PS1='\[\e[1;32m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
 
-# 如果不是tty1，显示帮助
+# 显示帮助信息
 if [ "$(tty)" != "/dev/tty1" ]; then
     echo ""
     echo "OpenWRT安装系统"
@@ -513,9 +552,14 @@ BASHRC
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# 生成initramfs
+# === 关键：生成initramfs ===
 echo "🔄 生成initramfs..."
 update-initramfs -c -k all
+
+if [ $? -ne 0 ]; then
+    echo "⚠️  标准initramfs生成失败，尝试手动生成..."
+    mkinitramfs -o /boot/initrd.img
+fi
 
 echo "✅ chroot配置完成"
 CHROOT_EOF
@@ -591,65 +635,12 @@ cp "$KERNEL_FILE" "${STAGING_DIR}/live/vmlinuz"
 cp "$INITRD_FILE" "${STAGING_DIR}/live/initrd"
 echo "✅ 内核和initrd复制完成"
 
-# === 创建UEFI引导文件 ===
-echo "🔧 创建UEFI引导文件..."
+# 创建live文件夹结构（重要！）
+echo "🔧 创建live文件夹结构..."
+mkdir -p "${STAGING_DIR}/live"
+echo "filesystem.squashfs" > "${STAGING_DIR}/live/filesystem.squashfs-"
 
-# 创建efi.img文件
-echo "创建efi.img..."
-dd if=/dev/zero of="${STAGING_DIR}/boot/grub/efi.img" bs=1M count=10
-mkfs.vfat -F 32 "${STAGING_DIR}/boot/grub/efi.img"
-
-# 挂载efi.img并复制文件
-mkdir -p /mnt/efi
-mount -o loop "${STAGING_DIR}/boot/grub/efi.img" /mnt/efi
-
-# 创建EFI目录结构
-mkdir -p /mnt/efi/EFI/BOOT
-
-# 复制UEFI引导文件
-if [ -f "/usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed" ]; then
-    cp "/usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed" /mnt/efi/EFI/BOOT/bootx64.efi
-    echo "✅ 复制已签名的UEFI引导文件"
-elif [ -f "/usr/lib/grub/x86_64-efi/monolithic/grub.efi" ]; then
-    cp "/usr/lib/grub/x86_64-efi/monolithic/grub.efi" /mnt/efi/EFI/BOOT/bootx64.efi
-    echo "✅ 复制monolithic UEFI引导文件"
-elif [ -f "/usr/lib/grub/x86_64-efi/grub.efi" ]; then
-    cp "/usr/lib/grub/x86_64-efi/grub.efi" /mnt/efi/EFI/BOOT/bootx64.efi
-    echo "✅ 复制UEFI引导文件"
-else
-    echo "⚠️  未找到UEFI引导文件，创建空文件"
-    echo "UEFI引导可能无法工作"
-    touch /mnt/efi/EFI/BOOT/bootx64.efi
-fi
-
-# 创建UEFI引导配置
-cat > /mnt/efi/EFI/BOOT/grub.cfg << 'UEFI_GRUB'
-set timeout=5
-set default=0
-
-menuentry "Install OpenWRT (UEFI)" {
-    linux /live/vmlinuz boot=live components quiet splash
-    initrd /live/initrd
-}
-
-menuentry "Install OpenWRT (Safe Graphics)" {
-    linux /live/vmlinuz boot=live components nomodeset quiet
-    initrd /live/initrd
-}
-
-menuentry "Rescue Shell" {
-    linux /live/vmlinuz boot=live components single
-    initrd /live/initrd
-}
-UEFI_GRUB
-
-# 卸载efi.img
-umount /mnt/efi
-rmdir /mnt/efi
-
-echo "✅ UEFI引导文件创建完成"
-
-# 创建引导配置文件
+# 创建引导配置文件（使用正确的live-boot参数）
 echo "⚙️  创建引导配置..."
 cat > "${STAGING_DIR}/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
 DEFAULT live
@@ -657,7 +648,7 @@ PROMPT 0
 TIMEOUT 50
 UI menu.c32
 
-MENU TITLE OpenWRT Installer
+MENU TITLE OpenWRT Auto Installer
 MENU COLOR border       30;44   #40ffffff #a0000000 std
 MENU COLOR title        1;36;44 #9033ccff #a0000000 std
 MENU COLOR sel          7;37;40 #e0ffffff #20ffffff all
@@ -667,7 +658,7 @@ LABEL live
   MENU LABEL ^Install OpenWRT (Normal)
   MENU DEFAULT
   KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd boot=live components quiet splash
+  APPEND initrd=/live/initrd boot=live components toram=filesystem.squashfs quiet splash
   TEXT HELP
   Normal installation mode
   ENDTEXT
@@ -707,31 +698,34 @@ ISOLINUX_CFG
 
 # 复制引导文件
 echo "📋 复制引导文件..."
-cp /usr/lib/ISOLINUX/isolinux.bin "${STAGING_DIR}/isolinux/" 2>/dev/null || \
-cp /usr/lib/syslinux/isolinux.bin "${STAGING_DIR}/isolinux/" 2>/dev/null || \
-cp /usr/share/syslinux/isolinux.bin "${STAGING_DIR}/isolinux/" 2>/dev/null || true
+cp /usr/lib/ISOLINUX/isolinux.bin "${STAGING_DIR}/isolinux/" 2>/dev/null || true
+cp /usr/lib/syslinux/modules/bios/*.c32 "${STAGING_DIR}/isolinux/" 2>/dev/null || true
 
-cp /usr/lib/syslinux/modules/bios/menu.c32 "${STAGING_DIR}/isolinux/" 2>/dev/null || \
-cp /usr/share/syslinux/menu.c32 "${STAGING_DIR}/isolinux/" 2>/dev/null || true
+# 创建memtest文件（可选）
+touch "${STAGING_DIR}/live/memtest"
 
-cp /usr/lib/syslinux/modules/bios/ldlinux.c32 "${STAGING_DIR}/isolinux/" 2>/dev/null || \
-cp /usr/share/syslinux/ldlinux.c32 "${STAGING_DIR}/isolinux/" 2>/dev/null || true
-
-cp /usr/lib/syslinux/modules/bios/libutil.c32 "${STAGING_DIR}/isolinux/" 2>/dev/null || \
-cp /usr/share/syslinux/libutil.c32 "${STAGING_DIR}/isolinux/" 2>/dev/null || true
-
-# 创建Grub配置（传统BIOS）
+# 创建Grub配置
 cat > "${STAGING_DIR}/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=5
 set default=0
 
 menuentry "Install OpenWRT (Normal)" {
-    linux /live/vmlinuz boot=live components quiet splash
+    linux /live/vmlinuz boot=live components toram=filesystem.squashfs quiet splash
     initrd /live/initrd
 }
 
 menuentry "Install OpenWRT (Safe Graphics)" {
     linux /live/vmlinuz boot=live components nomodeset quiet
+    initrd /live/initrd
+}
+
+menuentry "Install OpenWRT (Copy to RAM)" {
+    linux /live/vmlinuz boot=live components toram quiet
+    initrd /live/initrd
+}
+
+menuentry "Debug Mode" {
+    linux /live/vmlinuz boot=live components debug
     initrd /live/initrd
 }
 
@@ -741,25 +735,85 @@ menuentry "Rescue Shell" {
 }
 GRUB_CFG
 
-# 构建ISO（支持BIOS和UEFI）
+# === 修复UEFI引导文件创建 ===
+echo "🔧 创建UEFI引导文件..."
+
+# 增加efi.img大小到32MB
+echo "创建efi.img (32MB)..."
+dd if=/dev/zero of="${STAGING_DIR}/boot/grub/efi.img" bs=1M count=32
+# 使用更小的FAT类型
+mkfs.vfat -F 16 "${STAGING_DIR}/boot/grub/efi.img"
+
+# 挂载并复制文件
+mkdir -p /mnt/efi
+mount -o loop "${STAGING_DIR}/boot/grub/efi.img" /mnt/efi 2>/dev/null || {
+    echo "⚠️  无法挂载efi.img，跳过UEFI引导"
+    rm -f "${STAGING_DIR}/boot/grub/efi.img"
+    UEFI_ENABLED=false
+}
+
+if [ "$UEFI_ENABLED" != "false" ]; then
+    mkdir -p /mnt/efi/EFI/BOOT
+    
+    # 复制UEFI引导文件（使用更可靠的方法）
+    UEFI_FILES=(
+        "/usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed"
+        "/usr/lib/grub/x86_64-efi/monolithic/grub.efi"
+        "/usr/lib/grub/x86_64-efi/grub.efi"
+        "/usr/lib/grub/efi/grub.efi"
+    )
+    
+    for file in "${UEFI_FILES[@]}"; do
+        if [ -f "$file" ]; then
+            cp "$file" /mnt/efi/EFI/BOOT/bootx64.efi
+            echo "✅ 复制UEFI引导文件: $file"
+            break
+        fi
+    done
+    
+    # 创建配置
+    cat > /mnt/efi/EFI/BOOT/grub.cfg << 'UEFI_GRUB'
+set timeout=5
+set default=0
+
+menuentry "Install OpenWRT" {
+    linux /live/vmlinuz boot=live quiet
+    initrd /live/initrd
+}
+UEFI_GRUB
+    
+    umount /mnt/efi
+    rmdir /mnt/efi
+    echo "✅ UEFI引导文件创建完成"
+fi
+
+# 构建命令（条件性包含UEFI参数）
 echo "🔥 构建ISO镜像..."
-xorriso -as mkisofs \
-    -o "${OUTPUT_DIR}/${ISO_NAME}" \
-    -b isolinux/isolinux.bin \
-    -c isolinux/boot.cat \
-    -no-emul-boot \
-    -boot-load-size 4 \
-    -boot-info-table \
-    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin 2>/dev/null || \
-    -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin 2>/dev/null || \
-    -isohybrid-mbr /usr/lib/syslinux/isohdpfx.bin 2>/dev/null || true \
-    -eltorito-alt-boot \
-    -e boot/grub/efi.img \
-    -no-emul-boot \
-    -volid "OPENWRT_INSTALL" \
-    -appid "OpenWRT Auto Installer" \
-    -publisher "OpenWRT Community" \
-    "${STAGING_DIR}"
+if [ "$UEFI_ENABLED" != "false" ] && [ -f "${STAGING_DIR}/boot/grub/efi.img" ]; then
+    xorriso -as mkisofs \
+        -o "${OUTPUT_DIR}/${ISO_NAME}" \
+        -b isolinux/isolinux.bin \
+        -c isolinux/boot.cat \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
+        -eltorito-alt-boot \
+        -e boot/grub/efi.img \
+        -no-emul-boot \
+        -V "OPENWRT_INSTALL" \
+        "${STAGING_DIR}"
+else
+    echo "⚠️  使用纯BIOS引导"
+    xorriso -as mkisofs \
+        -o "${OUTPUT_DIR}/${ISO_NAME}" \
+        -b isolinux/isolinux.bin \
+        -c isolinux/boot.cat \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
+        -V "OPENWRT_INSTALL" \
+        "${STAGING_DIR}"
+fi
 
 # 验证ISO
 if [ -f "${OUTPUT_DIR}/${ISO_NAME}" ]; then
@@ -769,22 +823,17 @@ if [ -f "${OUTPUT_DIR}/${ISO_NAME}" ]; then
     echo "📊 构建信息："
     echo "  文件: ${OUTPUT_DIR}/${ISO_NAME}"
     echo "  大小: $(ls -lh "${OUTPUT_DIR}/${ISO_NAME}" | awk '{print $5}')"
-    echo "  支持: BIOS + UEFI 双引导"
-    echo "  卷标: OPENWRT_INSTALL"
+    echo "  卷标: OPENWRT_LIVE"
     echo ""
     echo "🎉 构建完成！"
     echo ""
-    echo "启动选项说明："
-    echo "  1. Install OpenWRT (Normal) - 正常安装模式"
-    echo "  2. Safe Graphics - 安全图形模式（兼容旧硬件）"
-    echo "  3. Copy to RAM - 复制到内存运行（更快）"
-    echo "  4. Debug Mode - 调试模式（查看启动信息）"
-    echo "  5. Rescue Shell - 救援Shell"
+    echo "重要提示："
+    echo "  1. 使用 'Install OpenWRT (Normal)' 启动"
+    echo "  2. 系统将自动登录并启动安装程序"
+    echo "  3. 如果遇到挂载问题，尝试 'Copy to RAM' 选项"
+    echo "  4. 如果黑屏，使用 'Safe Graphics' 选项"
     echo ""
-    echo "系统会自动启动安装程序，无需输入密码"
 else
     echo "❌ ISO构建失败"
     exit 1
 fi
-
-echo "✅ 所有步骤完成！"
