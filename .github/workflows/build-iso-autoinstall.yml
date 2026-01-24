@@ -1,9 +1,19 @@
 name: build-iso-autoinstall
 
+
+
 on:
   push:
     branches: [ main, master ]
+    paths:
+      - 'build-iso-autoinstall.sh'
+      - '.github/workflows/build-iso-autoinstall.yml'
   workflow_dispatch:
+    inputs:
+      alpine_version:
+        description: 'ubuntu版本'
+        required: false
+        default: '3.20'
 
 jobs:
   build:
