@@ -174,9 +174,9 @@ jobs:
         echo "📁 检查输出文件:"
         ls -lh output/
         
-        if [ -f "output/openwrt-installer-alpine.iso" ]; then
+        if [ -f "output/openwrt-autoinstall-alpine.iso" ]; then
             echo "✅ ISO文件存在"
-            echo "大小: $(ls -lh output/openwrt-installer-alpine.iso | awk '{print $5}')"
+            echo "大小: $(ls -lh output/openwrt-autoinstall-alpine.iso | awk '{print $5}')"
         else
             echo "❌ ISO文件未生成"
             echo "当前目录内容:"
