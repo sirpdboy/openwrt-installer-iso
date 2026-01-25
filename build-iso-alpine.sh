@@ -180,8 +180,8 @@ echo "🔧 Setting up Alpine environment..."
 
 # 设置apk仓库
 cat > /etc/apk/repositories <<EOF
-http://dl-cdn.alpinelinux.org/alpine/v3.20/main
-http://dl-cdn.alpinelinux.org/alpine/v3.20/community
+http://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64
+http://dl-cdn.alpinelinux.org/alpine/v3.20/community/x86_64
 EOF
 
 # 更新包数据库
