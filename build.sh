@@ -61,6 +61,46 @@ fi
 IMG_SIZE=$(ls -lh "$OPENWRT_IMG" | awk '{print $5}')
 log_success "Found OpenWRT image: $IMG_SIZE"
 
+# 修复Debian buster源
+
+cat > /etc/apt/sources.list <<EOF
+deb http://archive.debian.org/debian buster main contrib non-free
+deb http://archive.debian.org/debian-security buster/updates main
+EOF
+echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
+echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until
+
+# 安装必要工具
+apt-get update
+apt-get -y install \
+    debootstrap \
+    squashfs-tools \
+    xorriso \
+    isolinux \
+    syslinux \
+    syslinux-common \
+    grub-pc-bin \
+    grub-efi-amd64-bin \
+    mtools \
+    dosfstools \
+    parted \
+    wget \
+    curl \
+    gnupg \
+    dialog \
+    live-boot \
+    live-boot-initramfs-tools \
+    git \
+    pv \
+    file \
+    gddrescue \
+    gdisk \
+    cifs-utils \
+    nfs-common \
+    ntfs-3g \
+    open-vm-tools \
+    wimtools
+
 # ==================== 步骤2: 创建目录结构 ====================
 log_info "[2/10] Creating directory structure..."
 rm -rf "$WORK_DIR"
@@ -128,27 +168,135 @@ apt-get update
 
 echo "Installing system packages..."
 apt-get install -y --no-install-recommends \
+    apt \
+    locales \
     linux-image-amd64 \
     live-boot \
-    live-boot-initramfs-tools \
     systemd-sysv \
     parted \
+    openssh-server \
+    bash-completion \
+    cifs-utils \
+    curl \
+    dbus \
     dosfstools \
-    pv \
+    firmware-linux-free \
+    gddrescue \
+    gdisk \
+    iputils-ping \
+    isc-dhcp-client \
+    less \
+    nfs-common \
+    ntfs-3g \
+    openssh-client \
+    open-vm-tools \
+    procps \
+    vim \
+    wimtools \
     wget \
     dialog \
-    locales
+    pv
 
 # 配置locale
 echo "Configuring locale..."
 sed -i 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
-locale-gen en_US.UTF-8
+dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
 
-# 设置自动登录
-echo "Configuring auto-login..."
-echo 'root:x:0:0:root:/root:/bin/bash' > /etc/passwd
-echo 'root::0:0:99999:7:::' > /etc/shadow
+# 清理包缓存
+apt-get clean
+
+# 配置网络
+systemctl enable systemd-networkd
+
+# 配置SSH允许root登录
+echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
+echo "PermitEmptyPasswords yes" >> /etc/ssh/sshd_config
+systemctl enable ssh
+
+# 1. 设置root无密码登录
+usermod -p '*' root
+cat > /etc/passwd << 'PASSWD'
+root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+bin:x:2:2:bin:/bin:/usr/sbin/nologin
+sys:x:3:3:sys:/dev:/usr/sbin/nologin
+PASSWD
+
+cat > /etc/shadow << 'SHADOW'
+root::0:0:99999:7:::
+daemon:*:18507:0:99999:7:::
+bin:*:18507:0:99999:7:::
+sys:*:18507:0:99999:7:::
+SHADOW
+
+# 2. 创建自动启动服务
+cat > /etc/systemd/system/autoinstall.service << 'AUTOINSTALL_SERVICE'
+[Unit]
+Description=OpenWRT Auto Installer
+After=getty@tty1.service
+Conflicts=getty@tty1.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/start-installer.sh
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+
+[Install]
+WantedBy=multi-user.target
+AUTOINSTALL_SERVICE
+
+# 3. 创建启动脚本
+cat > /opt/start-installer.sh << 'START_SCRIPT'
+#!/bin/bash
+# OpenWRT安装系统启动脚本
+
+sleep 3
+clear
+
+cat << "WELCOME"
+
+╔═══════════════════════════════════════════════════════╗
+║       OpenWRT Auto Install System                     ║
+╚═══════════════════════════════════════════════════════╝
+
+System is starting up, please wait...
+WELCOME
+
+sleep 2
+
+if [ ! -f "/openwrt.img" ]; then
+    clear
+    echo ""
+    echo "❌ Error: OpenWRT image not found"
+    echo ""
+    echo "Image file should be at: /openwrt.img"
+    echo ""
+    echo "Press Enter to enter shell..."
+    read
+    exec /bin/bash
+fi
+
+exec /opt/install-openwrt.sh
+START_SCRIPT
+chmod +x /opt/start-installer.sh
+
+# 启用服务
+systemctl enable autoinstall.service
+
+# 4. 配置agetty自动登录
+mkdir -p /etc/systemd/system/getty@tty1.service.d/
+cat > /etc/systemd/system/getty@tty1.service.d/override.conf << 'GETTY_OVERRIDE'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear %I linux
+Type=idle
+GETTY_OVERRIDE
 
 # 创建安装脚本
 mkdir -p /opt
@@ -222,15 +370,10 @@ while true; do
     echo ""
     
     echo "System will reboot in 10 seconds..."
-    echo "Press any key to cancel."
     
     for i in {10..1}; do
         echo -ne "Rebooting in $i seconds...\r"
-        if read -t 1 -n 1; then
-            echo ""
-            echo "Reboot cancelled. Type 'reboot' to restart."
-            exec /bin/bash
-        fi
+
     done
     
     reboot -f
@@ -238,15 +381,38 @@ done
 INSTALL_SCRIPT
 chmod +x /opt/install-openwrt.sh
 
-# 设置自动启动
-cat > /etc/profile.d/autoinstall.sh << 'PROFILE'
-if [ "$(tty)" = "/dev/tty1" ]; then
-    sleep 2
-    clear
-    /opt/install-openwrt.sh
-fi
-PROFILE
+# 6. 创建bash配置
+cat > /root/.bashrc << 'BASHRC'
+# OpenWRT安装系统bash配置
 
+# 如果不是交互式shell，直接退出
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+
+# 设置PS1
+PS1='\[\e[1;32m\]\u@openwrt-installer\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
+
+# 别名
+alias ll='ls -la'
+alias l='ls -l'
+alias cls='clear'
+
+if [ "$(tty)" = "/dev/tty1" ]; then
+    echo ""
+    echo "Welcome to OpenWRT Installer System"
+    echo ""
+    echo "If installer doesn't start automatically, run:"
+    echo "  /opt/install-openwrt.sh"
+    echo ""
+fi
+BASHRC
+
+# 7. 删除machine-id（重要！每次启动重新生成）
+rm -f /etc/machine-id
+
+# 8. 记录安装的包
 # 配置live-boot
 mkdir -p /etc/live/boot
 echo "live" > /etc/live/boot.conf
@@ -265,9 +431,9 @@ CHROOT_EOF
 chmod +x "$CHROOT_DIR/install-chroot.sh"
 
 # 挂载文件系统并执行chroot配置
-mount -t proc proc "$CHROOT_DIR/proc"
-mount -t sysfs sysfs "$CHROOT_DIR/sys"
-mount -o bind /dev "$CHROOT_DIR/dev"
+mount -t proc none "${CHROOT_DIR}/proc"
+mount -o bind /dev "${CHROOT_DIR}/dev"
+mount -o bind /sys "${CHROOT_DIR}/sys"
 
 log_info "Running chroot configuration..."
 chroot "$CHROOT_DIR" /install-chroot.sh
@@ -275,8 +441,23 @@ chroot "$CHROOT_DIR" /install-chroot.sh
 # 清理chroot
 rm -f "$CHROOT_DIR/install-chroot.sh"
 
+cat > "${CHROOT_DIR}/etc/systemd/network/99-dhcp-en.network" <<EOF
+[Match]
+Name=e*
+
+[Network]
+DHCP=yes
+
+[DHCP]
+ClientIdentifier=mac
+EOF
+chmod 644 "${CHROOT_DIR}/etc/systemd/network/99-dhcp-en.network"
+
+
 # ==================== 步骤6: 提取内核和initrd ====================
 log_info "[6/10] Extracting kernel and initrd..."
+
+
 KERNEL=$(find "$CHROOT_DIR/boot" -name "vmlinuz-*" -type f | head -1)
 INITRD=$(find "$CHROOT_DIR/boot" -name "initrd.img-*" -type f | head -1)
 
@@ -284,9 +465,12 @@ if [ -z "$KERNEL" ] || [ -z "$INITRD" ]; then
     log_error "Failed to find kernel or initrd"
     exit 1
 fi
-
 cp "$KERNEL" "$STAGING_DIR/live/vmlinuz"
 cp "$INITRD" "$STAGING_DIR/live/initrd"
+
+cp "${CHROOT_DIR}/boot"/vmlinuz-* "${STAGING_DIR}/live/vmlinuz"
+cp "${CHROOT_DIR}/boot"/initrd.img-* "${STAGING_DIR}/live/initrd"
+
 log_success "Kernel: $(basename "$KERNEL")"
 log_success "Initrd: $(basename "$INITRD")"
 
@@ -311,11 +495,6 @@ touch "$STAGING_DIR/live/filesystem.squashfs-"
 # ==================== 步骤8: 创建引导配置 ====================
 log_info "[8/10] Creating boot configuration..."
 
-# 复制引导文件
-cp /usr/lib/ISOLINUX/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || \
-cp /usr/lib/syslinux/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || true
-
-cp /usr/lib/syslinux/modules/bios/ldlinux.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
 
 # 创建isolinux配置
 cat > "$STAGING_DIR/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
@@ -347,6 +526,59 @@ menuentry "Install OpenWRT" {
 }
 GRUB_CFG
 
+
+cat > "${WORK_DIR}/tmp/grub-standalone.cfg" << 'STAD_CFG'
+search --set=root --file /DEBIAN_CUSTOM
+set prefix=($root)/boot/grub/
+configfile /boot/grub/grub.cfg
+STAD_CFG
+
+touch "${STAGING_DIR}/DEBIAN_CUSTOM"
+# 复制引导文件
+cp /usr/lib/ISOLINUX/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || \
+cp /usr/lib/syslinux/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || true
+
+cp /usr/lib/syslinux/modules/bios/ldlinux.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
+# 复制GRUB模块
+if [ -d /usr/lib/grub/x86_64-efi ]; then
+    mkdir -p "${STAGING_DIR}/boot/grub/x86_64-efi"
+    cp -r /usr/lib/grub/x86_64-efi/* "${STAGING_DIR}/boot/grub/x86_64-efi/" 2>/dev/null || true
+fi
+
+# 创建UEFI引导文件
+log_info "Creat UEFI boot file ..."
+grub-mkstandalone \
+    --format=x86_64-efi \
+    --output="${WORK_DIR}/tmp/bootx64.efi" \
+    --locales="" \
+    --fonts="" \
+    "boot/grub/grub.cfg=${WORK_DIR}/tmp/grub-standalone.cfg" 2>/dev/null || {
+    log_warning "GRUB standalone创建失败，使用备用方案"
+    # 备用：直接复制已有的EFI文件
+    if [ -f /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed ]; then
+        cp /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed "${WORK_DIR}/tmp/bootx64.efi"
+    fi
+}
+
+# 创建EFI映像
+cd "${STAGING_DIR}/EFI/boot"
+if [ -f "${WORK_DIR}/tmp/bootx64.efi" ]; then
+    EFI_SIZE=$(stat --format=%s "${WORK_DIR}/tmp/bootx64.efi" 2>/dev/null || echo 65536)
+    EFI_SIZE=$((EFI_SIZE + 65536))
+    
+    dd if=/dev/zero of=efiboot.img bs=1 count=0 seek=${EFI_SIZE} 2>/dev/null
+    /sbin/mkfs.vfat -F 32 efiboot.img 2>/dev/null || true
+    
+    mmd -i efiboot.img efi 2>/dev/null || true
+    mmd -i efiboot.img efi/boot 2>/dev/null || true
+    mcopy -i efiboot.img "${WORK_DIR}/tmp/bootx64.efi" ::efi/boot/bootx64.efi 2>/dev/null || true
+    
+    log_success "UEFI file sucess!"
+else
+    log_warning "UEFI creat boot error!"
+    rm -f efiboot.img
+fi
+
 # ==================== 步骤9: 构建ISO镜像 ====================
 log_info "[9/10] Building ISO image..."
 xorriso -as mkisofs \
@@ -361,6 +593,26 @@ xorriso -as mkisofs \
     -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
     -output "$ISO_PATH" \
     "$STAGING_DIR" 2>&1 | grep -E "(^[^.]|%)" || true
+
+# 如果UEFI文件存在，添加UEFI引导
+if [ -f "${STAGING_DIR}/EFI/boot/efiboot.img" ]; then
+    log_info "添加UEFI引导支持..."
+    xorriso -as mkisofs \
+        -iso-level 3 \
+        -full-iso9660-filenames \
+        -volid "OPENWRT_INSTALL" \
+        -eltorito-boot isolinux/isolinux.bin \
+        -eltorito-catalog isolinux/boot.cat \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
+        -eltorito-alt-boot \
+        -e EFI/boot/efiboot.img \
+        -no-emul-boot \
+        -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+        -output "${ISO_PATH}" \
+        "${STAGING_DIR}" 2>&1 | tee /tmp/xorriso.log
+fi
 
 # ==================== 步骤10: 验证结果 ====================
 log_info "[10/10] Verifying build..."
