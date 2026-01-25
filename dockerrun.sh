@@ -132,7 +132,7 @@ if docker images | grep -q "openwrt-iso-builder"; then
         -v "$(pwd)/build.sh:/build.sh:ro" \
         openwrt-iso-builder
 
-else if docker images | grep -q "debian:buster"; then
+elif docker images | grep -q "debian:buster"; then
     log_info "Using existing Docker image: debian:buster"
     docker run --privileged --rm \
         -v "$INPUT_IMG:/mnt/ezopwrt.img:ro" \
@@ -230,41 +230,6 @@ if [ $BUILD_RESULT -eq 0 ] && [ -f "$ISO_PATH" ]; then
     log_info "  File Size:    $ISO_SIZE"
     log_info "  Location:     $ISO_PATH"
     echo ""
-    
-    # 显示ISO基本信息
-    log_info "ISO Information:"
-    if command -v file &> /dev/null; then
-        file "$ISO_PATH"
-    fi
-    
-    # 创建构建报告
-    cat > "$OUTPUT_DIR/build-report.md" << 'REPORT_EOF'
-# OpenWRT Installer ISO Build Report
-
-## Build Information
-- **Build Date:** __DATE_PLACEHOLDER__
-- **Build Script:** dockerrun.sh
-- **Docker Image:** openwrt-iso-builder
-
-## Input/Output
-- **Input Image:** __INPUT_PLACEHOLDER__
-- **Output ISO:** __ISO_NAME_PLACEHOLDER__
-- **ISO Size:** __ISO_SIZE_PLACEHOLDER__
-- **Full Path:** __ISO_PATH_PLACEHOLDER__
-
-## Usage Instructions
-1. Flash to USB: `dd if="__ISO_NAME_PLACEHOLDER__" of=/dev/sdX bs=4M status=progress`
-2. Boot from USB
-3. Follow on-screen instructions to install OpenWRT
-
-## Notes
-- This ISO supports both BIOS and UEFI boot
-- Installation will erase all data on target disk
-- Default boot timeout: 5 seconds
-
-## Build Command
-```bash
-./dockerrun.sh "__INPUT_PLACEHOLDER__" "__OUTPUT_DIR_PLACEHOLDER__" "__ISO_NAME_PLACEHOLDER__"
-REPORT_EOF
-log_success "🎉 All tasks completed successfully!"
+else
+    log_error "✅ ISO build completed error!"
 fi
