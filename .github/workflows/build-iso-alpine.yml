@@ -81,35 +81,29 @@ jobs:
           echo "测试镜像创建完成"
         fi
     
-    - name: Create output directory
+    - name: Build ISO with Alpine
       run: |
         mkdir -p output
         chmod 777 output
-      
-    - name: Build ISO with Alpine
-      run: |
-        # 给脚本执行权限
-        chmod +x build-iso-alpine.sh
+            chmod +x build-iso-alpine.sh
+    
         
         echo "🐳 在Docker容器中构建ISO..."
-        
-        # 简化的Docker运行命令
-        docker run --privileged --rm \
-          -v "$(pwd)/output:/output" \
-          -v "$(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro" \
-          -v "$(pwd)/build-iso-alpine.sh:/build.sh:ro" \
-          alpine:3.20 \
-          sh -c "
-          # 设置DNS
-          echo 'nameserver 8.8.8.8' > /etc/resolv.conf
-          echo 'nameserver 1.1.1.1' >> /etc/resolv.conf
-          
-          # 执行构建脚本
-          echo '开始构建ISO...'
-          /build.sh
-          "
-      
-        echo "✅ Docker容器执行完成"
+            # 2. 复制脚本到容器内执行
+            docker run --privileged --rm \
+              -v $(pwd)/output:/output \
+              -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
+              -v $(pwd)/build-iso-alpine.sh:/build-iso-alpine.sh:ro \
+              debian:buster \
+              bash -c "
+              # 安装必要工具
+              apt-get update
+              apt-get install -y \
+                debootstrap squashfs-tools xorriso isolinux syslinux-efi \
+                grub-pc-bin grub-efi-amd64-bin mtools dosfstools parted wget curl
+       
+              /build-iso-alpine.sh
+              "
     
     - name: Check ISO file
       run: |
