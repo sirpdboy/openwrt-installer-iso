@@ -16,16 +16,9 @@ CHROOT_DIR="$WORK_DIR/chroot"
 STAGING_DIR="$WORK_DIR/staging"
 ISO_PATH="$OUTPUT_DIR/$ISO_NAME"
 
-# Alpine配置 - 使用更稳定的版本
-ALPINE_VERSION="3.20"
+# Alpine配置
+ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
 ALPINE_ARCH="x86_64"
-# 使用多个镜像源，提高成功率
-ALPINE_MIRRORS=(
-    "http://dl-cdn.alpinelinux.org/alpine"
-    "https://mirrors.aliyun.com/alpine"
-    "https://mirrors.tuna.tsinghua.edu.cn/alpine"
-    "https://mirrors.ustc.edu.cn/alpine"
-)
 
 # 颜色定义
 RED='\033[0;31m'
@@ -39,19 +32,6 @@ log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-
-# 获取可用的镜像源
-get_working_mirror() {
-    for mirror in "${ALPINE_MIRRORS[@]}"; do
-        log_info "Testing mirror: $mirror"
-        if curl -s --connect-timeout 5 "$mirror/v$ALPINE_VERSION/main/$ALPINE_ARCH/APKINDEX.tar.gz" >/dev/null; then
-            echo "$mirror"
-            return 0
-        fi
-    done
-    echo ""
-    return 1
-}
 
 # 清理函数
 cleanup() {
@@ -79,7 +59,7 @@ log_info "  Work Dir:      $WORK_DIR"
 echo ""
 
 # ==================== 步骤1: 检查输入文件 ====================
-log_info "[1/10] Checking input file..."
+log_info "[1/9] Checking input file..."
 if [ ! -f "$OPENWRT_IMG" ]; then
     log_error "OpenWRT image not found: $OPENWRT_IMG"
     exit 1
@@ -89,42 +69,34 @@ IMG_SIZE=$(ls -lh "$OPENWRT_IMG" | awk '{print $5}')
 log_success "Found OpenWRT image: $IMG_SIZE"
 
 # ==================== 步骤2: 安装必要工具 ====================
-log_info "[2/10] Installing build tools..."
-apk update
+log_info "[2/9] Installing build tools..."
 
-# 使用国内镜像源加速下载
-if [ "$(apk -v | grep -c 'alpine')" -gt 0 ]; then
-    # 如果是Alpine系统，使用国内镜像
-    sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories || true
-    apk update
-fi
-
+# 更新并安装基本工具
+apk update --no-cache
 apk add --no-cache \
     alpine-sdk \
-    squashfs-tools \
     xorriso \
     syslinux \
-    grub-bios \
-    grub-efi \
     mtools \
     dosfstools \
-    parted \
-    curl \
+    squashfs-tools \
     wget \
-    dialog \
-    pv \
-    gptfdisk \
+    curl \
     e2fsprogs \
     e2fsprogs-extra \
+    parted \
+    gptfdisk \
     util-linux \
     coreutils \
     bash \
     sudo \
-    git \
-    ca-certificates
+    dialog \
+    pv
+
+log_success "Build tools installed"
 
 # ==================== 步骤3: 创建目录结构 ====================
-log_info "[3/10] Creating directory structure..."
+log_info "[3/9] Creating directory structure..."
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
 mkdir -p "$CHROOT_DIR"
@@ -133,131 +105,100 @@ mkdir -p "$WORK_DIR/tmp"
 mkdir -p "$OUTPUT_DIR"
 
 # ==================== 步骤4: 复制OpenWRT镜像 ====================
-log_info "[4/10] Copying OpenWRT image..."
+log_info "[4/9] Copying OpenWRT image..."
 cp "$OPENWRT_IMG" "$CHROOT_DIR/openwrt.img"
 log_success "OpenWRT image copied"
 
-# ==================== 步骤5: 获取可用的镜像源 ====================
-log_info "[5/10] Finding working Alpine mirror..."
-ALPINE_MIRROR=$(get_working_mirror)
-if [ -z "$ALPINE_MIRROR" ]; then
-    log_warning "No working Alpine mirror found, using default..."
-    ALPINE_MIRROR="http://dl-cdn.alpinelinux.org/alpine"
-fi
-log_success "Using mirror: $ALPINE_MIRROR"
+# ==================== 步骤5: 下载Alpine mini rootfs ====================
+log_info "[5/9] Downloading Alpine mini rootfs..."
 
-# ==================== 步骤6: 安装Alpine最小系统 ====================
-log_info "[6/10] Installing Alpine minimal system..."
+# 直接使用已知可用的镜像源下载mini rootfs
+MIRROR="http://dl-cdn.alpinelinux.org/alpine"
+MINIROOTFS_URL="$MIRROR/v$ALPINE_VERSION/releases/$ALPINE_ARCH/alpine-minirootfs-$ALPINE_VERSION.0-$ALPINE_ARCH.tar.gz"
 
-ALPINE_RELEASE_URL="$ALPINE_MIRROR/v$ALPINE_VERSION/releases/$ALPINE_ARCH"
+log_info "Downloading from: $MINIROOTFS_URL"
 
-# 下载Alpine mini rootfs（最可靠的方法）
-log_info "Downloading Alpine mini rootfs..."
-MINIROOTFS_URL="$ALPINE_RELEASE_URL/alpine-minirootfs-$ALPINE_VERSION.0-$ALPINE_ARCH.tar.gz"
-
-# 尝试下载，最多重试3次
-for i in {1..3}; do
-    if wget -O /tmp/alpine-minirootfs.tar.gz "$MINIROOTFS_URL"; then
-        if tar -tzf /tmp/alpine-minirootfs.tar.gz >/dev/null 2>&1; then
-            log_success "Downloaded Alpine mini rootfs (attempt $i)"
-            break
-        else
-            log_warning "Download corrupted, retrying..."
-            rm -f /tmp/alpine-minirootfs.tar.gz
-        fi
-    fi
+# 下载mini rootfs
+if wget -O /tmp/alpine-minirootfs.tar.gz "$MINIROOTFS_URL"; then
+    log_success "Downloaded Alpine mini rootfs"
     
-    if [ $i -eq 3 ]; then
-        log_error "Failed to download Alpine mini rootfs after 3 attempts"
+    # 验证文件
+    if tar -tzf /tmp/alpine-minirootfs.tar.gz >/dev/null 2>&1; then
+        log_success "File verification passed"
+    else
+        log_error "Downloaded file is corrupted"
         exit 1
     fi
-    sleep 2
-done
+else
+    # 尝试备用URL（不带版本号的）
+    log_warning "First attempt failed, trying alternative URL..."
+    ALT_URL="$MIRROR/latest-stable/releases/$ALPINE_ARCH/alpine-minirootfs-latest-$ALPINE_ARCH.tar.gz"
+    if wget -O /tmp/alpine-minirootfs.tar.gz "$ALT_URL"; then
+        log_success "Downloaded from alternative URL"
+    else
+        log_error "Failed to download Alpine mini rootfs"
+        exit 1
+    fi
+fi
 
 # 解压到chroot目录
 tar -xzf /tmp/alpine-minirootfs.tar.gz -C "$CHROOT_DIR"
 rm -f /tmp/alpine-minirootfs.tar.gz
 
-# 安装必要的包到chroot
+# ==================== 步骤6: 配置Alpine chroot环境 ====================
+log_info "[6/9] Configuring Alpine chroot environment..."
+
+# 创建配置脚本
 cat > "$CHROOT_DIR/setup-alpine.sh" << 'ALPINE_EOF'
 #!/bin/sh
 set -e
 
 echo "🔧 Setting up Alpine environment..."
 
-# 设置正确的apk仓库格式（包含架构）
+# 设置apk仓库（正确的格式）
 cat > /etc/apk/repositories <<EOF
-$ALPINE_MIRROR/v3.20/main/$ALPINE_ARCH
-$ALPINE_MIRROR/v3.20/community/$ALPINE_ARCH
+http://dl-cdn.alpinelinux.org/alpine/v3.20/main
+http://dl-cdn.alpinelinux.org/alpine/v3.20/community
 EOF
 
-# 添加备用镜像源
-cat >> /etc/apk/repositories <<EOF
-
-# 阿里云镜像
-https://mirrors.aliyun.com/alpine/v3.20/main/$ALPINE_ARCH
-https://mirrors.aliyun.com/alpine/v3.20/community/$ALPINE_ARCH
-
-# 清华大学镜像
-https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.20/main/$ALPINE_ARCH
-https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.20/community/$ALPINE_ARCH
-EOF
-
-# 更新包数据库，重试机制
+# 更新包数据库
 echo "Updating package database..."
-for i in 1 2 3; do
-    echo "Attempt $i to update package database..."
-    if apk update 2>&1 | grep -E "(OK|Downloading)"; then
-        echo "Package database updated successfully"
-        break
-    fi
-    echo "Attempt $i failed, waiting 2 seconds..."
-    sleep 2
-    if [ $i -eq 3 ]; then
-        echo "Warning: Failed to update package database after 3 attempts"
-    fi
-done
+apk update --no-cache
 
-# 安装最小必要包集合
+# 安装最小必要包
 echo "Installing essential packages..."
-ESSENTIAL_PACKAGES="
-linux-lts
-openrc
-eudev
-util-linux
-bash
-busybox
-parted
-gptfdisk
-e2fsprogs
-dosfstools
-syslinux
-grub-bios
-grub-efi
-curl
-wget
-dialog
-pv
-nano
-less
-openssh
-openssh-server
-dhcpcd
-haveged
-"
-
-# 逐个安装包，提高成功率
-for pkg in $ESSENTIAL_PACKAGES; do
-    echo "Installing $pkg..."
-    apk add --no-cache $pkg 2>&1 | grep -v "WARNING" || echo "Failed to install $pkg, continuing..."
-done
+apk add --no-cache \
+    linux-lts \
+    openrc \
+    eudev \
+    util-linux \
+    bash \
+    busybox \
+    parted \
+    gptfdisk \
+    e2fsprogs \
+    dosfstools \
+    syslinux \
+    grub-bios \
+    grub-efi \
+    xorriso \
+    curl \
+    wget \
+    dialog \
+    pv \
+    nano \
+    less \
+    openssh \
+    openssh-server \
+    dhcpcd \
+    haveged
 
 # 设置主机名
 echo "openwrt-installer" > /etc/hostname
 
-# 设置时区为UTC
-ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+# 设置时区
 echo "UTC" > /etc/timezone
+ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 
 # 设置DNS
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
@@ -267,9 +208,19 @@ echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 sed -i 's/^root:!:/root::/' /etc/shadow
 
 # 启用基本服务
-for service in devfs dmesg mdev hwclock modules sysctl hostname bootmisc syslog networking sshd haveged dhcpcd; do
-    rc-update add $service 2>/dev/null || true
-done
+rc-update add devfs sysinit
+rc-update add dmesg sysinit
+rc-update add mdev sysinit
+rc-update add hwclock boot
+rc-update add modules boot
+rc-update add sysctl boot
+rc-update add hostname boot
+rc-update add bootmisc boot
+rc-update add syslog boot
+rc-update add networking boot
+rc-update add sshd default
+rc-update add haveged default
+rc-update add dhcpcd default
 
 # 配置网络
 cat > /etc/network/interfaces <<'EOF'
@@ -281,8 +232,8 @@ iface eth0 inet dhcp
 EOF
 
 # 允许root通过SSH登录
-sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config 2>/dev/null || true
-sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 
 # 创建自动启动脚本
 mkdir -p /etc/local.d
@@ -328,7 +279,7 @@ fi
 START_SCRIPT
 
 chmod +x /etc/local.d/autoinstall.start
-rc-update add local default 2>/dev/null || true
+rc-update add local default
 
 # 创建安装脚本
 mkdir -p /opt
@@ -483,10 +434,6 @@ rm -rf /var/cache/apk/*
 echo "✅ Alpine setup complete!"
 ALPINE_EOF
 
-# 替换脚本中的变量
-sed -i "s|ALPINE_MIRROR|$ALPINE_MIRROR|g" "$CHROOT_DIR/setup-alpine.sh"
-sed -i "s|ALPINE_ARCH|$ALPINE_ARCH|g" "$CHROOT_DIR/setup-alpine.sh"
-
 chmod +x "$CHROOT_DIR/setup-alpine.sh"
 
 # 挂载必要的文件系统
@@ -512,39 +459,28 @@ fi
 rm -f "$CHROOT_DIR/setup-alpine.sh"
 
 # ==================== 步骤7: 准备内核和initramfs ====================
-log_info "[7/10] Preparing kernel and initramfs..."
+log_info "[7/9] Preparing kernel and initramfs..."
 
-# 检查chroot中是否有内核
-KERNEL_FOUND=$(find "$CHROOT_DIR" -name "vmlinuz*" -type f 2>/dev/null | head -1)
-INITRAMFS_FOUND=$(find "$CHROOT_DIR" -name "initramfs*" -o -name "initrd*" -type f 2>/dev/null | head -1)
-
-if [ -n "$KERNEL_FOUND" ]; then
-    cp "$KERNEL_FOUND" "$STAGING_DIR/live/vmlinuz"
-    log_success "Copied kernel from chroot: $(basename "$KERNEL_FOUND")"
-else
-    # 下载内核
-    log_warning "No kernel found in chroot, downloading one..."
-    KERNEL_URL="$ALPINE_MIRROR/v$ALPINE_VERSION/releases/$ALPINE_ARCH/boot/vmlinuz-lts"
-    if wget -O "$STAGING_DIR/live/vmlinuz" "$KERNEL_URL"; then
-        log_success "Downloaded kernel from mirror"
+# 查找内核
+KERNEL_PATH="$CHROOT_DIR/boot"
+if [ -d "$KERNEL_PATH" ]; then
+    KERNEL=$(find "$KERNEL_PATH" -name "vmlinuz*" -type f 2>/dev/null | head -1)
+    if [ -n "$KERNEL" ]; then
+        cp "$KERNEL" "$STAGING_DIR/live/vmlinuz"
+        log_success "Copied kernel: $(basename "$KERNEL")"
     else
-        # 最后的手段：使用当前系统的内核
-        if [ -f "/boot/vmlinuz" ]; then
-            cp "/boot/vmlinuz" "$STAGING_DIR/live/vmlinuz"
-            log_success "Copied kernel from host system"
-        else
-            log_error "Cannot find kernel!"
-            exit 1
-        fi
+        log_warning "No kernel found in chroot, will use system kernel"
     fi
 fi
 
-if [ -n "$INITRAMFS_FOUND" ]; then
-    cp "$INITRAMFS_FOUND" "$STAGING_DIR/live/initrd"
-    log_success "Copied initramfs from chroot: $(basename "$INITRAMFS_FOUND")"
+# 查找initramfs
+INITRAMFS=$(find "$KERNEL_PATH" -name "initramfs*" -o -name "initrd*" -type f 2>/dev/null | head -1)
+if [ -n "$INITRAMFS" ]; then
+    cp "$INITRAMFS" "$STAGING_DIR/live/initrd"
+    log_success "Copied initramfs: $(basename "$INITRAMFS")"
 else
-    # 创建简单的initramfs
-    log_warning "Creating simple initramfs..."
+    # 如果没有找到initramfs，生成一个简单的
+    log_warning "No initramfs found, creating simple one..."
     mkdir -p "$WORK_DIR/initramfs"
     cd "$WORK_DIR/initramfs"
     
@@ -555,8 +491,6 @@ else
     if [ -f "$CHROOT_DIR/bin/busybox" ]; then
         cp "$CHROOT_DIR/bin/busybox" bin/
         chmod +x bin/busybox
-    else
-        log_warning "Busybox not found in chroot, creating minimal init script"
     fi
     
     # 创建init脚本
@@ -610,8 +544,27 @@ INIT_EOF
     log_success "Created simple initramfs"
 fi
 
+# 如果还没有内核，尝试从系统复制
+if [ ! -f "$STAGING_DIR/live/vmlinuz" ]; then
+    log_warning "No kernel found, trying to use system kernel..."
+    if [ -f "/boot/vmlinuz" ]; then
+        cp "/boot/vmlinuz" "$STAGING_DIR/live/vmlinuz"
+        log_success "Copied kernel from host system"
+    else
+        # 最后的手段：下载一个内核
+        log_warning "Downloading kernel from Alpine repository..."
+        KERNEL_URL="http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/releases/$ALPINE_ARCH/boot/vmlinuz-lts"
+        if wget -O "$STAGING_DIR/live/vmlinuz" "$KERNEL_URL"; then
+            log_success "Downloaded kernel from Alpine repository"
+        else
+            log_error "Cannot find or download kernel!"
+            exit 1
+        fi
+    fi
+fi
+
 # ==================== 步骤8: 创建squashfs文件系统 ====================
-log_info "[8/10] Creating squashfs filesystem..."
+log_info "[8/9] Creating squashfs filesystem..."
 
 # 创建排除列表
 cat > "$WORK_DIR/exclude.list" <<'EOF'
@@ -630,7 +583,7 @@ etc/ssh/ssh_host_*
 var/log
 EOF
 
-# 使用gzip压缩以获得更好的兼容性
+# 使用gzip压缩
 log_info "Creating compressed filesystem (this may take a moment)..."
 if mksquashfs "$CHROOT_DIR" "$STAGING_DIR/live/filesystem.squashfs" \
     -comp gzip \
@@ -651,12 +604,12 @@ fi
 echo "live" > "$STAGING_DIR/live/filesystem.squashfs.type"
 
 # ==================== 步骤9: 创建引导配置 ====================
-log_info "[9/10] Creating boot configuration..."
+log_info "[9/9] Creating boot configuration..."
 
 # 1. 创建ISOLINUX配置 (BIOS引导)
 cat > "$STAGING_DIR/boot/isolinux/isolinux.cfg" <<'ISOLINUX_CFG'
 DEFAULT openwrt
-TIMEOUT 30
+TIMEOUT 50
 PROMPT 0
 UI menu.c32
 
@@ -672,22 +625,16 @@ LABEL shell
   MENU LABEL ^Emergency Shell
   KERNEL /live/vmlinuz
   APPEND initrd=/live/initrd console=tty0 console=ttyS0,115200 boot=live single
-
-LABEL memtest
-  MENU LABEL ^Memory Test
-  KERNEL memtest
 ISOLINUX_CFG
 
 # 复制isolinux文件
-ISOLINUX_BIN=$(find /usr -name "isolinux.bin" 2>/dev/null | head -1)
-if [ -n "$ISOLINUX_BIN" ]; then
-    cp "$ISOLINUX_BIN" "$STAGING_DIR/boot/isolinux/"
+if [ -f /usr/share/syslinux/isolinux.bin ]; then
+    cp /usr/share/syslinux/isolinux.bin "$STAGING_DIR/boot/isolinux/"
     
     # 复制必要的模块
     for module in menu.c32 libutil.c32 libcom32.c32 ldlinux.c32; do
-        MODULE_PATH=$(find /usr -name "$module" 2>/dev/null | head -1)
-        if [ -n "$MODULE_PATH" ]; then
-            cp "$MODULE_PATH" "$STAGING_DIR/boot/isolinux/"
+        if [ -f "/usr/share/syslinux/$module" ]; then
+            cp "/usr/share/syslinux/$module" "$STAGING_DIR/boot/isolinux/"
         fi
     done
     log_success "ISOLINUX files copied"
@@ -697,7 +644,7 @@ fi
 
 # 2. 创建GRUB配置 (UEFI引导)
 cat > "$STAGING_DIR/boot/grub/grub.cfg" <<'GRUB_CFG'
-set timeout=3
+set timeout=5
 set default=0
 
 menuentry "Install OpenWRT" {
@@ -713,50 +660,66 @@ GRUB_CFG
 
 # 3. 创建UEFI引导镜像
 log_info "Creating UEFI boot image..."
-EFI_IMG_SIZE=16M
+EFI_IMG_SIZE=8M
 dd if=/dev/zero of="$STAGING_DIR/EFI/boot/efiboot.img" bs=1 count=0 seek=$EFI_IMG_SIZE 2>/dev/null
-if mkfs.vfat -F 32 -n "EFIBOOT" "$STAGING_DIR/EFI/boot/efiboot.img" 2>/dev/null; then
-    # 查找GRUB EFI文件
-    GRUB_EFI=$(find /usr -type f -name "grubx64.efi" -o -name "bootx64.efi" 2>/dev/null | head -1)
-    if [ -n "$GRUB_EFI" ] && command -v mmd >/dev/null 2>&1 && command -v mcopy >/dev/null 2>&1; then
-        mmd -i "$STAGING_DIR/EFI/boot/efiboot.img" ::/EFI 2>/dev/null
-        mmd -i "$STAGING_DIR/EFI/boot/efiboot.img" ::/EFI/BOOT 2>/dev/null
-        mcopy -i "$STAGING_DIR/EFI/boot/efiboot.img" "$GRUB_EFI" ::/EFI/BOOT/BOOTX64.EFI 2>/dev/null
-        log_success "Added GRUB EFI to boot image"
+
+if command -v mkfs.vfat >/dev/null 2>&1; then
+    if mkfs.vfat -F 32 -n "EFIBOOT" "$STAGING_DIR/EFI/boot/efiboot.img" 2>/dev/null; then
+        # 查找GRUB EFI文件
+        GRUB_EFI=$(find /usr -type f -name "grubx64.efi" -o -name "bootx64.efi" 2>/dev/null | head -1)
+        if [ -n "$GRUB_EFI" ] && command -v mmd >/dev/null 2>&1 && command -v mcopy >/dev/null 2>&1; then
+            mmd -i "$STAGING_DIR/EFI/boot/efiboot.img" ::/EFI 2>/dev/null
+            mmd -i "$STAGING_DIR/EFI/boot/efiboot.img" ::/EFI/BOOT 2>/dev/null
+            mcopy -i "$STAGING_DIR/EFI/boot/efiboot.img" "$GRUB_EFI" ::/EFI/BOOT/BOOTX64.EFI 2>/dev/null
+            log_success "Added GRUB EFI to boot image"
+        else
+            log_warning "Could not add GRUB EFI to boot image (missing tools or file)"
+        fi
     else
-        log_warning "Could not add GRUB EFI to boot image"
+        log_warning "Failed to create FAT filesystem for UEFI"
     fi
 else
-    log_warning "Failed to create UEFI boot image"
+    log_warning "mkfs.vfat not available, skipping UEFI boot image"
 fi
 
 # ==================== 步骤10: 构建ISO镜像 ====================
-log_info "[10/10] Building ISO image..."
+log_info "[10/9] Building ISO image..."
 
 # 构建ISO
-xorriso_cmd="xorriso -as mkisofs \
-    -iso-level 3 \
-    -full-iso9660-filenames \
-    -volid 'OPENWRT_INSTALL' \
-    -eltorito-boot boot/isolinux/isolinux.bin \
-    -eltorito-catalog boot/isolinux/boot.cat \
-    -no-emul-boot \
-    -boot-load-size 4 \
-    -boot-info-table \
-    -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
-    -output '$ISO_PATH' \
-    '$STAGING_DIR'"
-
-log_info "Running xorriso command..."
-if eval "$xorriso_cmd" 2>&1 | tail -20; then
-    log_success "ISO creation started"
+if command -v xorriso >/dev/null 2>&1; then
+    log_info "Creating ISO with xorriso..."
+    
+    # 检查是否有isolinux文件
+    if [ -f "$STAGING_DIR/boot/isolinux/isolinux.bin" ]; then
+        xorriso -as mkisofs \
+            -iso-level 3 \
+            -full-iso9660-filenames \
+            -volid "OPENWRT_INSTALL" \
+            -eltorito-boot boot/isolinux/isolinux.bin \
+            -eltorito-catalog boot/isolinux/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
+            -output "$ISO_PATH" \
+            "$STAGING_DIR" 2>&1 | tail -20
+    else
+        # 如果没有isolinux，创建简单的ISO
+        log_warning "No isolinux found, creating simple ISO..."
+        xorriso -as mkisofs \
+            -iso-level 3 \
+            -full-iso9660-filenames \
+            -volid "OPENWRT_INSTALL" \
+            -output "$ISO_PATH" \
+            "$STAGING_DIR" 2>&1 | tail -20
+    fi
 else
-    log_warning "First xorriso attempt failed, trying simpler method..."
-    xorriso -as mkisofs -o "$ISO_PATH" -V "OPENWRT_INSTALL" "$STAGING_DIR" 2>&1 | tail -10
+    log_error "xorriso not found!"
+    exit 1
 fi
 
 # ==================== 步骤11: 验证结果 ====================
-log_info "[11/10] Verifying build..."
+log_info "[11/9] Verifying build..."
 
 if [ -f "$ISO_PATH" ]; then
     ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
@@ -771,13 +734,12 @@ if [ -f "$ISO_PATH" ]; then
     log_info "  Output File: $ISO_PATH"
     log_info "  File Size:   $ISO_SIZE"
     log_info "  Filesystem Size: $FILESYSTEM_SIZE"
-    log_info "  Boot Support: BIOS + UEFI"
     echo ""
     
     # 显示ISO信息
     echo "ISO Information:"
     echo "================"
-    file "$ISO_PATH"
+    file "$ISO_PATH" 2>/dev/null || echo "Cannot determine file type"
     echo ""
     
     # 创建构建信息文件
@@ -787,21 +749,12 @@ OpenWRT Installer ISO Build Information (Alpine)
 Build Date:      $(date)
 Build Script:    build-alpine-openwrt-iso.sh
 Alpine Version:  $ALPINE_VERSION
-Alpine Mirror:   $ALPINE_MIRROR
 
 Input Image:     $(basename "$OPENWRT_IMG")
 Input Size:      $IMG_SIZE
 Output ISO:      $ISO_NAME
 ISO Size:        $ISO_SIZE
 Filesystem Size: $FILESYSTEM_SIZE
-
-Boot Support:    Hybrid ISO (BIOS + UEFI)
-Boot Loader:     ISOLINUX (BIOS) + GRUB (UEFI)
-Boot Timeout:    30 seconds (BIOS), 3 seconds (UEFI)
-Auto-install:    Enabled
-
-Kernel:          $(basename "$STAGING_DIR/live/vmlinuz")
-Initrd:          $(basename "$STAGING_DIR/live/initrd")
 
 Features:
   - Alpine Linux base (musl libc) - Minimal footprint
@@ -819,12 +772,6 @@ Installation Instructions:
   5. Type 'YES' to confirm (erases all data!)
   6. Wait for installation to complete
   7. System will auto-reboot (can be cancelled)
-
-Notes:
-  - Installation will COMPLETELY ERASE the target disk
-  - Make sure to backup important data first
-  - The installer includes emergency shell for troubleshooting
-  - SSH is enabled with root login (no password)
 
 Build completed successfully at $(date)
 EOF
