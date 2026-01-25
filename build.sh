@@ -455,7 +455,7 @@ umount "${CHROOT_DIR}/dev" 2>/dev/null || true
 mkdir -p ${WORK_DIR}/{staging/{EFI/boot,boot/grub/x86_64-efi,isolinux,live},tmp}
 
 echo Compress the chroot environment into a Squash filesystem.
-cp /mnt/armbian.img ${CHROOT_DIR}/mnt/
+# cp /mnt/armbian.img ${CHROOT_DIR}/mnt/
 ls ${CHROOT_DIR}/mnt/
 mksquashfs ${CHROOT_DIR} ${STAGING_DIR}/live/filesystem.squashfs -e boot
 
