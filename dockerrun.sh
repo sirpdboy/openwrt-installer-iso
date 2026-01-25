@@ -220,7 +220,6 @@ ISO_PATH="$OUTPUT_DIR/$ISO_NAME"
 
 if [ $BUILD_RESULT -eq 0 ] && [ -f "$ISO_PATH" ]; then
     ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
-    
     echo ""
     log_success "✅ ISO build completed successfully!"
     echo ""
@@ -230,6 +229,8 @@ if [ $BUILD_RESULT -eq 0 ] && [ -f "$ISO_PATH" ]; then
     log_info "  File Size:    $ISO_SIZE"
     log_info "  Location:     $ISO_PATH"
     echo ""
+    ls -lh "$ISO_PATH"
 else
-    log_error "✅ ISO build completed error!"
+    echo "❌ Failed to create ISO"
+    exit 1
 fi
