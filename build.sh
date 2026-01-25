@@ -476,12 +476,24 @@ log_success "Initrd: $(basename "$INITRD")"
 
 # ==================== 步骤7: 创建squashfs文件系统 ====================
 log_info "[7/10] Creating squashfs filesystem..."
+
+# 排除不需要的目录
+EXCLUDE_DIRS="boot dev proc sys tmp run mnt media var/cache var/tmp var/log var/lib/apt/lists"
+
+# 构建排除参数
+EXCLUDE_OPTS=""
+for dir in $EXCLUDE_DIRS; do
+    EXCLUDE_OPTS="$EXCLUDE_OPTS -e $CHROOT_DIR/$dir"
+done
+
 if mksquashfs "$CHROOT_DIR" \
     "$STAGING_DIR/live/filesystem.squashfs" \
-    -comp xz \
+    -comp gzip \          # 改为gzip压缩，更快
     -b 1M \
     -noappend \
-    -e boot; then
+    -no-progress \        # 不显示进度条
+    -no-recovery \        # 禁用恢复模式
+    $EXCLUDE_OPTS; then
     log_success "Squashfs created successfully"
 else
     log_error "Failed to create squashfs"
