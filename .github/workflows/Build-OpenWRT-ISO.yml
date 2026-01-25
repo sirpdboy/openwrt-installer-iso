@@ -20,6 +20,44 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
     
+    - name: Setup Docker (Fixed)
+      run: |
+        # 清理已有Docker安装
+        sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+        sudo apt-get autoremove -y
+        
+        # 安装必要依赖
+        sudo apt-get update
+        sudo apt-get install -y \
+            ca-certificates \
+            curl \
+            gnupg \
+            lsb-release
+        
+        # 添加Docker官方GPG密钥
+        sudo mkdir -p /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        
+        # 设置仓库
+        echo \
+          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+          $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        
+        # 安装Docker
+        sudo apt-get update
+        sudo apt-get install -y \
+            docker-ce \
+            docker-ce-cli \
+            containerd.io \
+            docker-compose-plugin
+        
+        # 启动服务
+        sudo systemctl start docker
+        sudo systemctl enable docker
+        
+        # 验证
+        docker --version
+        echo "✅ Docker安装成功"
     - name: Download OpenWRT image
       run: |
         mkdir -p assets
