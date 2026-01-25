@@ -585,12 +585,13 @@ PROMPT 1
 UI menu.c32
 
 MENU TITLE OpenWRT Auto Installer
+MENU BACKGROUND splash.png
 
 LABEL openwrt
   MENU LABEL ^Install OpenWRT (Default)
   MENU DEFAULT
   KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd boot=live components quiet
+  APPEND initrd=/live/initrd boot=live console=tty0 console=ttyS0,115200 quiet splash
 
 LABEL openwrt_toram
   MENU LABEL Install OpenWRT (^Copy to RAM)
@@ -643,7 +644,7 @@ set menu_color_normal=white/black
 set menu_color_highlight=black/white
 
 menuentry "Install OpenWRT (Default)" {
-    linux /live/vmlinuz boot=live components quiet
+    linux /live/vmlinuz boot=live console=tty0 console=ttyS0,115200 quiet splash
     initrd /live/initrd
 }
 
@@ -739,8 +740,8 @@ if [ -f "$ISO_PATH" ]; then
     
     # 创建构建信息
     cat > "$OUTPUT_DIR/build-info.txt" << EOF
-OpenWRT Installer ISO - Minimal Alpine Build
-=============================================
+OpenWRT Installer ISO - Fixed Boot Version
+===========================================
 Build Date:      $(date)
 ISO Name:        $ISO_NAME
 ISO Size:        $ISO_SIZE
