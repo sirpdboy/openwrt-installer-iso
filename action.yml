@@ -22,27 +22,23 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Check inputs
+    - name: Setup
       shell: bash
       run: |
-        echo "🔧 OpenWRT ISO Builder"
-        echo "====================="
+        echo "🚀 OpenWRT ISO Builder"
+        echo "======================"
         echo "Input IMG: ${{ inputs.INPUT_IMG }}"
         echo "Output Dir: ${{ inputs.OUTPUT_DIR }}"
         echo "ISO Name: ${{ inputs.OUTPUT_ISO_NAME }}"
         echo ""
         
-        # 检查脚本是否存在
-        if [ ! -f "./dockerrun.sh" ]; then
-          echo "❌ Error: dockerrun.sh not found!"
-          exit 1
-        fi
+        # 确保脚本可执行
+        chmod +x ./dockerrun.sh 2>/dev/null || true
         
-        chmod +x ./dockerrun.sh
-        
-    - name: Build ISO
+    - name: Run Docker Build
       shell: bash
       run: |
+        # 执行Docker构建
         ./dockerrun.sh \
           "${{ inputs.INPUT_IMG }}" \
           "${{ inputs.OUTPUT_DIR }}" \
