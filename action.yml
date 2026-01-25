@@ -1,0 +1,38 @@
+name: "Build OpenWRT Installer ISO"
+author: "https://github.com/sirpdboy/openwrt-installer-iso"
+description: "Convert OpenWRT IMG to bootable auto-installer ISO"
+branding:
+  icon: 'download-cloud'
+  color: 'blue'
+
+inputs:
+  INPUT_IMG:
+    description: "Source OpenWRT IMG file path"
+    required: true
+    default: "/mnt/openwrt.img"
+  OUTPUT_DIR:
+    description: "Output directory for ISO file"
+    required: false
+    default: "/output"
+  OUTPUT_ISO_NAME:
+    description: "Output ISO file name"
+    required: false
+    default: "openwrt-autoinstall.iso"
+  ARCH:
+    description: "Target architecture"
+    required: false
+    default: "x86_64"
+  ENABLE_UEFI:
+    description: "Enable UEFI boot support"
+    required: false
+    default: "true"
+
+runs:
+  using: "docker"
+  image: "Dockerfile"
+  args:
+    - "${{ inputs.INPUT_IMG }}"
+    - "${{ inputs.OUTPUT_DIR }}"
+    - "${{ inputs.OUTPUT_ISO_NAME }}"
+    - "${{ inputs.ARCH }}"
+    - "${{ inputs.ENABLE_UEFI }}"
