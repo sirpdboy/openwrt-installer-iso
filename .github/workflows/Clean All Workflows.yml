@@ -101,13 +101,16 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo timedatectl set-timezone "${TZ}"
-          echo "status=success" >> ${GITHUB_OUTPUT}
 
-      - name: Delete workflow runs
+      - name: Delete old workflow runs
         uses: Mattraks/delete-workflow-runs@v2
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          baseUrl: https://github.mycompany.com/api/v3
+          repository: mycompany/myrepo
           retain_days: 1
           keep_minimum_runs: 5
+          use_daily_retention: "true"
 
       - name: Remove old Releases
         uses: dev-drprasad/delete-older-releases@v0.3.4
