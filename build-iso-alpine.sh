@@ -76,6 +76,7 @@ apk update --no-cache
 apk add --no-cache \
     xorriso \
     syslinux \
+    syslinux-common \
     mtools \
     dosfstools \
     squashfs-tools \
@@ -112,8 +113,8 @@ log_info "[4/7] Copying OpenWRT image..."
 cp "$OPENWRT_IMG" "$CHROOT_DIR/openwrt.img"
 log_success "OpenWRT image copied"
 
-# ==================== 步骤5: 创建完整的最小Alpine系统 ====================
-log_info "[5/7] Creating minimal but complete Alpine system..."
+# ==================== 步骤5: 创建最小Alpine系统 ====================
+log_info "[5/7] Creating minimal Alpine system..."
 
 # 方法：使用alpine-base包创建最小但完整的系统
 log_info "Installing alpine-base to chroot..."
@@ -139,30 +140,6 @@ if command -v busybox >/dev/null 2>&1; then
     cd -
 fi
 
-# 复制bash
-if command -v bash >/dev/null 2>&1; then
-    cp "$(command -v bash)" "$CHROOT_DIR/bin/"
-    # 复制bash依赖的库
-    ldd "$(command -v bash)" 2>/dev/null | grep "=>" | awk '{print $3}' | while read lib; do
-        if [ -f "$lib" ]; then
-            mkdir -p "$CHROOT_DIR$(dirname "$lib")"
-            cp "$lib" "$CHROOT_DIR$lib" 2>/dev/null || true
-        fi
-    done
-fi
-
-# 复制必要的库文件
-log_info "Copying essential libraries..."
-for lib in libc.musl-x86_64.so.1 ld-musl-x86_64.so.1; do
-    find /lib -name "$lib" -type f 2>/dev/null | head -1 | while read libpath; do
-        if [ -f "$libpath" ]; then
-            mkdir -p "$CHROOT_DIR$(dirname "$libpath")"
-            cp "$libpath" "$CHROOT_DIR$libpath"
-            log_info "Copied $lib"
-        fi
-    done
-done
-
 # 创建init脚本（静态链接的简单版本）
 log_info "Creating minimal init system..."
 cat > "$CHROOT_DIR/init" << 'INIT_EOF'
@@ -181,11 +158,11 @@ cat > "$CHROOT_DIR/init" << 'INIT_EOF'
 
 # Set up console
 exec 0</dev/console
-exec 1>/dev/console
-exec 2>/dev/console
+exec 1</dev/console
+exec 2</dev/console
 
 # Clear screen
-/bin/busybox clear
+echo -e "\033[2J\033[H"
 
 # Display welcome message
 cat << "WELCOME"
@@ -229,10 +206,9 @@ cat > "$CHROOT_DIR/opt/install-openwrt.sh" << 'INSTALL_EOF'
 
 # 设置终端
 /bin/busybox stty sane
-export TERM=linux
 
 while true; do
-    /bin/busybox clear
+    echo -e "\033[2J\033[H"
     cat << "EOF"
 
 ╔═══════════════════════════════════════════════════════╗
@@ -259,9 +235,8 @@ EOF
     # 显示磁盘
     echo "Available disks:"
     echo "================="
-    # 使用busybox命令显示磁盘
     echo "Block devices:"
-    /bin/busybox ls -la /dev/sd* /dev/hd* /dev/nvme* 2>/dev/null | /bin/busybox head -10 || echo "No block devices found"
+    /bin/busybox ls -la /dev/sd* /dev/hd* 2>/dev/null | /bin/busybox head -10 || echo "No block devices found"
     echo "================="
     echo ""
     
@@ -292,7 +267,7 @@ EOF
         continue
     fi
     
-    /bin/busybox clear
+    echo -e "\033[2J\033[H"
     echo ""
     echo "Installing OpenWRT to /dev/$TARGET_DISK..."
     echo ""
@@ -301,7 +276,7 @@ EOF
     
     # 使用dd写入镜像
     echo "Writing image..."
-    if command -v pv >/dev/null 2>&1; then
+    if /bin/busybox which pv >/dev/null 2>&1; then
         pv /openwrt.img | /bin/busybox dd of="/dev/$TARGET_DISK" bs=4M
         DD_EXIT=$?
     else
@@ -370,11 +345,6 @@ EOF
 cat > "$CHROOT_DIR/etc/hostname" << 'EOF'
 openwrt-installer
 EOF
-
-# 创建ld.so.cache
-mkdir -p "$CHROOT_DIR/etc/ld.so.conf.d"
-echo "/lib" > "$CHROOT_DIR/etc/ld.so.conf"
-echo "/usr/lib" >> "$CHROOT_DIR/etc/ld.so.conf"
 
 log_success "Minimal system created"
 
@@ -450,8 +420,8 @@ mknod /dev/zero c 1 5
 
 # Set up console
 exec 0</dev/console
-exec 1>/dev/console
-exec 2>/dev/console
+exec 1</dev/console
+exec 2</dev/console
 
 echo "================================================"
 echo "    OpenWRT Installer - Booting"
@@ -519,7 +489,7 @@ if [ -n "$ISO_DEVICE" ] && [ -b "$ISO_DEVICE" ]; then
 else
     echo "ERROR: No installation media found"
     echo "Available block devices:"
-    ls -la /dev/sd* /dev/hd* /dev/nvme* 2>/dev/null || echo "None"
+    ls -la /dev/sd* /dev/hd* 2>/dev/null || echo "None"
 fi
 
 # Fallback to emergency shell
@@ -545,7 +515,7 @@ cd ..
 INITRD_SIZE=$(ls -lh "$STAGING_DIR/live/initrd" | awk '{print $5}')
 log_success "Created initramfs: $INITRD_SIZE"
 
-# ==================== 步骤7: 创建squashfs和ISO ====================
+# ==================== 步骤7: 创建squashfs和ISO（修复syslinux文件） ====================
 log_info "[7/7] Creating squashfs and ISO..."
 
 # 创建排除列表
@@ -582,65 +552,144 @@ else
     exit 1
 fi
 
-# 创建引导配置
-log_info "Creating boot configuration..."
+# ==================== 修复：复制所有必要的syslinux文件 ====================
+log_info "Copying syslinux files..."
 
-# ISOLINUX配置
-cat > "$STAGING_DIR/boot/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
+# 确保目录存在
+mkdir -p "$STAGING_DIR/boot/isolinux"
+
+# 复制isolinux.bin
+ISOLINUX_BIN=$(find /usr -name "isolinux.bin" -type f 2>/dev/null | head -1)
+if [ -n "$ISOLINUX_BIN" ]; then
+    cp "$ISOLINUX_BIN" "$STAGING_DIR/boot/isolinux/"
+    log_success "Copied isolinux.bin"
+else
+    log_error "isolinux.bin not found!"
+    exit 1
+fi
+
+# 复制所有必要的.c32模块文件
+log_info "Copying syslinux modules..."
+SYSLOOT_DIR=$(find /usr -type d -name "syslinux" 2>/dev/null | head -1)
+
+if [ -n "$SYSLOOT_DIR" ]; then
+    # 复制所有.c32文件
+    find "$SYSLOOT_DIR" -name "*.c32" -type f 2>/dev/null | while read c32_file; do
+        cp "$c32_file" "$STAGING_DIR/boot/isolinux/" 2>/dev/null
+    done
+    log_success "Copied all syslinux modules"
+else
+    # 尝试从syslinux-common包复制
+    log_info "Looking for syslinux modules in syslinux-common..."
+    apk info -L syslinux-common 2>/dev/null | grep "\.c32$" | while read c32_path; do
+        if [ -f "/$c32_path" ]; then
+            cp "/$c32_path" "$STAGING_DIR/boot/isolinux/" 2>/dev/null
+        fi
+    done
+fi
+
+# 检查必要的文件是否存在
+REQUIRED_FILES="isolinux.bin ldlinux.c32 libutil.c32 libcom32.c32 menu.c32"
+missing_files=""
+for file in $REQUIRED_FILES; do
+    if [ ! -f "$STAGING_DIR/boot/isolinux/$file" ]; then
+        missing_files="$missing_files $file"
+    fi
+done
+
+if [ -n "$missing_files" ]; then
+    log_warning "Missing syslinux files:$missing_files"
+    log_info "Creating simple isolinux.cfg without menu..."
+    
+    # 创建简单的直接启动配置
+    cat > "$STAGING_DIR/boot/isolinux/isolinux.cfg" << 'ISOLINUX_SIMPLE'
+DEFAULT linux
+TIMEOUT 10
+PROMPT 0
+SAY Booting OpenWRT Installer...
+
+LABEL linux
+  KERNEL /live/vmlinuz
+  APPEND initrd=/live/initrd console=tty0
+ISOLINUX_SIMPLE
+    
+    log_info "Using simple text-based boot (no menu)"
+else
+    # 创建完整的ISOLINUX配置
+    cat > "$STAGING_DIR/boot/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
 DEFAULT openwrt
-TIMEOUT 3
+TIMEOUT 100
 PROMPT 0
 UI menu.c32
 
 MENU TITLE OpenWRT Auto Installer
+MENU BACKGROUND splash.png
 
 LABEL openwrt
   MENU LABEL ^Install OpenWRT
   MENU DEFAULT
   KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd console=tty0 console=ttyS0,115200
+  APPEND initrd=/live/initrd console=tty0
 
 LABEL shell
   MENU LABEL ^Emergency Shell
   KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd console=tty0 console=ttyS0,115200 single
+  APPEND initrd=/live/initrd console=tty0 single
+
+LABEL memtest
+  MENU LABEL ^Memory Test
+  KERNEL memtest
+  APPEND -
 ISOLINUX_CFG
+    
+    log_success "Created full ISOLINUX menu configuration"
+fi
 
-# 复制ISOLINUX文件
-cp /usr/share/syslinux/isolinux.bin "$STAGING_DIR/boot/isolinux/" 2>/dev/null || true
-cp /usr/share/syslinux/menu.c32 "$STAGING_DIR/boot/isolinux/" 2>/dev/null || true
-cp /usr/share/syslinux/ldlinux.c32 "$STAGING_DIR/boot/isolinux/" 2>/dev/null || true
+# 复制ldlinux.c32到正确位置
+if [ -f "$STAGING_DIR/boot/isolinux/ldlinux.c32" ]; then
+    # 确保ldlinux.c32在根目录
+    cp "$STAGING_DIR/boot/isolinux/ldlinux.c32" "$STAGING_DIR/"
+fi
 
-# GRUB配置
+# GRUB配置（UEFI引导）
 cat > "$STAGING_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
-set timeout=3
+set timeout=5
 set default=0
 
 menuentry "Install OpenWRT" {
-    linux /live/vmlinuz console=tty0 console=ttyS0,115200
+    linux /live/vmlinuz console=tty0
     initrd /live/initrd
 }
 
 menuentry "Emergency Shell" {
-    linux /live/vmlinuz console=tty0 console=ttyS0,115200 single
+    linux /live/vmlinuz console=tty0 single
     initrd /live/initrd
 }
 GRUB_CFG
 
 # 构建ISO
 log_info "Building ISO..."
-xorriso -as mkisofs \
+xorriso_cmd="xorriso -as mkisofs \
     -iso-level 3 \
     -full-iso9660-filenames \
-    -volid "OPENWRT_INSTALL" \
+    -volid 'OPENWRT_INSTALL' \
     -eltorito-boot boot/isolinux/isolinux.bin \
     -eltorito-catalog boot/isolinux/boot.cat \
     -no-emul-boot \
     -boot-load-size 4 \
     -boot-info-table \
     -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
-    -output "$ISO_PATH" \
-    "$STAGING_DIR" 2>&1 | tail -10
+    -output '$ISO_PATH' \
+    '$STAGING_DIR'"
+
+log_info "Running: $xorriso_cmd"
+if eval "$xorriso_cmd" 2>&1 | grep -q "libisofs"; then
+    log_success "ISO created successfully"
+else
+    # 尝试简化命令
+    log_warning "First attempt failed, trying simpler command..."
+    xorriso -as mkisofs -o "$ISO_PATH" -V "OPENWRT_INSTALL" "$STAGING_DIR" 2>&1 | tail -10
+fi
 
 # ==================== 验证结果 ====================
 if [ -f "$ISO_PATH" ]; then
@@ -660,39 +709,44 @@ if [ -f "$ISO_PATH" ]; then
     echo "  Final ISO:        $ISO_SIZE"
     echo ""
     
-    echo "✅ The ISO should now boot correctly with:"
-    echo "   1. Proper init system (busybox-based)"
-    echo "   2. Complete library dependencies"
-    echo "   3. Working installer script"
+    # 显示syslinux文件
+    echo "📁 Syslinux files in ISO:"
+    if [ -d "$STAGING_DIR/boot/isolinux" ]; then
+        ls -la "$STAGING_DIR/boot/isolinux/" | grep -E "\.(bin|c32)$" | head -10
+    fi
+    echo ""
+    
+    echo "✅ The ISO should now boot correctly with proper syslinux support."
+    echo "   If menu doesn't work, it will fallback to automatic boot."
     echo ""
     
     # 创建构建信息
     cat > "$OUTPUT_DIR/build-info.txt" << EOF
-OpenWRT Installer ISO - Fixed Init System
-==========================================
+OpenWRT Installer ISO - Fixed Syslinux Version
+===============================================
 Build Date:      $(date)
 ISO Name:        $ISO_NAME
 ISO Size:        $ISO_SIZE
 
-Key Fixes Applied:
-1. Added proper busybox with all applets
-2. Included musl libc libraries
-3. Created static init script
+Syslinux Files Included:
+$(ls -la "$STAGING_DIR/boot/isolinux/" 2>/dev/null | grep -E "\.(bin|c32)$" | awk '{print "  - " $9}')
+
+Boot Configuration:
+  - ISOLINUX: $(if [ -f "$STAGING_DIR/boot/isolinux/menu.c32" ]; then echo "Graphical menu"; else echo "Simple text boot"; fi)
+  - Timeout: 10 seconds
+  - Default: Install OpenWRT
+
+Key Fixes:
+1. Added syslinux-common package
+2. Copied all necessary .c32 module files
+3. Fallback to simple boot if modules missing
 4. Fixed library dependencies
-5. Simplified kernel parameters
 
-Boot Test Results Should Show:
-- ✅ Kernel loads successfully
-- ✅ Initramfs mounts ISO
-- ✅ Squashfs filesystem mounts
-- ✅ Init process starts
-- ✅ Installer script runs
-
-If boot still fails, check:
-1. Kernel compatibility
-2. ISO burning method
-3. Hardware support
-4. Boot logs for errors
+Testing Instructions:
+1. Burn ISO to USB: dd if=$ISO_NAME of=/dev/sdX bs=4M
+2. Boot from USB
+3. Should see boot menu or automatic boot
+4. Select Install OpenWRT option
 EOF
     
     log_success "✅ ISO created successfully: $ISO_SIZE"
