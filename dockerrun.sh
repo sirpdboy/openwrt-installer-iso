@@ -97,14 +97,6 @@ fi
 # 创建输出目录
 mkdir -p "$OUTPUT_DIR"
 
-# 构建Docker镜像
-log_info "Building Docker image..."
-if ! docker build -t openwrt-iso-builder:latest .; then
-    log_error "Docker image build failed"
-    exit 1
-fi
-log_success "Docker image built successfully"
-
 log_info "Starting Docker container for ISO build..."
 chmod +x build-iso.sh
 docker run --privileged --rm \
