@@ -58,6 +58,126 @@ docker run --privileged --rm \
   "
 
 ```
+markdown
+# OpenWRT Installer ISO Builder
+
+Convert OpenWRT disk images to bootable auto-installer ISOs with a simple GitHub Action.
+
+## Features
+
+- 🚀 Convert any OpenWRT IMG to bootable ISO
+- 💾 Supports both BIOS and UEFI boot
+- 🎯 Automatic installer with disk selection
+- 🔧 Simple three-parameter interface
+- 🐳 Docker-based isolated build environment
+
+## Quick Start
+
+### GitHub Actions
+
+```
+name: Build OpenWRT ISO
+
+on:
+  workflow_dispatch:
+    inputs:
+      img_url:
+        description: 'OpenWRT IMG URL'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download OpenWRT IMG
+      run: |
+        wget -O /tmp/openwrt.img "https://example.com/openwrt.img"
+    
+    - name: Build ISO
+      uses: sirpdboy/openwrt-installer-iso@main
+      with:
+        INPUT_IMG: "/tmp/openwrt.img"
+        OUTPUT_DIR: "./artifacts"
+        OUTPUT_ISO_NAME: "my-openwrt-installer.iso"
+```
+
+Local Usage
+
+bash
+
+# Clone the repository
+
+git clone https://github.com/sirpdboy/openwrt-installer-iso.git
+
+cd openwrt-installer-iso
+
+# Make scripts executable
+
+chmod +x dockerrun.sh
+
+# Build ISO
+./dockerrun.sh ./openwrt.img ./output openwrt-autoinstall.iso
+
+Direct Docker Usage
+
+bash
+
+# Build Docker image
+docker build -t openwrt-iso-builder .
+
+# Run build
+docker run --rm --privileged \
+  -v ./openwrt.img:/mnt/ezopwrt.img:ro \
+  -v ./output:/output \
+  openwrt-iso-builder
+
+Parameters
+Parameter	Description	Default
+INPUT_IMG	Path to OpenWRT IMG file	/mnt/openwrt.img
+OUTPUT_DIR	Output directory for ISO	/output
+OUTPUT_ISO_NAME	Name of output ISO file	openwrt-autoinstall.iso
+
+
+Output
+
+The builder will generate:
+
+openwrt-autoinstall.iso - Bootable installer ISO
+
+build-info.txt - Build information file
+
+build-report.md - Detailed build report
+
+How It Works
+action.yml - GitHub Action interface definition
+
+dockerrun.sh - Handles Docker setup and parameter passing
+
+Dockerfile - Defines the build environment
+
+build.sh - Runs inside container to build ISO
+
+Project Structure
+
+text
+openwrt-installer-iso/
+├── action.yml          # GitHub Action definition
+├── dockerrun.sh        # Docker runner script
+├── Dockerfile          # Docker build configuration
+├── build.sh            # ISO builder (runs in container)
+├── README.md           # This file
+└── LICENSE             # MIT License
+Requirements
+Docker (for local builds)
+
+Git (for cloning)
+
+Sufficient disk space (2GB+ recommended)
+
+License
+MIT License - see LICENSE file for details.
+
+text
 
 ## 项目参考
 - https://github.com/dpowers86/debian-live
