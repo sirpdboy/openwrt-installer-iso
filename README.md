@@ -1,19 +1,14 @@
 ## 访问数：![hello](https://views.whatilearened.today/views/github/sirpdboy/deplives.svg)[![](https://img.shields.io/badge/TG群-点击加入-FFFFFF.svg)](https://t.me/joinchat/AAAAAEpRF88NfOK5vBXGBQ)
 
-
-
 # OpenWRT 安装ISO自动构建
-
 
 它是一个基于Debian Live系统的img镜像安装器。采用github action构建打包。目前实现了在x86-64设备上 快速安装openwrt的功能。 
 ![1](https://https://github.com/sirpdboy/openwrt-installer-iso)
-
 
 自动构建OpenWRT安装ISO的GitHub Actions工作流。
 
 ## 特性
 
-- ✅ 自动下载最新OpenWRT镜像
 - ✅ 双引导支持 (BIOS + UEFI)
 - ✅ 交互式安装界面
 - ✅ 自动GitHub Releases发布
@@ -21,15 +16,15 @@
 
 ## 使用方法
 
-### 1. 使用GitHub Actions自动构建
+## 1. 使用GitHub Actions自动构建
 
 - 1. Fork此仓库
 - 2. 在Actions页面启用工作流
 - 3. 推送到main分支自动构建
 
-### 2. 手动构建
+## 2. 手动构建
 
-```bash
+```
 
 # 1. 克隆或创建项目
 git clone https://github.com/sirpdboy/openwrt-installer-iso.git
@@ -42,10 +37,12 @@ cd openwrt-installer-iso
 chmod +x build.sh scripts/*.sh
 
 # 4. 运行构建
+
 ./build.sh
 
 # 或者直接运行Docker命令
 mkdir -p output assets
+
 # 手动将ezopwrt.img放入assets/目录
 docker run --privileged --rm \
   -v $(pwd)/output:/output \
@@ -58,7 +55,7 @@ docker run --privileged --rm \
   "
 
 ```
-markdown
+
 # OpenWRT Installer ISO Builder
 
 Convert OpenWRT disk images to bootable auto-installer ISOs with a simple GitHub Action.
@@ -73,7 +70,7 @@ Convert OpenWRT disk images to bootable auto-installer ISOs with a simple GitHub
 
 ## Quick Start
 
-### GitHub Actions
+## GitHub Actions
 
 ```
 name: Build OpenWRT ISO
@@ -99,11 +96,7 @@ jobs:
         INPUT_IMG: "/tmp/openwrt.img"
         OUTPUT_DIR: "./artifacts"
         OUTPUT_ISO_NAME: "my-openwrt-installer.iso"
-```
 
-Local Usage
-
-bash
 
 # Clone the repository
 
@@ -118,9 +111,11 @@ chmod +x dockerrun.sh
 # Build ISO
 ./dockerrun.sh ./openwrt.img ./output openwrt-autoinstall.iso
 
-Direct Docker Usage
+```
 
-bash
+## Direct Docker Usage
+
+```
 
 # Build Docker image
 docker build -t openwrt-iso-builder .
@@ -131,35 +126,29 @@ docker run --rm --privileged \
   -v ./output:/output \
   openwrt-iso-builder
 
-Parameters
-Parameter	Description	Default
-INPUT_IMG	Path to OpenWRT IMG file	/mnt/openwrt.img
-OUTPUT_DIR	Output directory for ISO	/output
-OUTPUT_ISO_NAME	Name of output ISO file	openwrt-autoinstall.iso
 
+```
 
-Output
+## Parameter	Description	Default
 
-The builder will generate:
+- INPUT_IMG	Path to OpenWRT IMG file	/mnt/openwrt.img
+- OUTPUT_DIR	Output directory for ISO	/output
+- OUTPUT_ISO_NAME	Name of output ISO file	openwrt-autoinstall.iso
 
-openwrt-autoinstall.iso - Bootable installer ISO
+## How It Works
 
-build-info.txt - Build information file
+- action.yml - GitHub Action interface definition
 
-build-report.md - Detailed build report
+- dockerrun.sh - Handles Docker setup and parameter passing
 
-How It Works
-action.yml - GitHub Action interface definition
+- Dockerfile - Defines the build environment
 
-dockerrun.sh - Handles Docker setup and parameter passing
+- build.sh - Runs inside container to build ISO
 
-Dockerfile - Defines the build environment
+## Project Structure
 
-build.sh - Runs inside container to build ISO
+```
 
-Project Structure
-
-text
 openwrt-installer-iso/
 ├── action.yml          # GitHub Action definition
 ├── dockerrun.sh        # Docker runner script
@@ -174,10 +163,13 @@ Git (for cloning)
 
 Sufficient disk space (2GB+ recommended)
 
+```
+
 License
+
 MIT License - see LICENSE file for details.
 
-text
+
 
 ## 项目参考
 - https://github.com/dpowers86/debian-live
