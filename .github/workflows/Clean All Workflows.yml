@@ -26,18 +26,26 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+    
       - name: Debug - Show permissions
         run: |
           echo "GITHUB_TOKEN permissions:"
           echo "Contents: write"
           echo "Actions: write"
           
-      - name: Clean workflow runs
+      - name: Check repository permissions
+        run: |
+          echo "Repository: ${{ github.repository }}"
+          echo "Event: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+          
+      - name: Delete old workflow runs
         uses: Mattraks/delete-workflow-runs@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          retain_days: 1
+          retain_days: ${{ inputs.keep_workflow_days }}
           keep_minimum_runs: 3
+          delete_workflow_runs: true
           
       - name: Clean releases
         if: github.event.inputs.keep_releases != '0'
