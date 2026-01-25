@@ -120,25 +120,33 @@ fi
 # 创建输出目录
 mkdir -p "$OUTPUT_DIR"
 
-# 确保脚本可执行
-if [ -f "build.sh" ]; then
-    chmod +x build.sh
-else
-    log_error "build.sh not found in current directory"
-    exit 1
-fi
-
 # 构建ISO
 log_info "Starting ISO build..."
-
+chmod +x build.sh
 # 方法1：使用预安装所有依赖的Docker镜像（推荐）
 if docker images | grep -q "openwrt-iso-builder"; then
     log_info "Using existing Docker image: openwrt-iso-builder"
+    #docker run --privileged --rm \
+    #    -v "$INPUT_IMG:/mnt/ezopwrt.img:ro" \
+    #    -v "$OUTPUT_DIR:/output" \
+    #    -v "$(pwd)/build.sh:/build.sh:ro" \
+    #    openwrt-iso-builder
     docker run --privileged --rm \
         -v "$INPUT_IMG:/mnt/ezopwrt.img:ro" \
         -v "$OUTPUT_DIR:/output" \
         -v "$(pwd)/build.sh:/build.sh:ro" \
-        openwrt-iso-builder
+        -e "INPUT_IMG=/mnt/ezopwrt.img" \
+        -e "OUTPUT_DIR=/output" \
+        -e "ISO_NAME=$ISO_NAME" \
+    debian:buster \
+              bash -c "
+              apt-get update
+              apt-get install -y \
+                debootstrap squashfs-tools xorriso isolinux syslinux-efi \
+                grub-pc-bin grub-efi-amd64-bin mtools dosfstools parted wget curl
+       
+              /build.sh
+              "
 else
     # 方法2：动态构建镜像
     log_info "Creating Docker image with all dependencies..."
@@ -200,7 +208,7 @@ DOCKERFILE
         -e "OUTPUT_DIR=/output" \
         -e "ISO_NAME=$ISO_NAME" \
         openwrt-iso-builder \
-        bash -c "chmod +x /build.sh && /build.sh"
+        bash -c "/build.sh"
 fi
 
 # 检查构建结果
