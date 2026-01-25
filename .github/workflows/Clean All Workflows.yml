@@ -1,134 +1,78 @@
-#==========================================================================
-# https://github.com/ophub/flippy-openwrt-actions
-# Description: Delete older releases and workflows runs
-#==========================================================================
-
-name: Delete older releases and workflows
+name: Cleanup Repository
 
 on:
-  repository_dispatch:
+  schedule:
+    - cron: '0 2 * * 0'  # 每周日凌晨2点运行
   workflow_dispatch:
     inputs:
-      delete_releases:
-        description: "Delete Releases file?"
-        required: true
-        default: true
-        type: boolean
-      delete_tags:
-        description: "Delete related Tags?"
+      keep_releases:
+        description: "Number of releases to keep"
         required: false
-        default: true
-        type: boolean
-      prerelease_option:
-        description: "Whether to differentiate pre-release."
-        required: false
-        default: "all"
-        type: choice
-        options:
-          - all
-          - true
-          - false
-      releases_keep_latest:
-        description: "How many latest releases to keep."
-        required: false
-        default: "1"
-        type: choice
-        options:
-          - 30
-          - 20
-          - 10
-          - 9
-          - 8
-          - 7
-          - 6
-          - 5
-          - 4
-          - 3
-          - 2
-          - 1
-          - 0
-      releases_keep_keyword:
-        description: "Keyword of the keep releases."
-        required: false
-        default: "v0/_save_/kernel_"
-      delete_workflows:
-        description: "Delete workflows records?"
-        required: true
-        default: true
-        type: boolean
-      workflows_keep_day:
-        description: "Days to keep workflows."
-        required: false
-        default: "1"
-        type: choice
-        options:
-          - 30
-          - 20
-          - 10
-          - 9
-          - 8
-          - 7
-          - 6
-          - 5
-          - 4
-          - 3
-          - 2
-          - 1
-          - 0
-      workflows_keep_keyword:
-        description: "keywords for keep workflows."
-        required: false
-        default: ""
-      out_log:
-        description: "Output detailed JSON logs."
-        required: false
-        default: true
-        type: boolean
+        default: "3"
+        type: string
 
-env:
-  TZ: America/New_York
+permissions:
+  contents: write
+  actions: write
+  packages: write
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
+  cleanup:
+    runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Initialization environment
-        id: init
-        env:
-          DEBIAN_FRONTEND: noninteractive
+      - name: Debug - Show permissions
         run: |
-          sudo timedatectl set-timezone "${TZ}"
-
-      - name: Delete old workflow runs
+          echo "GITHUB_TOKEN permissions:"
+          echo "Contents: write"
+          echo "Actions: write"
+          
+      - name: Clean workflow runs
         uses: Mattraks/delete-workflow-runs@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           retain_days: 1
-          keep_minimum_runs: 5
-          use_daily_retention: "true"
-
-      - name: Remove old Releases
-        uses: dev-drprasad/delete-older-releases@v0.3.4
-        with:
-          keep_latest: 5
-          keep_min_download_counts: 1 # Optional parameters
-          delete_tags: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN  }}
+          keep_minimum_runs: 3
           
-      - name: Delete releases and workflows runs
-        uses: ophub/delete-releases-workflows@main
+      - name: Clean releases
+        if: github.event.inputs.keep_releases != '0'
+        uses: actions/github-script@v7
         with:
-          delete_releases: ${{ inputs.delete_releases }}
-          delete_tags: ${{ inputs.delete_tags }}
-          prerelease_option: ${{ inputs.prerelease_option }}
-          releases_keep_latest: ${{ inputs.releases_keep_latest }}
-          releases_keep_keyword: ${{ inputs.releases_keep_keyword }}
-          delete_workflows: ${{ inputs.delete_workflows }}
-          workflows_keep_day: ${{ inputs.workflows_keep_day }}
-          workflows_keep_keyword: ${{ inputs.workflows_keep_keyword }}
-          out_log: ${{ inputs.out_log }}
-          gh_token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const keepCount = parseInt('${{ inputs.keep_releases || 3 }}');
+            
+            // 获取所有 releases
+            const releases = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+            
+            console.log(`Total releases: ${releases.data.length}`);
+            console.log(`Keeping latest ${keepCount} releases`);
+            
+            // 删除旧的 releases
+            for (let i = keepCount; i < releases.data.length; i++) {
+              const release = releases.data[i];
+              console.log(`Deleting release: ${release.tag_name} (ID: ${release.id})`);
+              
+              try {
+                // 删除 release
+                await github.rest.repos.deleteRelease({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  release_id: release.id
+                });
+                
+                // 删除关联的 tag
+                await github.rest.git.deleteRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `tags/${release.tag_name}`
+                });
+                
+                console.log(`✓ Deleted ${release.tag_name}`);
+              } catch (error) {
+                console.error(`✗ Failed to delete ${release.tag_name}:`, error.message);
+              }
+            }
