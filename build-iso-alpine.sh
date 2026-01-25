@@ -76,7 +76,6 @@ apk update --no-cache
 apk add --no-cache \
     xorriso \
     syslinux \
-    syslinux-common \
     mtools \
     dosfstools \
     squashfs-tools \
