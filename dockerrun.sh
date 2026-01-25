@@ -238,22 +238,22 @@ if [ $BUILD_RESULT -eq 0 ] && [ -f "$ISO_PATH" ]; then
     fi
     
     # 创建构建报告
-    cat > "$OUTPUT_DIR/build-report.md" << EOF
+    cat > "$OUTPUT_DIR/build-report.md" << 'REPORT_EOF'
 # OpenWRT Installer ISO Build Report
 
 ## Build Information
-- **Build Date:** $(date)
+- **Build Date:** __DATE_PLACEHOLDER__
 - **Build Script:** dockerrun.sh
 - **Docker Image:** openwrt-iso-builder
 
 ## Input/Output
-- **Input Image:** $(basename "$INPUT_IMG")
-- **Output ISO:** $ISO_NAME
-- **ISO Size:** $ISO_SIZE
-- **Full Path:** $ISO_PATH
+- **Input Image:** __INPUT_PLACEHOLDER__
+- **Output ISO:** __ISO_NAME_PLACEHOLDER__
+- **ISO Size:** __ISO_SIZE_PLACEHOLDER__
+- **Full Path:** __ISO_PATH_PLACEHOLDER__
 
 ## Usage Instructions
-1. Flash to USB: \`dd if="$ISO_NAME" of=/dev/sdX bs=4M status=progress\`
+1. Flash to USB: `dd if="__ISO_NAME_PLACEHOLDER__" of=/dev/sdX bs=4M status=progress`
 2. Boot from USB
 3. Follow on-screen instructions to install OpenWRT
 
@@ -263,34 +263,7 @@ if [ $BUILD_RESULT -eq 0 ] && [ -f "$ISO_PATH" ]; then
 - Default boot timeout: 5 seconds
 
 ## Build Command
-\`\`\`bash
-./dockerrun.sh "$INPUT_IMG" "$OUTPUT_DIR" "$ISO_NAME"
-\`\`\`
-EOF
-    
-    log_success "Build report saved to: $OUTPUT_DIR/build-report.md"
-    
-    # 显示ISO内容摘要
-    echo ""
-    log_info "ISO Contents (top level):"
-    if command -v xorriso &> /dev/null && [ -f "$ISO_PATH" ]; then
-        xorriso -indev "$ISO_PATH" -toc 2>/dev/null | head -10 || true
-    fi
-else
-    log_error "❌ ISO build failed or file not found"
-    log_error "Expected ISO at: $ISO_PATH"
-    log_error "Build result code: $BUILD_RESULT"
-    
-    # 提供调试信息
-    echo ""
-    log_info "Debug information:"
-    log_info "  Docker images:"
-    docker images 2>/dev/null | head -5 || true
-    echo ""
-    log_info "  Output directory contents:"
-    ls -la "$OUTPUT_DIR" 2>/dev/null || true
-    
-    exit 1
-fi
+```bash
+./dockerrun.sh "__INPUT_PLACEHOLDER__" "__OUTPUT_DIR_PLACEHOLDER__" "__ISO_NAME_PLACEHOLDER__"
 
 log_success "🎉 All tasks completed successfully!"
