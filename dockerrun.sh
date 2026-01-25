@@ -33,6 +33,40 @@ Examples:
 EOF
 }
 
+        sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+        sudo apt-get autoremove -y
+        
+        # 安装必要依赖
+        sudo apt-get update
+        sudo apt-get install -y \
+            ca-certificates \
+            curl \
+            gnupg \
+            lsb-release
+        
+        # 添加Docker官方GPG密钥
+        sudo mkdir -p /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        
+        # 设置仓库
+        echo \
+          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+          $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        
+        # 安装Docker
+        sudo apt-get update
+        sudo apt-get install -y \
+            docker-ce \
+            docker-ce-cli \
+            containerd.io \
+            docker-compose-plugin
+        
+        # 启动服务
+        sudo systemctl start docker
+        sudo systemctl enable docker
+        
+        # 验证
+        docker --version
 # 参数处理
 if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     show_help
@@ -53,11 +87,6 @@ log_info "ISO Name:     $ISO_NAME"
 log_info "========================================"
 echo ""
 
-# 检查Docker
-if ! command -v docker &> /dev/null; then
-    log_error "Docker is not installed or not in PATH"
-    exit 1
-fi
 
 # 检查输入文件（如果在宿主机上）
 if [[ "$INPUT_IMG" == /* ]] && [ ! -f "$INPUT_IMG" ]; then
@@ -76,17 +105,24 @@ if ! docker build -t openwrt-iso-builder:latest .; then
 fi
 log_success "Docker image built successfully"
 
-# 运行Docker容器构建ISO
 log_info "Starting Docker container for ISO build..."
-docker run --rm \
-    --name openwrt-iso-builder \
-    --privileged \
+chmod +x build-iso.sh
+docker run --privileged --rm \
     -v "$INPUT_IMG:/mnt/ezopwrt.img:ro" \
     -v "$OUTPUT_DIR:/output" \
-    -e "INPUT_IMG=/mnt/ezopwrt.img" \
-    -e "OUTPUT_DIR=/output" \
+    -e "INPUT_IMG=$INPUT_IMG" \
+    -e "OUTPUT_DIR=$OUTPUT_DIR" \
     -e "ISO_NAME=$ISO_NAME" \
-    openwrt-iso-builder:latest
+    debian:buster \
+    bash -c "
+    # 安装必要工具
+    apt-get update
+    apt-get install -y \
+    debootstrap squashfs-tools xorriso isolinux syslinux-efi \
+    grub-pc-bin grub-efi-amd64-bin mtools dosfstools parted wget curl
+       
+    /build-iso.sh
+              "
 
 # 检查构建结果
 BUILD_RESULT=$?
