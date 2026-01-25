@@ -6,9 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       keep_releases:
-        description: "Number of releases to keep"
+        description: "Number of latest releases to keep"
         required: false
-        default: "3"
+        default: "5"
+        type: string
+      keep_workflow_days:
+        description: "Days to keep workflow runs"
+        required: false
+        default: "1"
         type: string
 
 permissions:
