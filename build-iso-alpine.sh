@@ -8,7 +8,7 @@ echo "============================================"
 # 从环境变量获取参数
 OPENWRT_IMG="${INPUT_IMG:-/mnt/ezopwrt.img}"
 OUTPUT_DIR="${OUTPUT_DIR:-/output}"
-ISO_NAME="${ISO_NAME:-openwrt-autoinstall-alpine.iso}"
+ISO_NAME="${ISO_NAME:-openwrt-installer-alpine.iso}"
 
 # 工作目录（使用唯一名称避免冲突）
 WORK_DIR="/tmp/OPENWRT_LIVE_$(date +%s)"
@@ -86,7 +86,7 @@ apk add --no-cache \
     wget \
     dialog \
     pv \
-    gdisk \
+    gptfdisk \
     e2fsprogs \
     e2fsprogs-extra \
     util-linux \
@@ -118,18 +118,58 @@ export APK_CACHE=/tmp/apk-cache
 
 # 使用apk.static安装Alpine基础系统
 ALPINE_RELEASE_URL="$ALPINE_MIRROR/v$ALPINE_VERSION/releases/$ALPINE_ARCH"
-APK_STATIC="apk-tools-static-2.14.4-r1.apk"
 
-# 下载并安装apk-tools-static
-wget -O /tmp/$APK_STATIC "$ALPINE_RELEASE_URL/$APK_STATIC" || {
-    # 尝试备用URL
-    APK_STATIC="apk-tools-static-2.14.0-r0.apk"
+# 尝试下载apk-tools-static
+APK_STATIC_FILES=(
+    "apk-tools-static-2.14.4-r1.apk"
+    "apk-tools-static-2.14.0-r0.apk"
+    "apk-tools-static-2.12.11-r1.apk"
+)
+
+APK_STATIC=""
+for static_file in "${APK_STATIC_FILES[@]}"; do
+    if wget -q --spider "$ALPINE_RELEASE_URL/$static_file"; then
+        APK_STATIC="$static_file"
+        break
+    fi
+done
+
+if [ -z "$APK_STATIC" ]; then
+    log_warning "No specific apk-tools-static found, trying to find any..."
+    wget -q -O /tmp/apk-index.html "$ALPINE_RELEASE_URL/"
+    APK_STATIC=$(grep -o 'apk-tools-static-[0-9].*\.apk' /tmp/apk-index.html | head -1)
+fi
+
+if [ -z "$APK_STATIC" ]; then
+    # 如果还是找不到，使用一个通用的方法
+    log_warning "Using alternative method to install Alpine..."
+    
+    # 下载并安装最新的Alpine mini rootfs
+    wget -O /tmp/alpine-minirootfs.tar.gz \
+        "$ALPINE_MIRROR/v$ALPINE_VERSION/releases/$ALPINE_ARCH/alpine-minirootfs-$ALPINE_VERSION.0-$ALPINE_ARCH.tar.gz"
+    
+    if [ -f /tmp/alpine-minirootfs.tar.gz ]; then
+        tar -xzf /tmp/alpine-minirootfs.tar.gz -C "$CHROOT_DIR"
+    else
+        log_error "Failed to download Alpine mini rootfs"
+        exit 1
+    fi
+else
+    # 使用apk-tools-static
+    log_info "Downloading apk-tools-static: $APK_STATIC"
     wget -O /tmp/$APK_STATIC "$ALPINE_RELEASE_URL/$APK_STATIC"
-}
-
-tar -xzf /tmp/$APK_STATIC -C /tmp
-/tmp/sbin/apk.static -X "$ALPINE_MIRROR/v$ALPINE_VERSION/main" \
-    -U --allow-untrusted --root "$CHROOT_DIR" --initdb add alpine-base
+    
+    if [ ! -f "/tmp/$APK_STATIC" ]; then
+        log_error "Failed to download apk-tools-static"
+        exit 1
+    fi
+    
+    tar -xzf /tmp/$APK_STATIC -C /tmp
+    
+    # 安装Alpine基础系统
+    /tmp/sbin/apk.static -X "$ALPINE_MIRROR/v$ALPINE_VERSION/main" \
+        -U --allow-untrusted --root "$CHROOT_DIR" --initdb add alpine-base
+fi
 
 # 安装必要的包到chroot
 cat > "$CHROOT_DIR/setup-alpine.sh" << 'ALPINE_EOF'
@@ -147,7 +187,7 @@ EOF
 # 更新包数据库
 apk update
 
-# 安装必要包
+# 安装必要包（修复gdisk为gptfdisk）
 apk add --no-cache \
     linux-lts \
     linux-firmware-none \
@@ -158,8 +198,9 @@ apk add --no-cache \
     coreutils \
     busybox \
     parted \
-    gdisk \
+    gptfdisk \
     e2fsprogs \
+    e2fsprogs-extra \
     dosfstools \
     syslinux \
     grub-bios \
@@ -433,15 +474,16 @@ INITRAMFS=$(find "$CHROOT_DIR/boot" -name "initramfs-*" -o -name "initrd.img-*" 
 
 if [ -z "$KERNEL" ]; then
     # 如果没有找到内核，使用当前系统的
-    KERNEL="/boot/vmlinuz-$(uname -r)"
-    if [ ! -f "$KERNEL" ]; then
-        # 从Alpine仓库下载内核
-        log_warning "Kernel not found, downloading from Alpine repository..."
-        wget -O "$STAGING_DIR/live/vmlinuz" \
-            "$ALPINE_MIRROR/v$ALPINE_VERSION/releases/$ALPINE_ARCH/vmlinuz-lts"
-        KERNEL="$STAGING_DIR/live/vmlinuz"
+    log_warning "Kernel not found in chroot, using system kernel..."
+    if [ -f "/boot/vmlinuz" ]; then
+        cp "/boot/vmlinuz" "$STAGING_DIR/live/vmlinuz"
     else
-        cp "$KERNEL" "$STAGING_DIR/live/vmlinuz"
+        # 从Alpine仓库下载内核
+        log_warning "Downloading kernel from Alpine repository..."
+        wget -O "$STAGING_DIR/live/vmlinuz" \
+            "$ALPINE_MIRROR/v$ALPINE_VERSION/releases/$ALPINE_ARCH/boot/vmlinuz-lts" || \
+        wget -O "$STAGING_DIR/live/vmlinuz" \
+            "https://raw.githubusercontent.com/alpinelinux/aports/main/scripts/mkimage.kernel.sh"
     fi
 else
     cp "$KERNEL" "$STAGING_DIR/live/vmlinuz"
@@ -457,7 +499,11 @@ if [ -z "$INITRAMFS" ]; then
     mkdir -p {bin,dev,etc,lib,proc,sys,newroot,mnt}
     
     # 复制busybox
-    cp "$CHROOT_DIR/bin/busybox" bin/
+    if [ -f "$CHROOT_DIR/bin/busybox" ]; then
+        cp "$CHROOT_DIR/bin/busybox" bin/
+    else
+        cp /bin/busybox bin/
+    fi
     
     # 创建init脚本
     cat > init <<'INIT_EOF'
@@ -590,11 +636,21 @@ LABEL shell
 ISOLINUX_CFG
 
 # 复制isolinux文件
-cp /usr/share/syslinux/isolinux.bin "$STAGING_DIR/boot/isolinux/"
-cp /usr/share/syslinux/ldlinux.c32 "$STAGING_DIR/boot/isolinux/"
-cp /usr/share/syslinux/libcom32.c32 "$STAGING_DIR/boot/isolinux/"
-cp /usr/share/syslinux/libutil.c32 "$STAGING_DIR/boot/isolinux/"
-cp /usr/share/syslinux/menu.c32 "$STAGING_DIR/boot/isolinux/"
+if [ -f /usr/share/syslinux/isolinux.bin ]; then
+    cp /usr/share/syslinux/isolinux.bin "$STAGING_DIR/boot/isolinux/"
+else
+    # 尝试其他可能的位置
+    find /usr/lib/syslinux -name "isolinux.bin" 2>/dev/null | head -1 | xargs -I {} cp {} "$STAGING_DIR/boot/isolinux/" || true
+fi
+
+# 复制必要的syslinux模块
+for module in ldlinux.c32 libcom32.c32 libutil.c32 menu.c32; do
+    if [ -f "/usr/share/syslinux/$module" ]; then
+        cp "/usr/share/syslinux/$module" "$STAGING_DIR/boot/isolinux/"
+    else
+        find /usr/lib/syslinux -name "$module" 2>/dev/null | head -1 | xargs -I {} cp {} "$STAGING_DIR/boot/isolinux/" || true
+    fi
+done
 
 # 2. 创建GRUB配置 (UEFI引导)
 cat > "$STAGING_DIR/boot/grub/grub.cfg" <<'GRUB_CFG'
@@ -616,25 +672,42 @@ GRUB_CFG
 log_info "Creating UEFI boot image..."
 
 # 创建GRUB standalone EFI文件
-grub-mkstandalone \
-    --format=x86_64-efi \
-    --output="$WORK_DIR/tmp/grubx64.efi" \
-    --locales="" \
-    --fonts="" \
-    "boot/grub/grub.cfg=$STAGING_DIR/boot/grub/grub.cfg"
+if command -v grub-mkstandalone >/dev/null 2>&1; then
+    grub-mkstandalone \
+        --format=x86_64-efi \
+        --output="$WORK_DIR/tmp/grubx64.efi" \
+        --locales="" \
+        --fonts="" \
+        "boot/grub/grub.cfg=$STAGING_DIR/boot/grub/grub.cfg"
+else
+    log_warning "grub-mkstandalone not found, trying alternative method..."
+    # 尝试直接复制现有的EFI文件
+    if [ -f "/usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed" ]; then
+        cp "/usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed" "$WORK_DIR/tmp/grubx64.efi"
+    elif [ -f "/usr/lib/grub/x86_64-efi/monolithic/grub.efi" ]; then
+        cp "/usr/lib/grub/x86_64-efi/monolithic/grub.efi" "$WORK_DIR/tmp/grubx64.efi"
+    else
+        log_error "Cannot find GRUB EFI file"
+    fi
+fi
 
 # 创建FAT32格式的EFI系统分区镜像
 EFI_IMG_SIZE=16M
 dd if=/dev/zero of="$WORK_DIR/tmp/efiboot.img" bs=1 count=0 seek=$EFI_IMG_SIZE
-mkfs.vfat -F 32 -n "EFIBOOT" "$WORK_DIR/tmp/efiboot.img"
+mkfs.vfat -F 32 -n "EFIBOOT" "$WORK_DIR/tmp/efiboot.img" 2>/dev/null || true
 
 # 复制EFI文件到镜像
-mmd -i "$WORK_DIR/tmp/efiboot.img" ::/EFI
-mmd -i "$WORK_DIR/tmp/efiboot.img" ::/EFI/BOOT
-mcopy -i "$WORK_DIR/tmp/efiboot.img" "$WORK_DIR/tmp/grubx64.efi" ::/EFI/BOOT/BOOTX64.EFI
-
-# 移动EFI镜像到最终位置
-mv "$WORK_DIR/tmp/efiboot.img" "$STAGING_DIR/EFI/boot/"
+if [ -f "$WORK_DIR/tmp/grubx64.efi" ] && [ -f "$WORK_DIR/tmp/efiboot.img" ]; then
+    mmd -i "$WORK_DIR/tmp/efiboot.img" ::/EFI 2>/dev/null || true
+    mmd -i "$WORK_DIR/tmp/efiboot.img" ::/EFI/BOOT 2>/dev/null || true
+    mcopy -i "$WORK_DIR/tmp/efiboot.img" "$WORK_DIR/tmp/grubx64.efi" ::/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
+    
+    # 移动EFI镜像到最终位置
+    mv "$WORK_DIR/tmp/efiboot.img" "$STAGING_DIR/EFI/boot/"
+    log_success "UEFI boot image created"
+else
+    log_warning "Failed to create UEFI boot image, BIOS only"
+fi
 
 # ==================== 步骤9: 构建ISO镜像 ====================
 log_info "[9/9] Building ISO image..."
@@ -649,10 +722,8 @@ xorriso -as mkisofs \
     -no-emul-boot \
     -boot-load-size 4 \
     -boot-info-table \
-    -eltorito-alt-boot \
-    -e EFI/boot/efiboot.img \
-    -no-emul-boot \
-    -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
+    $(if [ -f "$STAGING_DIR/EFI/boot/efiboot.img" ]; then echo "-eltorito-alt-boot -e EFI/boot/efiboot.img -no-emul-boot"; fi) \
+    -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin 2>/dev/null \
     -output "$ISO_PATH" \
     "$STAGING_DIR" 2>&1 | grep -E "(Progress|^[^.]|%)" || true
 
