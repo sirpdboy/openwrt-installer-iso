@@ -97,7 +97,7 @@ jobs:
         docker run --privileged --rm \
           -v "$(pwd)/output:/output" \
           -v "$(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro" \
-          -v "$(pwd)/build-iso-alpine.sh:/build-iso-alpine.sh:ro" \
+          -v "$(pwd)/build-iso-alpine.sh:/build.sh:ro" \
           alpine:3.20 \
           sh -c "
           # 设置DNS
@@ -106,7 +106,7 @@ jobs:
           
           # 执行构建脚本
           echo '开始构建ISO...'
-          /build-iso-alpine.sh
+          /build.sh
           "
       
         echo "✅ Docker容器执行完成"
