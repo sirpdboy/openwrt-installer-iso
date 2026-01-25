@@ -22,6 +22,19 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Checkout action repository files
+      shell: bash
+      run: |
+        echo "Copying required scripts..."
+        if [ -f "${{ github.action_path }}/dockerrun.sh" ]; then
+          cp "${{ github.action_path }}/dockerrun.sh" ./dockerrun.sh
+          chmod +x ./dockerrun.sh
+        fi
+        if [ -f "${{ github.action_path }}/build.sh" ]; then
+          cp "${{ github.action_path }}/build.sh" ./build.sh
+          chmod +x ./build.sh
+        fi
+        
     - name: Setup
       shell: bash
       run: |
@@ -33,11 +46,19 @@ runs:
         echo ""
         
         # 确保脚本可执行
-        chmod +x ./dockerrun.sh 2>/dev/null || true
+        ls -la ./
         
     - name: Run Docker Build
       shell: bash
       run: |
+        # 检查脚本是否存在
+        if [ ! -f "./dockerrun.sh" ]; then
+          echo "❌ dockerrun.sh not found!"
+          echo "Current directory contents:"
+          ls -la
+          exit 1
+        fi
+        
         # 执行Docker构建
         ./dockerrun.sh \
           "${{ inputs.INPUT_IMG }}" \
