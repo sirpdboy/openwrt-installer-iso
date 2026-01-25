@@ -126,11 +126,14 @@ chmod +x build.sh
 # 方法1：使用预安装所有依赖的Docker镜像（推荐）
 if docker images | grep -q "openwrt-iso-builder"; then
     log_info "Using existing Docker image: openwrt-iso-builder"
-    #docker run --privileged --rm \
-    #    -v "$INPUT_IMG:/mnt/ezopwrt.img:ro" \
-    #    -v "$OUTPUT_DIR:/output" \
-    #    -v "$(pwd)/build.sh:/build.sh:ro" \
-    #    openwrt-iso-builder
+    docker run --privileged --rm \
+        -v "$INPUT_IMG:/mnt/ezopwrt.img:ro" \
+        -v "$OUTPUT_DIR:/output" \
+        -v "$(pwd)/build.sh:/build.sh:ro" \
+        openwrt-iso-builder
+
+else if docker images | grep -q "debian:buster"; then
+    log_info "Using existing Docker image: debian:buster"
     docker run --privileged --rm \
         -v "$INPUT_IMG:/mnt/ezopwrt.img:ro" \
         -v "$OUTPUT_DIR:/output" \
@@ -138,7 +141,7 @@ if docker images | grep -q "openwrt-iso-builder"; then
         -e "INPUT_IMG=/mnt/ezopwrt.img" \
         -e "OUTPUT_DIR=/output" \
         -e "ISO_NAME=$ISO_NAME" \
-    debian:buster \
+        debian:buster \
               bash -c "
               apt-get update
               apt-get install -y \
