@@ -113,7 +113,7 @@ done
 
 if [ -z "$APK_TOOLS_URL" ]; then
     # 方法2: 尝试下载最新版本
-    APK_TOOLS_URL="${ALPINE_REPO}/latest-stable/main/${ALPINE_ARCH}/apk-tools-static-latest.apk"
+    APK_TOOLS_URL="${ALPINE_REPO}/latest-stable/main/${ALPINE_ARCH}/apk-tools-static-3.0.3-r1.apk"
 fi
 
 log_info "Downloading from: $APK_TOOLS_URL"
