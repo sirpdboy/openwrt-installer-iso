@@ -98,10 +98,11 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 log_info "Starting Docker container for ISO build..."
-chmod +x build-iso.sh
+chmod +x build.sh
 docker run --privileged --rm \
     -v "$INPUT_IMG:/mnt/ezopwrt.img:ro" \
     -v "$OUTPUT_DIR:/output" \
+    -v $(pwd)/build.sh:/build.sh:ro \
     -e "INPUT_IMG=$INPUT_IMG" \
     -e "OUTPUT_DIR=$OUTPUT_DIR" \
     -e "ISO_NAME=$ISO_NAME" \
@@ -113,7 +114,7 @@ docker run --privileged --rm \
     debootstrap squashfs-tools xorriso isolinux syslinux-efi \
     grub-pc-bin grub-efi-amd64-bin mtools dosfstools parted wget curl
        
-    /build-iso.sh
+    /build.sh
               "
 
 # 检查构建结果
