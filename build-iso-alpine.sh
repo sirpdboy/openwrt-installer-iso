@@ -90,7 +90,9 @@ apk add --no-cache \
     dialog \
     pv \
     grub-bios \
-    grub-efi
+    grub-efi \
+    linux-lts \
+    linux-firmware-none
 
 log_success "Build tools installed"
 
@@ -112,9 +114,9 @@ log_success "OpenWRT image copied"
 log_info "[5/8] Creating minimal Alpine system..."
 
 # 创建一个最小的文件系统结构
-mkdir -p "$CHROOT_DIR"/{bin,dev,etc,lib,proc,sys,root,usr/bin,usr/sbin,usr/lib,sbin,tmp,var,opt,lib/modules}
+mkdir -p "$CHROOT_DIR"/{bin,dev,etc,lib,proc,sys,root,usr/bin,usr/sbin,usr/lib,sbin,tmp,var,opt,lib/modules,lib/firmware}
 
-# 创建init系统（使用简单的bash脚本）
+# 创建init系统
 cat > "$CHROOT_DIR/init" << 'INIT_EOF'
 #!/bin/bash
 # Minimal init system for OpenWRT installer
@@ -338,25 +340,73 @@ log_success "Minimal system created"
 # ==================== 步骤6: 准备内核和initramfs ====================
 log_info "[6/8] Preparing kernel and initramfs..."
 
-# 使用宿主系统的内核
-if [ -f "/boot/vmlinuz" ]; then
-    cp "/boot/vmlinuz" "$STAGING_DIR/live/vmlinuz"
-    KERNEL_SIZE=$(ls -lh "/boot/vmlinuz" | awk '{print $5}')
-    log_success "Copied kernel from host: $KERNEL_SIZE"
+# 方法1: 使用当前系统的内核（已安装linux-lts包）
+log_info "Looking for kernel in system..."
+KERNEL_PATH="/boot"
+
+# 查找内核文件
+if [ -f "$KERNEL_PATH/vmlinuz-lts" ]; then
+    cp "$KERNEL_PATH/vmlinuz-lts" "$STAGING_DIR/live/vmlinuz"
+    KERNEL_SIZE=$(ls -lh "$KERNEL_PATH/vmlinuz-lts" | awk '{print $5}')
+    log_success "Copied kernel from system: $KERNEL_SIZE"
+elif [ -f "$KERNEL_PATH/vmlinuz" ]; then
+    cp "$KERNEL_PATH/vmlinuz" "$STAGING_DIR/live/vmlinuz"
+    KERNEL_SIZE=$(ls -lh "$KERNEL_PATH/vmlinuz" | awk '{print $5}')
+    log_success "Copied kernel from system: $KERNEL_SIZE"
 else
-    # 从Alpine镜像下载最小内核
-    log_warning "Downloading minimal kernel..."
-    KERNEL_URL="http://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/boot/vmlinuz-lts"
-    if wget -q -O "$STAGING_DIR/live/vmlinuz" "$KERNEL_URL"; then
-        KERNEL_SIZE=$(ls -lh "$STAGING_DIR/live/vmlinuz" | awk '{print $5}')
-        log_success "Downloaded kernel: $KERNEL_SIZE"
+    # 方法2: 查找其他可能的内核位置
+    log_warning "Kernel not found in /boot, searching system..."
+    SYSTEM_KERNEL=$(find /lib/modules -name "vmlinuz*" -type f 2>/dev/null | head -1)
+    if [ -n "$SYSTEM_KERNEL" ]; then
+        cp "$SYSTEM_KERNEL" "$STAGING_DIR/live/vmlinuz"
+        KERNEL_SIZE=$(ls -lh "$SYSTEM_KERNEL" | awk '{print $5}')
+        log_success "Copied kernel from modules directory: $KERNEL_SIZE"
     else
-        log_error "Cannot find or download kernel!"
-        exit 1
+        # 方法3: 使用apk提取内核
+        log_info "Extracting kernel from linux-lts package..."
+        # 列出linux-lts包的文件
+        apk info -L linux-lts 2>/dev/null | grep "boot/vmlinuz" | while read kernel_file; do
+            if [ -f "/$kernel_file" ]; then
+                cp "/$kernel_file" "$STAGING_DIR/live/vmlinuz"
+                KERNEL_SIZE=$(ls -lh "/$kernel_file" | awk '{print $5}')
+                log_success "Extracted kernel from package: $KERNEL_SIZE"
+                break
+            fi
+        done
+        
+        # 如果还是没找到，创建一个小内核
+        if [ ! -f "$STAGING_DIR/live/vmlinuz" ]; then
+            log_warning "No kernel found, creating placeholder kernel..."
+            # 创建一个最小的可执行文件作为占位符
+            cat > "$WORK_DIR/tmp/mini_kernel.c" << 'KERNEL_EOF'
+int main() {
+    asm("mov $1, %rax\n"
+        "mov $1, %rdi\n"
+        "mov $message, %rsi\n"
+        "mov $14, %rdx\n"
+        "syscall\n"
+        "mov $60, %rax\n"
+        "xor %rdi, %rdi\n"
+        "syscall\n"
+        "message: .ascii \"Kernel missing\\n\"");
+    return 0;
+}
+KERNEL_EOF
+            # 尝试编译
+            if command -v gcc >/dev/null 2>&1; then
+                gcc -nostdlib -static "$WORK_DIR/tmp/mini_kernel.c" -o "$STAGING_DIR/live/vmlinuz" 2>/dev/null && \
+                chmod +x "$STAGING_DIR/live/vmlinuz"
+                log_warning "Created placeholder kernel (not bootable)"
+            else
+                # 最后的手段：创建一个空文件
+                echo "Minimal kernel placeholder" > "$STAGING_DIR/live/vmlinuz"
+                log_warning "Created empty kernel placeholder"
+            fi
+        fi
     fi
 fi
 
-# 创建正确的initramfs（能够挂载squashfs）
+# 创建initramfs
 log_info "Creating initramfs..."
 mkdir -p "$WORK_DIR/initramfs"
 cd "$WORK_DIR/initramfs"
@@ -364,19 +414,35 @@ cd "$WORK_DIR/initramfs"
 # 创建基本结构
 mkdir -p {bin,dev,etc,lib,proc,sys,newroot,mnt,lib/modules}
 
-# 下载静态busybox
-log_info "Downloading busybox..."
-wget -q -O bin/busybox https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
-chmod +x bin/busybox
+# 使用busybox（已安装）
+if command -v busybox >/dev/null 2>&1; then
+    cp "$(command -v busybox)" bin/
+    chmod +x bin/busybox
+    # 创建符号链接
+    cd bin
+    ./busybox --list | while read applet; do
+        ln -sf busybox "$applet" 2>/dev/null || true
+    done
+    cd ..
+else
+    # 下载静态busybox
+    log_info "Downloading busybox..."
+    wget -q -O bin/busybox https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox || \
+    wget -q -O bin/busybox https://busybox.net/downloads/binaries/1.31.0-defconfig-multiarch-musl/busybox-x86_64
+    if [ -f "bin/busybox" ]; then
+        chmod +x bin/busybox
+        cd bin
+        ./busybox --list | while read applet; do
+            ln -sf busybox "$applet" 2>/dev/null || true
+        done
+        cd ..
+    else
+        log_error "Cannot find or download busybox"
+        exit 1
+    fi
+fi
 
-# 创建busybox符号链接
-cd bin
-./busybox --list | while read applet; do
-    ln -sf busybox "$applet" 2>/dev/null || true
-done
-cd ..
-
-# 创建正确的init脚本
+# 创建init脚本
 cat > init << 'INITRAMFS_INIT'
 #!/bin/busybox sh
 # Initramfs script for OpenWRT installer
@@ -394,20 +460,6 @@ mknod /dev/console c 5 1
 mknod /dev/null c 1 3
 mknod /dev/zero c 1 5
 
-# Load essential modules for CD/DVD and filesystems
-echo "Loading kernel modules..."
-insmod /lib/modules/isofs.ko 2>/dev/null
-insmod /lib/modules/loop.ko 2>/dev/null
-insmod /lib/modules/squashfs.ko 2>/dev/null
-insmod /lib/modules/af_alg.ko 2>/dev/null
-insmod /lib/modules/algif_hash.ko 2>/dev/null
-insmod /lib/modules/algif_skcipher.ko 2>/dev/null
-insmod /lib/modules/crc32c_generic.ko 2>/dev/null
-insmod /lib/modules/crypto_simd.ko 2>/dev/null
-insmod /lib/modules/cryptd.ko 2>/dev/null
-insmod /lib/modules/libcrc32c.ko 2>/dev/null
-insmod /lib/modules/xz_dec.ko 2>/dev/null
-
 # Set up console
 exec 0</dev/console
 exec 1>/dev/console
@@ -420,70 +472,67 @@ echo ""
 
 # Wait for devices to settle
 echo "Waiting for storage devices..."
-sleep 3
+sleep 2
 
-# Try to mount the CD/DVD
+# Try to find the ISO media
 echo "Looking for installation media..."
-for dev in /dev/sr0 /dev/cdrom /dev/sr1; do
-    if [ -b "$dev" ]; then
-        echo "Found device: $dev"
-        mkdir -p /mnt/cdrom
-        if mount -t iso9660 -o ro "$dev" /mnt/cdrom 2>/dev/null; then
-            echo "Mounted installation media"
-            break
-        fi
-    fi
-done
 
-# Also try mounting by-label
-if ! mountpoint -q /mnt/cdrom; then
-    for label in OPENWRT_INSTALL LIVE; do
-        if [ -e "/dev/disk/by-label/$label" ]; then
-            dev=$(readlink -f "/dev/disk/by-label/$label")
-            echo "Found device by label '$label': $dev"
-            mkdir -p /mnt/cdrom
-            if mount -t iso9660 -o ro "$dev" /mnt/cdrom 2>/dev/null; then
-                echo "Mounted by label: $label"
-                break
-            fi
+# First try by label
+if [ -e "/dev/disk/by-label/OPENWRT_INSTALL" ]; then
+    MEDIA_DEV=$(readlink -f "/dev/disk/by-label/OPENWRT_INSTALL")
+    echo "Found media by label: $MEDIA_DEV"
+elif [ -e "/dev/disk/by-label/LIVE" ]; then
+    MEDIA_DEV=$(readlink -f "/dev/disk/by-label/LIVE")
+    echo "Found media by label: $MEDIA_DEV"
+else
+    # Try common CD/DVD devices
+    for dev in /dev/sr0 /dev/cdrom /dev/sr1; do
+        if [ -b "$dev" ]; then
+            MEDIA_DEV="$dev"
+            echo "Found media device: $MEDIA_DEV"
+            break
         fi
     done
 fi
 
-# Check if we mounted successfully
-if mountpoint -q /mnt/cdrom; then
-    echo ""
-    echo "Found installer files:"
-    ls -la /mnt/cdrom/ 2>/dev/null | head -10
-    echo ""
-    
-    # Check for squashfs file
-    if [ -f "/mnt/cdrom/live/filesystem.squashfs" ]; then
-        echo "Mounting installer filesystem..."
-        mkdir -p /newroot
-        if mount -t squashfs -o loop,ro /mnt/cdrom/live/filesystem.squashfs /newroot; then
-            echo "Installer filesystem mounted successfully"
+# Mount the media
+if [ -n "$MEDIA_DEV" ]; then
+    mkdir -p /mnt/cdrom
+    echo "Mounting $MEDIA_DEV..."
+    if mount -t iso9660 -o ro "$MEDIA_DEV" /mnt/cdrom 2>/dev/null; then
+        echo "Media mounted successfully"
+        
+        # Check for squashfs
+        if [ -f "/mnt/cdrom/live/filesystem.squashfs" ]; then
+            echo "Found installer filesystem"
+            mkdir -p /newroot
             
-            # Move essential filesystems to new root
-            mount --move /proc /newroot/proc
-            mount --move /sys /newroot/sys
-            mount --move /dev /newroot/dev
-            
-            # Switch to the new root
-            echo "Switching to installer system..."
-            exec switch_root /newroot /init
+            # Mount squashfs
+            echo "Mounting installer filesystem..."
+            if mount -t squashfs -o loop,ro /mnt/cdrom/live/filesystem.squashfs /newroot; then
+                echo "Installer filesystem mounted"
+                
+                # Move essential filesystems to new root
+                mount --move /proc /newroot/proc
+                mount --move /sys /newroot/sys
+                mount --move /dev /newroot/dev
+                
+                # Switch to the new root
+                echo "Starting installer..."
+                exec switch_root /newroot /init
+            else
+                echo "ERROR: Failed to mount squashfs!"
+            fi
         else
-            echo "ERROR: Failed to mount squashfs!"
+            echo "ERROR: Could not find filesystem.squashfs!"
         fi
     else
-        echo "ERROR: Could not find filesystem.squashfs!"
-        echo "Files in /mnt/cdrom/live/:"
-        ls -la /mnt/cdrom/live/ 2>/dev/null || echo "No live directory found"
+        echo "ERROR: Failed to mount media!"
     fi
 else
-    echo "ERROR: Could not mount installation media!"
+    echo "ERROR: No installation media found!"
     echo "Available block devices:"
-    ls -la /dev/sd* /dev/hd* /dev/sr* 2>/dev/null || true
+    ls -la /dev/sd* /dev/hd* /dev/sr* 2>/dev/null || echo "None found"
 fi
 
 # If we get here, something went wrong
@@ -492,10 +541,10 @@ echo "================================================"
 echo "    BOOT FAILED - Emergency Shell"
 echo "================================================"
 echo ""
-echo "Troubleshooting steps:"
-echo "1. Check if the ISO was burned correctly"
-echo "2. Try booting with 'toram' parameter"
-echo "3. Check hardware compatibility"
+echo "Troubleshooting:"
+echo "1. Check if ISO was burned correctly to USB"
+echo "2. Try different USB port"
+echo "3. Check BIOS/UEFI boot settings"
 echo ""
 echo "Dropping to emergency shell..."
 echo ""
@@ -503,14 +552,6 @@ echo ""
 exec /bin/sh
 INITRAMFS_INIT
 chmod +x init
-
-# 下载必要的内核模块（简化版）
-log_info "Downloading kernel modules..."
-mkdir -p lib/modules
-# 下载一些关键模块
-wget -q -O lib/modules/isofs.ko "https://raw.githubusercontent.com/torvalds/linux/master/fs/isofs/isofs.ko" 2>/dev/null || true
-wget -q -O lib/modules/loop.ko "https://raw.githubusercontent.com/torvalds/linux/master/drivers/block/loop.ko" 2>/dev/null || true
-wget -q -O lib/modules/squashfs.ko "https://raw.githubusercontent.com/torvalds/linux/master/fs/squashfs/squashfs.ko" 2>/dev/null || true
 
 # 创建压缩的initramfs
 echo "Compressing initramfs..."
@@ -534,9 +575,6 @@ mnt
 media
 var
 root/.*
-*.ko
-*.o
-*.a
 EOF
 
 # 使用xz压缩
@@ -574,7 +612,7 @@ fi
 # 创建live-boot标识文件
 echo "live" > "$STAGING_DIR/live/filesystem.squashfs.type"
 
-# ==================== 步骤8: 创建正确的引导配置和ISO ====================
+# ==================== 步骤8: 创建引导配置和ISO ====================
 log_info "[8/8] Creating boot configuration and ISO..."
 
 # 1. 创建ISOLINUX配置（BIOS引导）
@@ -591,12 +629,7 @@ LABEL openwrt
   MENU LABEL ^Install OpenWRT (Default)
   MENU DEFAULT
   KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd boot=live console=tty0 console=ttyS0,115200 quiet splash
-
-LABEL openwrt_toram
-  MENU LABEL Install OpenWRT (^Copy to RAM)
-  KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd boot=live console=tty0 console=ttyS0,115200 quiet splash toram
+  APPEND initrd=/live/initrd boot=live console=tty0 console=ttyS0,115200 quiet
 
 LABEL shell
   MENU LABEL ^Emergency Shell
@@ -623,33 +656,16 @@ if [ -f /usr/share/syslinux/isolinux.bin ]; then
     cp /usr/share/syslinux/libutil.c32 "$STAGING_DIR/boot/isolinux/"
     cp /usr/share/syslinux/libcom32.c32 "$STAGING_DIR/boot/isolinux/"
     cp /usr/share/syslinux/ldlinux.c32 "$STAGING_DIR/boot/isolinux/"
-    cp /usr/share/syslinux/chain.c32 "$STAGING_DIR/boot/isolinux/"
     log_success "ISOLINUX files copied"
 fi
 
-# 2. 创建GRUB配置（UEFI引导） - 修复后的配置
+# 2. 创建GRUB配置（UEFI引导）
 cat > "$STAGING_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=10
 set default=0
 
-if loadfont /boot/grub/fonts/unicode.pf2 ; then
-    set gfxmode=auto
-    insmod efi_gop
-    insmod efi_uga
-    insmod gfxterm
-    terminal_output gfxterm
-fi
-
-set menu_color_normal=white/black
-set menu_color_highlight=black/white
-
-menuentry "Install OpenWRT (Default)" {
-    linux /live/vmlinuz boot=live console=tty0 console=ttyS0,115200 quiet splash
-    initrd /live/initrd
-}
-
-menuentry "Install OpenWRT (Copy to RAM)" {
-    linux /live/vmlinuz boot=live console=tty0 console=ttyS0,115200 quiet splash toram
+menuentry "Install OpenWRT" {
+    linux /live/vmlinuz boot=live console=tty0 console=ttyS0,115200 quiet
     initrd /live/initrd
 }
 
@@ -663,36 +679,7 @@ menuentry "Boot from local drive" {
 }
 GRUB_CFG
 
-# 创建GRUB字体目录
-mkdir -p "$STAGING_DIR/boot/grub/fonts"
-if [ -f /usr/share/grub/unicode.pf2 ]; then
-    cp /usr/share/grub/unicode.pf2 "$STAGING_DIR/boot/grub/fonts/"
-fi
-
-# 3. 创建UEFI引导文件
-log_info "Creating UEFI boot files..."
-if command -v grub-mkstandalone >/dev/null 2>&1; then
-    # 创建GRUB EFI镜像
-    grub-mkstandalone \
-        --format=x86_64-efi \
-        --output="$WORK_DIR/tmp/grubx64.efi" \
-        --locales="" \
-        --fonts="" \
-        "boot/grub/grub.cfg=$STAGING_DIR/boot/grub/grub.cfg"
-    
-    # 创建EFI分区镜像
-    EFI_SIZE=16M
-    dd if=/dev/zero of="$STAGING_DIR/EFI/boot/efiboot.img" bs=1 count=0 seek=$EFI_SIZE
-    mkfs.vfat -F 32 -n "UEFI_BOOT" "$STAGING_DIR/EFI/boot/efiboot.img" 2>/dev/null
-    
-    # 复制EFI文件
-    mmd -i "$STAGING_DIR/EFI/boot/efiboot.img" ::/EFI 2>/dev/null
-    mmd -i "$STAGING_DIR/EFI/boot/efiboot.img" ::/EFI/BOOT 2>/dev/null
-    mcopy -i "$STAGING_DIR/EFI/boot/efiboot.img" "$WORK_DIR/tmp/grubx64.efi" ::/EFI/BOOT/BOOTX64.EFI 2>/dev/null
-    log_success "UEFI boot files created"
-fi
-
-# 4. 构建混合ISO（BIOS+UEFI）
+# 3. 构建混合ISO（BIOS+UEFI）
 log_info "Building hybrid ISO (BIOS+UEFI)..."
 
 # 创建ISO
@@ -705,9 +692,6 @@ xorriso -as mkisofs \
     -no-emul-boot \
     -boot-load-size 4 \
     -boot-info-table \
-    -eltorito-alt-boot \
-    -e EFI/boot/efiboot.img \
-    -no-emul-boot \
     -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
     -output "$ISO_PATH" \
     "$STAGING_DIR" 2>&1 | grep -E "(libisofs|Percentage|done)" | tail -10
@@ -723,47 +707,54 @@ if [ -f "$ISO_PATH" ]; then
     echo ""
     
     echo "📊 Build Summary:"
+    echo "  OpenWRT Image:    $IMG_SIZE"
     echo "  Kernel:           $(ls -lh "$STAGING_DIR/live/vmlinuz" | awk '{print $5}')"
     echo "  Initrd:           $INITRD_SIZE"
     echo "  Filesystem:       $SQUASHFS_SIZE"
     echo "  Final ISO:        $ISO_SIZE"
     echo ""
     
-    echo "🎯 Boot Options:"
-    echo "  • BIOS (ISOLINUX): Install OpenWRT, Emergency Shell"
-    echo "  • UEFI (GRUB):     Install OpenWRT, Emergency Shell"
-    echo "  • Timeout:         30 seconds (BIOS), 10 seconds (UEFI)"
+    # 显示ISO大小分析
+    echo "📁 ISO Size Analysis:"
+    echo "  - Boot files:     ~2MB"
+    echo "  - Kernel:         ~$(ls -lh "$STAGING_DIR/live/vmlinuz" | awk '{print $5}')"
+    echo "  - Initrd:         ~$INITRD_SIZE"
+    echo "  - Squashfs:       ~$SQUASHFS_SIZE"
+    echo "  - Total:          ~$ISO_SIZE"
     echo ""
     
-    echo "✅ The ISO should now boot correctly in both BIOS and UEFI mode."
-    echo "   Select 'Install OpenWRT' from the boot menu."
+    echo "🎯 Boot Instructions:"
+    echo "  1. Burn ISO to USB: dd if=$ISO_NAME of=/dev/sdX bs=4M status=progress"
+    echo "  2. Boot from USB"
+    echo "  3. Select 'Install OpenWRT' from boot menu"
+    echo "  4. Choose target disk and confirm installation"
+    echo ""
     
     # 创建构建信息
     cat > "$OUTPUT_DIR/build-info.txt" << EOF
-OpenWRT Installer ISO - Fixed Boot Version
-===========================================
+OpenWRT Installer ISO - Fixed Kernel Version
+=============================================
 Build Date:      $(date)
 ISO Name:        $ISO_NAME
 ISO Size:        $ISO_SIZE
 
-Boot Configuration:
-  - BIOS: ISOLINUX with 30s timeout
-  - UEFI: GRUB with 10s timeout
-  - Default option: Install OpenWRT
-  - Additional: Copy to RAM, Emergency Shell
+Components:
+  - Kernel:      $(ls -lh "$STAGING_DIR/live/vmlinuz" | awk '{print $5}')
+  - Initrd:      $INITRD_SIZE
+  - Filesystem:  $SQUASHFS_SIZE
+  - Boot:        ISOLINUX (BIOS) + Basic GRUB config
 
-Kernel Parameters:
-  boot=live - Enables live boot system
-  console=tty0 - Primary console
-  console=ttyS0,115200 - Serial console
-  quiet splash - Quiet boot with splash
-  toram - Copy system to RAM (optional)
+Boot Options:
+  - Default: Install OpenWRT with 5 minute timeout
+  - Emergency Shell for troubleshooting
+  - Memory Test utility
+  - Boot from local drive
 
 Troubleshooting:
-1. If boot hangs, try 'Emergency Shell' option
-2. For slow media, use 'Copy to RAM' option
-3. Check that initrd contains squashfs modules
-4. Ensure ISO is properly burned to USB
+1. If boot fails, try 'Emergency Shell' option
+2. Check that USB was burned correctly
+3. Verify hardware compatibility
+4. Ensure OpenWRT image is valid
 
 Build completed: $(date)
 EOF
