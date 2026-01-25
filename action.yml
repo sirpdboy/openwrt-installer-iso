@@ -1,38 +1,49 @@
 name: "Build OpenWRT Installer ISO"
-author: "https://github.com/sirpdboy/openwrt-installer-iso"
+author: "sirpdboy"
 description: "Convert OpenWRT IMG to bootable auto-installer ISO"
 branding:
-  icon: 'download-cloud'
-  color: 'blue'
+  icon: 'package'
+  color: 'green'
 
 inputs:
   INPUT_IMG:
-    description: "Source OpenWRT IMG file path"
-    required: true
+    description: "Path to OpenWRT IMG file"
+    required: false
     default: "/mnt/openwrt.img"
   OUTPUT_DIR:
     description: "Output directory for ISO file"
     required: false
     default: "/output"
   OUTPUT_ISO_NAME:
-    description: "Output ISO file name"
+    description: "Name of output ISO file"
     required: false
     default: "openwrt-autoinstall.iso"
-  ARCH:
-    description: "Target architecture"
-    required: false
-    default: "x86_64"
-  ENABLE_UEFI:
-    description: "Enable UEFI boot support"
-    required: false
-    default: "true"
 
 runs:
-  using: "docker"
-  image: "Dockerfile"
-  args:
-    - "${{ inputs.INPUT_IMG }}"
-    - "${{ inputs.OUTPUT_DIR }}"
-    - "${{ inputs.OUTPUT_ISO_NAME }}"
-    - "${{ inputs.ARCH }}"
-    - "${{ inputs.ENABLE_UEFI }}"
+  using: "composite"
+  steps:
+    - name: Check inputs
+      shell: bash
+      run: |
+        echo "🔧 OpenWRT ISO Builder"
+        echo "====================="
+        echo "Input IMG: ${{ inputs.INPUT_IMG }}"
+        echo "Output Dir: ${{ inputs.OUTPUT_DIR }}"
+        echo "ISO Name: ${{ inputs.OUTPUT_ISO_NAME }}"
+        echo ""
+        
+        # 检查脚本是否存在
+        if [ ! -f "./dockerrun.sh" ]; then
+          echo "❌ Error: dockerrun.sh not found!"
+          exit 1
+        fi
+        
+        chmod +x ./dockerrun.sh
+        
+    - name: Build ISO
+      shell: bash
+      run: |
+        ./dockerrun.sh \
+          "${{ inputs.INPUT_IMG }}" \
+          "${{ inputs.OUTPUT_DIR }}" \
+          "${{ inputs.OUTPUT_ISO_NAME }}"
