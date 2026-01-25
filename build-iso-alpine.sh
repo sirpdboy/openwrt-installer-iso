@@ -8,7 +8,7 @@ echo "============================================"
 # 从环境变量获取参数
 OPENWRT_IMG="${INPUT_IMG:-/mnt/ezopwrt.img}"
 OUTPUT_DIR="${OUTPUT_DIR:-/output}"
-ISO_NAME="${ISO_NAME:-openwrt-installer-alpine.iso}"
+ISO_NAME="${ISO_NAME:-openwrt-autoinstall-alpine.iso}"
 
 # 工作目录（使用唯一名称避免冲突）
 WORK_DIR="/tmp/OPENWRT_LIVE_$(date +%s)"
