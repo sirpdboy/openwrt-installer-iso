@@ -1,187 +1,66 @@
 #!/bin/bash
-# dockerrun.sh - Docker构建运行器
+# dockerrun.sh - 简化版
 set -e
-
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-# 日志函数
-log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-
-# 显示帮助
-show_help() {
-    cat << EOF
-OpenWRT IMG to ISO Converter
-
-Usage: $0 [INPUT_IMG] [OUTPUT_DIR] [ISO_NAME]
-
-Arguments:
-  INPUT_IMG      Path to OpenWRT IMG file (default: /mnt/openwrt.img)
-  OUTPUT_DIR     Output directory for ISO (default: /output)
-  ISO_NAME       Name of output ISO file (default: openwrt-autoinstall.iso)
-
-Examples:
-  $0 ./openwrt.img ./output my-openwrt.iso
-  $0                           # 使用默认值
-EOF
-}
-
-        sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
-        sudo apt-get autoremove -y
-        
-        # 安装必要依赖
-        sudo apt-get update
-        sudo apt-get install -y \
-            ca-certificates \
-            curl \
-            gnupg \
-            lsb-release
-        
-        # 添加Docker官方GPG密钥
-        sudo mkdir -p /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        
-        # 设置仓库
-        echo \
-          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-          $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-        
-        # 安装Docker
-        sudo apt-get update
-        sudo apt-get install -y \
-            docker-ce \
-            docker-ce-cli \
-            containerd.io \
-            docker-compose-plugin
-        
-        # 启动服务
-        sudo systemctl start docker
-        sudo systemctl enable docker
-        
-        # 验证
-        docker --version
-# 参数处理
-if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-    show_help
-    exit 0
-fi
 
 INPUT_IMG="${1:-/mnt/openwrt.img}"
 OUTPUT_DIR="${2:-/output}"
 ISO_NAME="${3:-openwrt-autoinstall.iso}"
 
-# 显示构建信息
-log_info "========================================"
-log_info "OpenWRT ISO Builder - Docker Runner"
-log_info "========================================"
-log_info "Input IMG:    $INPUT_IMG"
-log_info "Output Dir:   $OUTPUT_DIR"
-log_info "ISO Name:     $ISO_NAME"
-log_info "========================================"
-echo ""
+echo "Building OpenWRT ISO..."
+echo "Input: $INPUT_IMG"
+echo "Output: $OUTPUT_DIR/$ISO_NAME"
 
-
-# 检查输入文件（如果在宿主机上）
-if [[ "$INPUT_IMG" == /* ]] && [ ! -f "$INPUT_IMG" ]; then
-    log_error "Input file not found: $INPUT_IMG"
+# 检查Docker
+if ! command -v docker &> /dev/null; then
+    echo "Error: Docker not found"
     exit 1
 fi
 
-# 创建输出目录
+# 创建目录
 mkdir -p "$OUTPUT_DIR"
 
-log_info "Starting Docker container for ISO build..."
-chmod +x build.sh
-docker run --privileged --rm \
+# 使用已安装所有依赖的Debian镜像直接运行
+docker run --rm --privileged \
     -v "$INPUT_IMG:/mnt/ezopwrt.img:ro" \
     -v "$OUTPUT_DIR:/output" \
-    -v $(pwd)/build.sh:/build.sh:ro \
-    -e "INPUT_IMG=$INPUT_IMG" \
-    -e "OUTPUT_DIR=$OUTPUT_DIR" \
-    -e "ISO_NAME=$ISO_NAME" \
-    debian:buster \
+    debian:buster-slim \
     bash -c "
-    # 安装必要工具
-    apt-get update
-    apt-get install -y \
-    debootstrap squashfs-tools xorriso isolinux syslinux-efi \
-    grub-pc-bin grub-efi-amd64-bin mtools dosfstools parted wget curl
-       
-    /build.sh
-              "
-
-# 检查构建结果
-BUILD_RESULT=$?
-ISO_PATH="$OUTPUT_DIR/$ISO_NAME"
-
-if [ $BUILD_RESULT -eq 0 ] && [ -f "$ISO_PATH" ]; then
-    ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
+    # 配置非交互模式
+    export DEBIAN_FRONTEND=noninteractive
     
-    echo ""
-    log_success "✅ ISO build completed successfully!"
-    echo ""
-    log_info "Build Summary:"
-    log_info "  Input File:   $(basename "$INPUT_IMG")"
-    log_info "  Output ISO:   $ISO_NAME"
-    log_info "  File Size:    $ISO_SIZE"
-    log_info "  Location:     $ISO_PATH"
-    echo ""
+    # 配置源（非交互式）
+    echo 'deb http://archive.debian.org/debian buster main' > /etc/apt/sources.list
+    echo 'deb http://archive.debian.org/debian-security buster/updates main' >> /etc/apt/sources.list
+    echo 'Acquire::Check-Valid-Until \"false\";' > /etc/apt/apt.conf.d/99no-check
     
-    # 显示ISO基本信息
-    log_info "ISO Information:"
-    if command -v file &> /dev/null; then
-        file "$ISO_PATH"
-    fi
+    # 更新和安装（非交互式）
+    apt-get update -yq
+    apt-get install -yq --no-install-recommends \
+        debootstrap \
+        squashfs-tools \
+        xorriso \
+        isolinux \
+        syslinux \
+        grub-pc-bin \
+        mtools \
+        dosfstools \
+        parted \
+        wget
     
-    # 创建构建报告
-    cat > "$OUTPUT_DIR/build-report.md" << EOF
-# OpenWRT Installer ISO Build Report
-
-## Build Information
-- **Build Date:** $(date)
-- **Build Script:** dockerrun.sh
-- **Docker Image:** openwrt-iso-builder:latest
-
-## Input/Output
-- **Input Image:** $INPUT_IMG
-- **Output ISO:** $ISO_PATH
-- **ISO Size:** $ISO_SIZE
-
-## Usage Instructions
-1. Flash to USB: \`dd if="$ISO_NAME" of=/dev/sdX bs=4M status=progress\`
-2. Boot from USB
-3. Follow on-screen instructions to install OpenWRT
-
-## Notes
-- This ISO supports both BIOS and UEFI boot
-- Installation will erase all data on target disk
-- Default boot timeout: 5 seconds
-
-## Build Command
-\`\`\`bash
-./dockerrun.sh "$INPUT_IMG" "$OUTPUT_DIR" "$ISO_NAME"
-\`\`\`
-EOF
+    # 复制构建脚本并执行
+    cat > /tmp/build.sh << 'BUILD_EOF'
+$(cat build.sh)
+BUILD_EOF
     
-    log_success "Build report saved to: $OUTPUT_DIR/build-report.md"
-    
-    # 显示ISO内容摘要
-    echo ""
-    log_info "ISO Contents (top level):"
-    if command -v xorriso &> /dev/null; then
-        xorriso -indev "$ISO_PATH" -find / -maxdepth 1 2>/dev/null | head -20 || true
-    fi
+    chmod +x /tmp/build.sh
+    INPUT_IMG='/mnt/ezopwrt.img' OUTPUT_DIR='/output' ISO_NAME='$ISO_NAME' /tmp/build.sh
+    "
+
+# 检查结果
+if [ -f "$OUTPUT_DIR/$ISO_NAME" ]; then
+    echo "✅ Success! ISO created: $OUTPUT_DIR/$ISO_NAME"
+    ls -lh "$OUTPUT_DIR/$ISO_NAME"
 else
-    log_error "❌ ISO build failed or file not found"
-    log_error "Expected ISO at: $ISO_PATH"
+    echo "❌ Failed to create ISO"
     exit 1
 fi
-
-log_success "🎉 All tasks completed successfully!"
