@@ -477,26 +477,36 @@ log_success "Initrd: $(basename "$INITRD")"
 # ==================== 步骤7: 创建squashfs文件系统 ====================
 log_info "[7/10] Creating squashfs filesystem..."
 
-# 排除不需要的目录
-EXCLUDE_DIRS="boot dev proc sys tmp run mnt media var/cache var/tmp var/log var/lib/apt/lists"
+# 创建排除文件
+EXCLUDE_FILE="$WORK_DIR/exclude.list"
+cat > "$EXCLUDE_FILE" << 'EOF'
+proc
+sys
+dev
+tmp
+run
+mnt
+media
+boot
+var/cache
+var/tmp
+var/log
+var/lib/apt/lists
+var/lib/dpkg
+etc/machine-id
+etc/ssh/ssh_host_*
+root/.bash_history
+root/.cache
+EOF
 
-# 构建排除参数
-EXCLUDE_OPTS=""
-for dir in $EXCLUDE_DIRS; do
-    EXCLUDE_OPTS="$EXCLUDE_OPTS -e $CHROOT_DIR/$dir"
-done
-
-if mksquashfs "$CHROOT_DIR" \
-    "$STAGING_DIR/live/filesystem.squashfs" \
-    -comp gzip \          # 改为gzip压缩，更快
-    -b 1M \
-    -noappend \
-    -no-progress \        # 不显示进度条
-    -no-recovery \        # 禁用恢复模式
-    $EXCLUDE_OPTS; then
-    log_success "Squashfs created successfully"
+# 使用排除文件
+if mksquashfs "$CHROOT_DIR" "$STAGING_DIR/live/filesystem.squashfs" -comp gzip -b 1M -noappend -no-progress -ef "$EXCLUDE_FILE"; then
+    SQUASHFS_SIZE=$(ls -lh "$STAGING_DIR/live/filesystem.squashfs" | awk '{print $5}')
+    log_success "Squashfs created successfully: $SQUASHFS_SIZE"
+    rm -f "$EXCLUDE_FILE"
 else
     log_error "Failed to create squashfs"
+    rm -f "$EXCLUDE_FILE"
     exit 1
 fi
 
