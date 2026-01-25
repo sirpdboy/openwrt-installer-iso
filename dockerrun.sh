@@ -265,5 +265,5 @@ if [ $BUILD_RESULT -eq 0 ] && [ -f "$ISO_PATH" ]; then
 ## Build Command
 ```bash
 ./dockerrun.sh "__INPUT_PLACEHOLDER__" "__OUTPUT_DIR_PLACEHOLDER__" "__ISO_NAME_PLACEHOLDER__"
-
+REPORT_EOF
 log_success "🎉 All tasks completed successfully!"
