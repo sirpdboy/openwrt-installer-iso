@@ -438,6 +438,7 @@ fi
 # ==================== Step 8: Create UEFI boot ====================
 log_info "[8/9] Creating UEFI boot configuration..."
 
+    mkdir -p "$GRUB_TMP/boot/grub"
 # Create GRUB config with correct kernel path
 cat > "$ISO_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=5
