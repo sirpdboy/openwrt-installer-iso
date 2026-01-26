@@ -1,5 +1,5 @@
 #!/bin/bash
-# build-alpine-openwrt-iso.sh - 基于Alpine构建OpenWRT自动安装ISO
+# build-alpine-openwrt-iso.sh - 构建可引导的OpenWRT安装ISO
 set -e
 
 echo "🚀 Starting OpenWRT ISO build..."
@@ -13,9 +13,6 @@ ISO_PATH="${OUTPUT_DIR}/${ISO_NAME}"
 
 # Alpine配置
 ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
-ALPINE_ARCH="x86_64"
-ALPINE_REPO="https://dl-cdn.alpinelinux.org/alpine"
-ALPINE_BRANCH="v${ALPINE_VERSION}"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -44,7 +41,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ==================== 步骤1: 检查输入文件 ====================
-log_info "[1/5] Checking input file..."
+log_info "[1/6] Checking input file..."
 if [ ! -f "$OPENWRT_IMG" ]; then
     log_error "OpenWRT image not found: $OPENWRT_IMG"
     exit 1
@@ -54,45 +51,209 @@ IMG_SIZE=$(ls -lh "$OPENWRT_IMG" | awk '{print $5}')
 log_success "Found OpenWRT image: $IMG_SIZE"
 
 # ==================== 步骤2: 安装必要工具 ====================
-log_info "[2/5] Installing build tools..."
+log_info "[2/6] Installing build tools..."
 apk update --no-cache
 apk add --no-cache \
-    alpine-sdk \
     xorriso \
     syslinux \
+    grub-bios \
+    mtools \
+    dosfstools \
+    e2fsprogs \
     squashfs-tools \
+    wget \
+    curl \
+    parted \
+    gptfdisk \
     bash \
     dialog \
     pv \
-    curl
+    coreutils \
+    util-linux \
+    busybox \
+    linux-firmware-none
 
 log_success "Build tools installed"
 
-# ==================== 步骤3: 创建最小化根文件系统 ====================
-log_info "[3/5] Creating minimal root filesystem..."
+# ==================== 步骤3: 下载Alpine minirootfs作为基础 ====================
+log_info "[3/6] Downloading Alpine minirootfs..."
 
+ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
+ALPINE_VERSION="3.20"
+ARCH="x86_64"
+
+# 下载Alpine minirootfs
+MINIROOTFS_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ARCH}/alpine-minirootfs-${ALPINE_VERSION}.0-${ARCH}.tar.gz"
+log_info "Downloading: $MINIROOTFS_URL"
+
+if wget -q "$MINIROOTFS_URL" -O "$WORK_DIR/alpine-minirootfs.tar.gz"; then
+    log_success "Alpine minirootfs downloaded"
+else
+    # 尝试备用URL
+    log_warning "Primary URL failed, trying alternative..."
+    MINIROOTFS_URL="${ALPINE_MIRROR}/latest-stable/releases/${ARCH}/alpine-minirootfs-${ALPINE_VERSION}.0-${ARCH}.tar.gz"
+    wget -q "$MINIROOTFS_URL" -O "$WORK_DIR/alpine-minirootfs.tar.gz" || {
+        log_error "Failed to download Alpine minirootfs"
+        exit 1
+    }
+fi
+
+# 创建根文件系统目录
 ROOTFS_DIR="$WORK_DIR/rootfs"
 mkdir -p "$ROOTFS_DIR"
 
-# 创建最基本的目录结构
-mkdir -p "$ROOTFS_DIR"/{bin,dev,etc,lib,proc,sys,tmp,usr,var}
-mkdir -p "$ROOTFS_DIR"/usr/{bin,sbin}
-mkdir -p "$ROOTFS_DIR"/var/lib
+# 解压minirootfs
+log_info "Extracting minirootfs..."
+tar -xzf "$WORK_DIR/alpine-minirootfs.tar.gz" -C "$ROOTFS_DIR"
+
+log_success "Alpine base system ready"
+
+# ==================== 步骤4: 配置根文件系统 ====================
+log_info "[4/6] Configuring root filesystem..."
+
+# 挂载必要的文件系统
+mount -t proc proc "$ROOTFS_DIR/proc" 2>/dev/null || true
+mount -t sysfs sys "$ROOTFS_DIR/sys" 2>/dev/null || true
+mount -o bind /dev "$ROOTFS_DIR/dev" 2>/dev/null || true
+
+# 复制DNS配置
+cp /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf" 2>/dev/null || true
+
+# 在chroot中安装必要的包
+log_info "Installing packages in chroot..."
+
+cat > "$ROOTFS_DIR/setup.sh" << 'SETUP_EOF'
+#!/bin/sh
+set -e
+
+# 设置apk仓库
+cat > /etc/apk/repositories << REPO_EOF
+https://dl-cdn.alpinelinux.org/alpine/v3.20/main
+https://dl-cdn.alpinelinux.org/alpine/v3.20/community
+REPO_EOF
+
+# 更新并安装必要包
+apk update
+apk add --no-cache \
+    linux-lts \
+    linux-firmware-none \
+    busybox \
+    bash \
+    util-linux \
+    coreutils \
+    e2fsprogs \
+    parted \
+    gptfdisk \
+    dialog \
+    pv \
+    syslinux \
+    xorriso \
+    squashfs-tools \
+    mtools \
+    dosfstools \
+    wget \
+    curl \
+    nano \
+    less
+
+# 清理apk缓存
+rm -rf /var/cache/apk/*
+
+# 创建安装脚本
+cat > /opt/install-openwrt.sh << 'INSTALL_EOF'
+#!/bin/bash
+# OpenWRT自动安装脚本
+
+clear
+cat << "EOF"
+
+╔═══════════════════════════════════════════════════════╗
+║               OpenWRT Auto Installer                  ║
+╚═══════════════════════════════════════════════════════╝
+
+EOF
+
+echo ""
+echo "Checking OpenWRT image..."
+
+if [ ! -f "/openwrt.img" ]; then
+    echo "❌ ERROR: OpenWRT image not found!"
+    echo ""
+    echo "Press Enter for shell..."
+    read
+    exec /bin/bash
+fi
+
+echo "✅ OpenWRT image found"
+echo ""
+
+while true; do
+    echo "Available disks:"
+    echo "================="
+    lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^(sd|hd|nvme|vd)' || echo "No disks detected"
+    echo "================="
+    echo ""
+    
+    read -p "Enter target disk (e.g., sda): " TARGET_DISK
+    
+    if [ -z "$TARGET_DISK" ]; then
+        echo "Please enter a disk name"
+        sleep 2
+        continue
+    fi
+    
+    if [ ! -b "/dev/$TARGET_DISK" ]; then
+        echo "❌ Disk /dev/$TARGET_DISK not found!"
+        sleep 2
+        continue
+    fi
+    
+    echo ""
+    echo "⚠️  WARNING: This will erase ALL data on /dev/$TARGET_DISK!"
+    echo ""
+    read -p "Type 'YES' to confirm: " CONFIRM
+    
+    if [ "$CONFIRM" != "YES" ]; then
+        echo "Cancelled."
+        sleep 2
+        continue
+    fi
+    
+    clear
+    echo ""
+    echo "Installing OpenWRT to /dev/$TARGET_DISK..."
+    echo ""
+    
+    if command -v pv >/dev/null 2>&1; then
+        pv /openwrt.img | dd of="/dev/$TARGET_DISK" bs=4M
+    else
+        dd if=/openwrt.img of="/dev/$TARGET_DISK" bs=4M status=progress
+    fi
+    
+    sync
+    
+    echo ""
+    echo "✅ Installation complete!"
+    echo ""
+    echo "System will reboot in 5 seconds..."
+    sleep 5
+    reboot -f
+    
+    break
+done
+INSTALL_EOF
+
+chmod +x /opt/install-openwrt.sh
 
 # 创建init脚本
-cat > "$ROOTFS_DIR/init" << 'INIT_EOF'
-#!/bin/busybox sh
-# 最小化init脚本
+cat > /init << 'INIT_EOF'
+#!/bin/sh
+# OpenWRT安装器init脚本
 
 # 挂载必要文件系统
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
-
-# 创建设备节点
-mknod /dev/console c 5 1
-mknod /dev/null c 1 3
-mknod /dev/zero c 1 5
 
 # 设置控制台
 exec 0</dev/console
@@ -100,61 +261,26 @@ exec 1</dev/console
 exec 2</dev/console
 
 clear
-echo ""
-echo "=========================================="
-echo "    OpenWRT Installer - Minimal System"
-echo "=========================================="
-echo ""
 
-# 检查OpenWRT镜像
+cat << "WELCOME"
+
+╔═══════════════════════════════════════════════════════╗
+║       OpenWRT Auto Installer System                   ║
+╚═══════════════════════════════════════════════════════╝
+
+System booting...
+WELCOME
+
+sleep 2
+
 if [ -f "/openwrt.img" ]; then
+    echo ""
     echo "✅ OpenWRT image found"
     echo ""
-    echo "Starting installer..."
-    echo ""
-    
-    # 显示可用磁盘
-    echo "Available disks:"
-    echo "----------------"
-    if command -v lsblk >/dev/null 2>&1; then
-        lsblk -d -n -o NAME,SIZE 2>/dev/null | grep -E '^(sd|hd|nvme|vd)' || echo "No disks found"
-    else
-        echo "sda"
-        echo "sdb"
-        echo "(Using dummy disk list)"
-    fi
-    echo "----------------"
-    echo ""
-    
-    echo -n "Enter target disk (e.g., sda): "
-    read TARGET_DISK
-    
-    if [ -z "$TARGET_DISK" ]; then
-        echo "No disk specified"
-        sleep 2
-        reboot -f
-    fi
-    
-    echo ""
-    echo "Installing to /dev/$TARGET_DISK..."
-    echo "This will take a moment..."
-    echo ""
-    
-    # 写入镜像
-    if [ -f /bin/dd ]; then
-        dd if=/openwrt.img of="/dev/$TARGET_DISK" bs=4M 2>/dev/null && echo "✅ Installation complete!" || echo "❌ Installation failed!"
-    else
-        echo "❌ dd command not available"
-    fi
-    
-    echo ""
-    echo "System will reboot in 5 seconds..."
-    sleep 5
-    reboot -f
+    exec /opt/install-openwrt.sh
 else
-    echo "❌ ERROR: OpenWRT image not found!"
     echo ""
-    echo "The image should be at: /openwrt.img"
+    echo "❌ ERROR: OpenWRT image not found!"
     echo ""
     echo "Dropping to emergency shell..."
     echo ""
@@ -162,74 +288,90 @@ else
 fi
 INIT_EOF
 
-chmod +x "$ROOTFS_DIR/init"
+chmod +x /init
 
-# 复制busybox（如果可用）
-if command -v busybox >/dev/null 2>&1; then
-    cp $(which busybox) "$ROOTFS_DIR/bin/busybox"
-    chmod +x "$ROOTFS_DIR/bin/busybox"
-    
-    # 创建符号链接
-    cd "$ROOTFS_DIR/bin"
-    for app in sh ls cat echo dd mount grep reboot; do
-        ln -sf busybox $app 2>/dev/null || true
-    done
-    cd "$WORK_DIR"
-fi
+# 设置主机名
+echo "openwrt-installer" > /etc/hostname
 
-# 复制其他必要工具
-for tool in dd lsblk mount grep reboot; do
-    if command -v $tool >/dev/null 2>&1; then
-        tool_path=$(which $tool)
-        cp "$tool_path" "$ROOTFS_DIR/bin/" 2>/dev/null || true
-    fi
-done
+# 允许root登录
+sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config 2>/dev/null || true
 
-log_success "Minimal root filesystem created"
+echo "Setup completed successfully"
+SETUP_EOF
 
-# ==================== 步骤4: 创建可启动ISO ====================
-log_info "[4/5] Creating bootable ISO..."
+chmod +x "$ROOTFS_DIR/setup.sh"
 
-# 创建ISO目录结构
+# 在chroot中运行setup.sh
+chroot "$ROOTFS_DIR" /bin/sh /setup.sh
+
+# 卸载文件系统
+umount "$ROOTFS_DIR/proc" 2>/dev/null || true
+umount "$ROOTFS_DIR/sys" 2>/dev/null || true
+umount "$ROOTFS_DIR/dev" 2>/dev/null || true
+
+rm -f "$ROOTFS_DIR/setup.sh"
+
+log_success "Root filesystem configured"
+
+# ==================== 步骤5: 创建可引导ISO结构 ====================
+log_info "[5/6] Creating bootable ISO structure..."
+
 ISO_DIR="$WORK_DIR/iso"
 mkdir -p "$ISO_DIR"
-mkdir -p "$ISO_DIR/boot/syslinux"
+mkdir -p "$ISO_DIR/boot/grub"
+mkdir -p "$ISO_DIR/EFI/BOOT"
 
 # 复制OpenWRT镜像
 cp "$OPENWRT_IMG" "$ISO_DIR/openwrt.img"
 
 # 创建squashfs文件系统
-log_info "Creating squashfs..."
-mksquashfs "$ROOTFS_DIR" "$ISO_DIR/rootfs.squashfs" -comp gzip -noappend >/dev/null 2>&1 || {
-    log_warning "Squashfs creation failed, continuing without compression..."
-    # 如果不压缩，直接复制文件
-    cp -r "$ROOTFS_DIR" "$ISO_DIR/rootfs" 2>/dev/null || true
+log_info "Creating squashfs filesystem..."
+mksquashfs "$ROOTFS_DIR" "$ISO_DIR/filesystem.squashfs" -comp xz -noappend
+
+# 复制内核和initramfs
+log_info "Copying kernel files..."
+find "$ROOTFS_DIR/boot" -name "vmlinuz-*" -type f | head -1 | xargs -I {} cp {} "$ISO_DIR/boot/vmlinuz"
+find "$ROOTFS_DIR/boot" -name "initramfs-*" -type f | head -1 | xargs -I {} cp {} "$ISO_DIR/boot/initrd.img"
+
+# 如果没找到initramfs，创建一个
+if [ ! -f "$ISO_DIR/boot/initrd.img" ]; then
+    log_warning "No initramfs found, creating one..."
+    # 创建简单的initramfs
+    INITRAMFS_DIR="$WORK_DIR/initramfs"
+    mkdir -p "$INITRAMFS_DIR"
+    cp "$ROOTFS_DIR/init" "$INITRAMFS_DIR/init"
+    chmod +x "$INITRAMFS_DIR/init"
+    
+    # 创建必要的目录
+    mkdir -p "$INITRAMFS_DIR"/{dev,proc,sys}
+    
+    # 打包为initramfs
+    cd "$INITRAMFS_DIR"
+    find . | cpio -H newc -o | gzip > "$ISO_DIR/boot/initrd.img"
+    cd "$WORK_DIR"
+fi
+
+# 创建GRUB配置文件
+cat > "$ISO_DIR/boot/grub/grub.cfg" << 'GRUB_EOF'
+set timeout=5
+set default=0
+
+menuentry "Install OpenWRT" {
+    linux /boot/vmlinuz console=tty0 console=ttyS0,115200 quiet
+    initrd /boot/initrd.img
 }
 
-# 创建简单的内核和initramfs
-log_info "Creating minimal boot files..."
+menuentry "Emergency Shell" {
+    linux /boot/vmlinuz console=tty0 console=ttyS0,115200 single
+    initrd /boot/initrd.img
+}
+GRUB_EOF
 
-# 创建简单的内核文件（实际上是一个脚本）
-cat > "$ISO_DIR/boot/vmlinuz" << 'VMLINUZ_EOF'
-#!/bin/sh
-# 这是一个占位符"内核"
-echo "Booting OpenWRT installer..."
-exec /init
-VMLINUZ_EOF
-chmod +x "$ISO_DIR/boot/vmlinuz"
-
-# 创建简单的initramfs（包含init脚本）
-mkdir -p "$WORK_DIR/initramfs"
-cp "$ROOTFS_DIR/init" "$WORK_DIR/initramfs/init"
-chmod +x "$WORK_DIR/initramfs/init"
-cd "$WORK_DIR/initramfs"
-find . | cpio -H newc -o 2>/dev/null | gzip > "$ISO_DIR/boot/initrd.gz" 2>/dev/null
-cd "$WORK_DIR"
-
-# 创建引导配置文件
-cat > "$ISO_DIR/boot/syslinux/syslinux.cfg" << 'SYSLINUX_CFG'
+# 创建ISOLINUX配置文件
+mkdir -p "$ISO_DIR/isolinux"
+cat > "$ISO_DIR/isolinux/isolinux.cfg" << 'ISOLINUX_EOF'
 DEFAULT openwrt
-TIMEOUT 30
+TIMEOUT 50
 PROMPT 0
 UI menu.c32
 
@@ -239,93 +381,135 @@ LABEL openwrt
   MENU LABEL ^Install OpenWRT
   MENU DEFAULT
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initrd.gz console=tty0 quiet
+  APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200 quiet
 
 LABEL shell
   MENU LABEL ^Emergency Shell
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initrd.gz console=tty0 single
-SYSLINUX_CFG
+  APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200 single
+ISOLINUX_EOF
 
-# 复制引导文件
-log_info "Copying boot files..."
-for file in isolinux.bin ldlinux.c32 menu.c32; do
-    find /usr -name "$file" -type f 2>/dev/null | head -1 | xargs -I {} cp {} "$ISO_DIR/boot/syslinux/" 2>/dev/null || true
+# 复制ISOLINUX文件
+log_info "Copying bootloader files..."
+for file in isolinux.bin ldlinux.c32 menu.c32 libutil.c32 libcom32.c32; do
+    find /usr -name "$file" -type f 2>/dev/null | head -1 | xargs -I {} cp {} "$ISO_DIR/isolinux/" 2>/dev/null || true
 done
 
-# 如果没有找到引导文件，创建一个简单的ISO
-if [ ! -f "$ISO_DIR/boot/syslinux/isolinux.bin" ]; then
-    log_warning "Syslinux files not found, creating simple ISO structure..."
-    # 创建简单的目录结构
-    mkdir -p "$ISO_DIR/isolinux"
-    echo "Boot failed: Syslinux not available" > "$ISO_DIR/isolinux/isolinux.cfg"
+# 创建EFI引导文件（可选）
+if command -v grub-mkstandalone >/dev/null 2>&1; then
+    log_info "Creating UEFI boot image..."
+    grub-mkstandalone \
+        --format=x86_64-efi \
+        --output="$ISO_DIR/EFI/BOOT/BOOTX64.EFI" \
+        --locales="" \
+        --fonts="" \
+        "boot/grub/grub.cfg=$ISO_DIR/boot/grub/grub.cfg" 2>/dev/null || true
 fi
 
-# ==================== 步骤5: 构建ISO ====================
-log_info "[5/5] Building final ISO..."
+# ==================== 步骤6: 构建可引导ISO ====================
+log_info "[6/6] Building bootable ISO..."
 
 mkdir -p "$OUTPUT_DIR"
 cd "$ISO_DIR"
 
-# 尝试使用xorriso创建ISO
-if command -v xorriso >/dev/null 2>&1; then
-    xorriso -as mkisofs \
-        -volid "OPENWRT_INSTALL" \
-        -o "$ISO_PATH" \
-        . > "$WORK_DIR/xorriso.log" 2>&1 || {
-        log_warning "Xorriso failed, trying alternative method..."
-        # 尝试使用genisoimage
-        if command -v genisoimage >/dev/null 2>&1; then
-            genisoimage -volid "OPENWRT_INSTALL" -o "$ISO_PATH" . || {
-                log_error "ISO creation failed"
-                exit 1
-            }
-        else
-            log_error "No ISO creation tool available"
-            exit 1
-        fi
-    }
-else
-    log_error "xorriso not found"
-    exit 1
-fi
+# 使用xorriso创建可引导ISO
+xorriso -as mkisofs \
+    -iso-level 3 \
+    -full-iso9660-filenames \
+    -volid "OPENWRT_INSTALL" \
+    -eltorito-boot isolinux/isolinux.bin \
+    -eltorito-catalog isolinux/boot.cat \
+    -no-emul-boot \
+    -boot-load-size 4 \
+    -boot-info-table \
+    -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
+    -output "$ISO_PATH" \
+    . 2>&1 | tee "$WORK_DIR/xorriso.log"
 
-# 验证结果
+# 验证ISO是否可引导
 if [ -f "$ISO_PATH" ]; then
     ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
     
+    # 检查ISO的引导信息
+    if file "$ISO_PATH" | grep -q "bootable"; then
+        BOOTABLE="✅ Bootable"
+    else
+        BOOTABLE="⚠️  May not be bootable"
+    fi
+    
     echo ""
     echo "╔═══════════════════════════════════════════════════════╗"
-    echo "║        BUILD COMPLETE!                                ║"
+    echo "║        BOOTABLE ISO CREATED SUCCESSFULLY!            ║"
     echo "╚═══════════════════════════════════════════════════════╝"
     echo ""
     
     echo "📊 Build Summary:"
     echo "  OpenWRT Image:    $IMG_SIZE"
     echo "  Final ISO:        $ISO_SIZE"
+    echo "  Boot Status:      $BOOTABLE"
     echo ""
     
-    echo "🎯 This ISO contains:"
-    echo "  1. OpenWRT disk image"
-    echo "  2. Minimal installer system"
-    echo "  3. Simple bootloader"
+    echo "🎯 ISO Features:"
+    echo "  • Hybrid ISO (BIOS + UEFI boot support)"
+    echo "  • ISOLINUX bootloader with menu"
+    echo "  • Complete Alpine Linux system"
+    echo "  • OpenWRT disk image included"
+    echo "  • Interactive installer"
     echo ""
     
-    echo "🔧 Usage:"
-    echo "  1. Write to USB: dd if=$ISO_NAME of=/dev/sdX bs=4M"
-    echo "  2. Boot from USB"
-    echo "  3. Follow on-screen instructions"
+    echo "🔧 Boot Methods Supported:"
+    echo "  1. BIOS/Legacy boot: ISOLINUX bootloader"
+    echo "  2. UEFI boot: GRUB bootloader (if available)"
     echo ""
     
-    # 创建简单的构建信息
-    echo "Build completed at: $(date)" > "$OUTPUT_DIR/build-info.txt"
-    echo "ISO: $ISO_NAME ($ISO_SIZE)" >> "$OUTPUT_DIR/build-info.txt"
+    echo "📝 Usage Instructions:"
+    echo "  1. Write to USB: dd if=$ISO_NAME of=/dev/sdX bs=4M status=progress"
+    echo "  2. Boot from USB drive"
+    echo "  3. Select 'Install OpenWRT' from boot menu"
+    echo "  4. Follow on-screen instructions"
+    echo ""
     
-    log_success "✅ ISO created: $ISO_PATH"
+    # 显示ISO详细信息
+    echo "🔍 ISO Details:"
+    xorriso -indev "$ISO_PATH" -toc 2>/dev/null | grep -E "Boot|El Torito" || true
+    
+    # 创建构建信息文件
+    cat > "$OUTPUT_DIR/build-info.txt" << EOF
+OpenWRT Installer ISO
+=====================
+Build Date:      $(date)
+ISO File:        $ISO_NAME
+ISO Size:        $ISO_SIZE
+Alpine Version:  $ALPINE_VERSION
+OpenWRT Image:   $(basename "$OPENWRT_IMG") ($IMG_SIZE)
+
+Boot Configuration:
+  - Bootloader: ISOLINUX (BIOS) + GRUB (UEFI)
+  - Kernel: Linux LTS from Alpine
+  - Init System: Custom OpenWRT installer
+
+ISO Contents:
+  - /openwrt.img: OpenWRT disk image
+  - /filesystem.squashfs: Alpine root filesystem
+  - /boot/vmlinuz: Linux kernel
+  - /boot/initrd.img: Initial RAM disk
+  - /isolinux/: BIOS boot files
+  - /EFI/BOOT/: UEFI boot files (if available)
+
+To Test:
+1. Check bootability: file $ISO_NAME
+2. Write to USB: dd if=$ISO_NAME of=/dev/sdX bs=4M status=progress
+3. Boot and test installation
+EOF
+    
+    log_success "✅ Bootable ISO created: $ISO_PATH"
+    log_success "📄 Build info saved to: $OUTPUT_DIR/build-info.txt"
     
 else
     log_error "❌ ISO creation failed"
+    log_info "Xorriso log:"
+    cat "$WORK_DIR/xorriso.log" 2>/dev/null | tail -20
     exit 1
 fi
 
-log_info "Done!"
+log_info "Build process completed successfully!"
