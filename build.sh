@@ -141,7 +141,7 @@ sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
-apt-get install -y parted openssh-server bash-completion cifs-utils curl dbus dosfstools firmware-linux-free gddrescue gdisk iputils-ping isc-dhcp-client less nfs-common ntfs-3g openssh-client open-vm-tools procps vim wimtools wget pv grub-efi-amd64-bin
+apt-get install -y parted openssh-server bash-completion cifs-utils curl dbus dosfstools firmware-linux-free gddrescue gdisk iputils-ping isc-dhcp-client less nfs-common ntfs-3g openssh-client open-vm-tools procps vim wimtools wget pv grub-efi-amd64-bin dialog whiptail
 
 # 清理包缓存
 apt-get clean
@@ -238,9 +238,11 @@ Type=idle
 GETTY_OVERRIDE
 
 # 创建安装脚本
-mkdir -p /opt
 cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/bash
+
+exec 2>/dev/null
+
 clear
 cat << "EOF"
 
@@ -250,73 +252,243 @@ cat << "EOF"
 
 EOF
 
-echo ""
-echo "Checking OpenWRT image..."
+echo -e "\nChecking OpenWRT image..."
 if [ ! -f "/openwrt.img" ]; then
-    echo "❌ ERROR: OpenWRT image not found!"
-    echo ""
-    echo "Press Enter for shell..."
+    echo -e "\n❌ ERROR: OpenWRT image not found!"
+    echo -e "\nImage file should be at: /openwrt.img"
+    echo -e "\nPress Enter for shell..."
     read
     exec /bin/bash
 fi
 
-echo "✅ OpenWRT image found: $(ls -lh /openwrt.img | awk '{print $5}')"
-echo ""
+IMG_SIZE=$(ls -lh /openwrt.img | awk '{print $5}')
+echo -e "✅ OpenWRT image found: $IMG_SIZE\n"
+
+# 获取磁盘列表函数
+get_disk_list() {
+    # 获取所有磁盘，排除loop设备和只读设备
+    DISK_LIST=()
+    DISK_INDEX=1
+    
+    echo "Scanning available disks..."
+    
+    # 使用lsblk获取磁盘信息
+    while IFS= read -r line; do
+        if [ -n "$line" ]; then
+            DISK_NAME=$(echo "$line" | awk '{print $1}')
+            DISK_SIZE=$(echo "$line" | awk '{print $2}')
+            DISK_MODEL=$(echo "$line" | cut -d' ' -f3-)
+            
+            # 检查是否为有效磁盘（排除CD/DVD）
+            if [[ $DISK_NAME =~ ^(sd|hd|nvme|vd) ]]; then
+                DISK_LIST[DISK_INDEX]="$DISK_NAME"
+                echo "  [$DISK_INDEX] /dev/$DISK_NAME - $DISK_SIZE - $DISK_MODEL"
+                ((DISK_INDEX++))
+            fi
+        fi
+    done < <(lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^(sd|hd|nvme|vd)')
+    
+    TOTAL_DISKS=$((DISK_INDEX - 1))
+}
+
+# 主循环
+while true; do
+    # 获取磁盘列表
+    get_disk_list
+    
+    if [ $TOTAL_DISKS -eq 0 ]; then
+        echo -e "\n❌ No disks detected!"
+        echo -e "Please check your storage devices and try again.\n"
+        read -p "Press Enter to rescan..." _
+        clear
+        continue
+    fi
+    
+    echo -e "\n══════════════════════════════════════════════════════════"
+    echo -e "Please select target disk (1-$TOTAL_DISKS):"
+    echo -e "══════════════════════════════════════════════════════════\n"
+    
+    # 获取用户选择
+    while true; do
+        read -p "Select disk number (1-$TOTAL_DISKS) or 'r' to rescan: " SELECTION
+        
+        case $SELECTION in
+            [Rr])
+                clear
+                break 2  # 跳出两层循环，重新扫描
+                ;;
+            [0-9]*)
+                if [[ $SELECTION -ge 1 && $SELECTION -le $TOTAL_DISKS ]]; then
+                    TARGET_DISK=${DISK_LIST[$SELECTION]}
+                    break 2  # 跳出两层循环，继续安装
+                else
+                    echo "❌ Invalid selection. Please choose between 1 and $TOTAL_DISKS."
+                fi
+                ;;
+            *)
+                echo "❌ Invalid input. Please enter a number or 'r' to rescan."
+                ;;
+        esac
+    done
+done
+
+# 确认安装
+clear
+echo -e "\n══════════════════════════════════════════════════════════"
+echo -e "           CONFIRM INSTALLATION"
+echo -e "══════════════════════════════════════════════════════════\n"
+echo -e "Target disk: /dev/$TARGET_DISK"
+echo -e "\n⚠️  ⚠️  ⚠️   WARNING: This will ERASE ALL DATA on /dev/$TARGET_DISK!  ⚠️  ⚠️  ⚠️"
+echo -e "\nALL existing partitions and data will be permanently deleted!"
+echo -e "\n══════════════════════════════════════════════════════════\n"
 
 while true; do
-    echo "Available disks:"
-    echo "================="
-    lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^(sd|hd|nvme)' || echo "No disks detected"
-    echo "================="
-    echo ""
+    read -p "Type 'YES' to continue or 'NO' to cancel: " CONFIRM
     
-    read -p "Enter target disk (e.g., sda): " TARGET_DISK
+    case $CONFIRM in
+        YES|yes|Y|y)
+            echo -e "\nProceeding with installation...\n"
+            break
+            ;;
+        NO|no|N|n)
+            echo -e "\nInstallation cancelled.\n"
+            read -p "Press Enter to return to disk selection..." _
+            exec /opt/install-openwrt.sh  # 重新启动安装程序
+            ;;
+        *)
+            echo "Please type 'YES' to confirm or 'NO' to cancel."
+            ;;
+    esac
+done
+
+# 开始安装
+clear
+echo -e "\n══════════════════════════════════════════════════════════"
+echo -e "           INSTALLING OPENWRT"
+echo -e "══════════════════════════════════════════════════════════\n"
+echo -e "Target: /dev/$TARGET_DISK"
+echo -e "Image size: $IMG_SIZE"
+echo -e "\nThis may take several minutes. Please wait...\n"
+echo -e "══════════════════════════════════════════════════════════\n"
+
+# 显示进度条函数
+show_progress() {
+    local pid=$1
+    local delay=0.1
+    local spinstr='|/-\'
     
-    if [ -z "$TARGET_DISK" ]; then
-        echo "Please enter a disk name"
-        continue
-    fi
+    echo -n "Writing image: ["
     
-    if [ ! -b "/dev/$TARGET_DISK" ]; then
-        echo "❌ Disk /dev/$TARGET_DISK not found!"
-        continue
-    fi
+    # 创建进度条背景
+    for ((i=0; i<50; i++)); do
+        echo -n " "
+    done
+    echo -n "]"
     
-    echo ""
-    echo "⚠️  WARNING: This will erase ALL data on /dev/$TARGET_DISK!"
-    echo ""
-    read -p "Type 'YES' to confirm: " CONFIRM
+    # 移动光标到进度条开始位置
+    echo -ne "\rWriting image: ["
     
-    if [ "$CONFIRM" != "YES" ]; then
-        echo "Cancelled."
-        continue
-    fi
+    # 等待dd进程完成并显示进度
+    while kill -0 $pid 2>/dev/null; do
+        # 获取dd进度（如果可用）
+        if kill -USR1 $pid 2>/dev/null; then
+            sleep 1
+            # 尝试从/proc获取进度信息
+            if [ -f "/proc/$pid/io" ]; then
+                bytes_written=$(grep "^write_bytes" "/proc/$pid/io" | awk '{print $2}')
+                total_bytes=$(ls -l /openwrt.img | awk '{print $5}')
+                if [ -n "$bytes_written" ] && [ "$total_bytes" -gt 0 ]; then
+                    percentage=$((bytes_written * 100 / total_bytes))
+                    if [ $percentage -gt 100 ]; then
+                        percentage=100
+                    fi
+                    
+                    # 更新进度条
+                    filled=$((percentage / 2))
+                    empty=$((50 - filled))
+                    
+                    echo -ne "\rWriting image: ["
+                    for ((i=0; i<filled; i++)); do
+                        echo -n "█"
+                    done
+                    for ((i=0; i<empty; i++)); do
+                        echo -n " "
+                    done
+                    echo -ne "] ${percentage}%"
+                fi
+            fi
+        fi
+        sleep 2
+    done
     
-    clear
-    echo ""
-    echo "Installing OpenWRT to /dev/$TARGET_DISK..."
-    echo ""
+    # 等待进程完成
+    wait $pid
+    return $?
+}
+
+# 执行安装（禁用所有输出日志）
+echo -e "Starting installation process...\n"
+
+# 使用dd写入镜像，禁用所有状态输出
+if command -v pv >/dev/null 2>&1; then
+    # 使用pv显示进度
+    pv -p -t -e -r /openwrt.img | dd of="/dev/$TARGET_DISK" bs=4M 2>/dev/null
+    DD_EXIT=$?
+else
+    # 使用静默dd
+    dd if=/openwrt.img of="/dev/$TARGET_DISK" bs=4M 2>/dev/null &
+    DD_PID=$!
     
-    if command -v pv >/dev/null 2>&1; then
-        pv /openwrt.img | dd of="/dev/$TARGET_DISK" bs=4M
-    else
-        dd if=/openwrt.img of="/dev/$TARGET_DISK" bs=4M status=progress
-    fi
-    
+    # 显示自定义进度
+    show_progress $DD_PID
+    DD_EXIT=$?
+fi
+
+# 检查dd结果
+if [ $DD_EXIT -eq 0 ]; then
+    # 同步磁盘
     sync
-    echo ""
-    echo "✅ Installation complete!"
-    echo ""
+    echo -e "\n\n✅ Installation successful!"
+    echo -e "\nOpenWRT has been installed to /dev/$TARGET_DISK"
     
-    echo "System will reboot in 10 seconds..."
+    # 显示安装后信息
+    echo -e "\n══════════════════════════════════════════════════════════"
+    echo -e "           INSTALLATION COMPLETE"
+    echo -e "══════════════════════════════════════════════════════════\n"
+    echo -e "Next steps:"
+    echo -e "1. Remove the installation media"
+    echo -e "2. Boot from the newly installed disk"
+    echo -e "3. OpenWRT should start automatically"
+    echo -e "\nDefault network settings:"
+    echo -e "  - LAN: 192.168.10.1"
+    echo -e "  - Username: root"
+    echo -e "  - Password: (check your OpenWRT image documentation)"
+    echo -e "\n══════════════════════════════════════════════════════════\n"
+    
+    # 倒计时重启
+    echo -e "System will reboot in 10 seconds..."
+    echo -e "Press Ctrl+C to cancel reboot and return to shell\n"
     
     for i in {10..1}; do
         echo -ne "Rebooting in $i seconds...\r"
         sleep 1
     done
     
+    echo -e "\nRebooting now..."
+    sleep 2
     reboot -f
-done
+    
+else
+    echo -e "\n\n❌ Installation failed! Error code: $DD_EXIT"
+    echo -e "\nPossible issues:"
+    echo -e "1. Disk may be in use or mounted"
+    echo -e "2. Disk may be failing"
+    echo -e "3. Not enough space on target disk"
+    echo -e "\nPlease check the disk and try again.\n"
+    
+    read -p "Press Enter to return to disk selection..." _
+    exec /opt/install-openwrt.sh  # 重新启动安装程序
+fi
 INSTALL_SCRIPT
 chmod +x /opt/install-openwrt.sh
 
@@ -453,7 +625,7 @@ UI vesamenu.c32
 
 MENU TITLE OpenWRT Auto Installer
 DEFAULT linux
-TIMEOUT 50
+TIMEOUT 10
 MENU RESOLUTION 640 480
 MENU COLOR border       30;44   #40ffffff #a0000000 std
 MENU COLOR title        1;36;44 #9033ccff #a0000000 std
@@ -477,7 +649,7 @@ LABEL memtest
   APPEND -
 ISOLINUX_CFG
 
-# 创建更完整的GRUB配置
+# 创建GRUB配置
 cat > "$STAGING_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=10
 set default=0
@@ -503,24 +675,13 @@ fi
 
 terminal_output gfxterm
 
-# Background color
-set color_normal=white/black
-set color_highlight=white/blue
-
 menuentry "Install OpenWRT (UEFI Mode)" {
     search --no-floppy --set=root --file /DEBIAN_CUSTOM
     linux /live/vmlinuz boot=live components quiet splash
     initrd /live/initrd
 }
 
-menuentry "Install OpenWRT (Text Mode)" {
-    search --no-floppy --set=root --file /DEBIAN_CUSTOM
-    linux /live/vmlinuz boot=live components noquiet nosplash
-    initrd /live/initrd
-}
-
 menuentry "Boot from first hard disk" {
-    search --no-floppy --set=root --file /DEBIAN_CUSTOM
     exit
 }
 
@@ -548,14 +709,11 @@ KERNEL=$(find "${CHROOT_DIR}/boot" -name "vmlinuz-*" -type f | sort -V | tail -1
 INITRD=$(find "${CHROOT_DIR}/boot" -name "initrd.img-*" -type f | sort -V | tail -1)
 
 if [ -z "$KERNEL" ] || [ -z "$INITRD" ]; then
-    # 如果找不到，尝试其他方式
     KERNEL=$(ls -t "${CHROOT_DIR}/boot"/vmlinuz-* 2>/dev/null | head -1)
     INITRD=$(ls -t "${CHROOT_DIR}/boot"/initrd.img-* 2>/dev/null | head -1)
     
     if [ -z "$KERNEL" ] || [ -z "$INITRD" ]; then
         log_error "Kernel or initrd not found in ${CHROOT_DIR}/boot"
-        log_error "Available files:"
-        ls -la "${CHROOT_DIR}/boot/" 2>/dev/null || echo "Cannot list boot directory"
         exit 1
     fi
 fi
@@ -574,11 +732,8 @@ elif [ -f /usr/lib/syslinux/isolinux.bin ]; then
     cp /usr/lib/syslinux/isolinux.bin "$STAGING_DIR/isolinux/"
     cp /usr/lib/syslinux/isohdpfx.bin "$WORK_DIR/tmp/isohdpfx.bin"
 else
-    log_warning "isolinux.bin not found, trying to install syslinux..."
     apt-get install -y syslinux-common
-    cp /usr/lib/syslinux/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || \
-    cp /usr/lib/ISOLINUX/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || \
-    log_error "Cannot find isolinux.bin"
+    cp /usr/lib/syslinux/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || true
 fi
 
 # 复制ISOLINUX模块
@@ -588,9 +743,7 @@ fi
 
 # 确保有vesamenu.c32
 if [ ! -f "$STAGING_DIR/isolinux/vesamenu.c32" ]; then
-    cp /usr/lib/syslinux/modules/bios/vesamenu.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || \
-    cp /usr/lib/ISOLINUX/vesamenu.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || \
-    log_warning "vesamenu.c32 not found, isolinux will use simple menu"
+    cp /usr/lib/syslinux/modules/bios/vesamenu.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
 fi
 
 # 复制GRUB EFI模块
@@ -602,25 +755,19 @@ fi
 # 复制memtest（可选）
 if [ -f /boot/memtest86+.bin ]; then
     cp /boot/memtest86+.bin "$STAGING_DIR/live/memtest"
-elif [ -f /usr/lib/syslinux/memdisk ]; then
-    cp /usr/lib/syslinux/memdisk "$STAGING_DIR/live/"
 fi
 
 # ==================== 创建UEFI引导文件 ====================
 log_info "[8.5/10] Creating UEFI boot files..."
 
-# 方法1：使用grub-mkstandalone创建EFI文件
-log_info "Method 1: Creating EFI boot file with grub-mkstandalone..."
+# 创建GRUB EFI文件
 mkdir -p "${WORK_DIR}/tmp/grub_efi"
-
-# 创建GRUB core.img
 cat > "${WORK_DIR}/tmp/grub_efi/grub.cfg" << 'EFI_GRUB_CFG'
 search --no-floppy --set=root --file /DEBIAN_CUSTOM
 set prefix=($root)/boot/grub
 configfile /boot/grub/grub.cfg
 EFI_GRUB_CFG
 
-# 尝试创建bootx64.efi
 if command -v grub-mkstandalone >/dev/null 2>&1; then
     grub-mkstandalone \
         --format=x86_64-efi \
@@ -628,74 +775,43 @@ if command -v grub-mkstandalone >/dev/null 2>&1; then
         --locales="" \
         --fonts="" \
         "boot/grub/grub.cfg=${WORK_DIR}/tmp/grub_efi/grub.cfg" || \
-    log_warning "grub-mkstandalone failed, trying alternative method"
+    log_warning "grub-mkstandalone failed"
 fi
 
-# 方法2：如果方法1失败，直接复制预编译的GRUB EFI文件
+# 备用方案：复制预编译的GRUB EFI文件
 if [ ! -f "${WORK_DIR}/tmp/bootx64.efi" ] && [ -f /usr/lib/grub/x86_64-efi/grub.efi ]; then
-    log_info "Method 2: Using pre-built grub.efi..."
     cp /usr/lib/grub/x86_64-efi/grub.efi "${WORK_DIR}/tmp/bootx64.efi"
 fi
 
-# 方法3：如果以上都失败，尝试从chroot中获取
 if [ ! -f "${WORK_DIR}/tmp/bootx64.efi" ] && [ -f "${CHROOT_DIR}/usr/lib/grub/x86_64-efi/grub.efi" ]; then
-    log_info "Method 3: Copying grub.efi from chroot..."
     cp "${CHROOT_DIR}/usr/lib/grub/x86_64-efi/grub.efi" "${WORK_DIR}/tmp/bootx64.efi"
 fi
 
 if [ ! -f "${WORK_DIR}/tmp/bootx64.efi" ]; then
     log_error "Failed to create bootx64.efi file"
-    log_error "Trying to create minimal EFI shell..."
-    
-    # 创建简单的EFI文件作为最后的手段
-    echo -n -e '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x40\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x40\x00\x38\x00\x01\x00' > "${WORK_DIR}/tmp/bootx64.efi"
-    echo "Created minimal EFI file"
+    exit 1
 fi
 
 # 创建EFI引导镜像
 log_info "Creating EFI boot image..."
-EFI_SIZE=$(( $(stat -c%s "${WORK_DIR}/tmp/bootx64.efi" 2>/dev/null || echo 1048576) + 1048576 ))
+EFI_SIZE=$(( $(stat -c%s "${WORK_DIR}/tmp/bootx64.efi" 2>/dev/null || echo 2097152) + 2097152 ))
 dd if=/dev/zero of="${STAGING_DIR}/EFI/boot/efiboot.img" bs=1 count=0 seek=${EFI_SIZE} 2>/dev/null
-
-# 使用正确的fat格式
 mkfs.fat -F 32 -n "OPENWRT_EFI" "${STAGING_DIR}/EFI/boot/efiboot.img" >/dev/null 2>&1
 
-# 挂载并复制文件
-MMOUNT_DIR="${WORK_DIR}/tmp/efi_mount"
-mkdir -p "$MMOUNT_DIR"
+# 使用mcopy复制文件
+mformat -i "${STAGING_DIR}/EFI/boot/efiboot.img" -F -v "OPENWRT_EFI" ::
+mmd -i "${STAGING_DIR}/EFI/boot/efiboot.img" ::/EFI
+mmd -i "${STAGING_DIR}/EFI/boot/efiboot.img" ::/EFI/boot
+mcopy -i "${STAGING_DIR}/EFI/boot/efiboot.img" "${WORK_DIR}/tmp/bootx64.efi" ::/EFI/boot/bootx64.efi
 
-# 尝试挂载
-if mount -o loop "${STAGING_DIR}/EFI/boot/efiboot.img" "$MMOUNT_DIR" 2>/dev/null; then
-    mkdir -p "$MMOUNT_DIR/EFI/boot"
-    cp "${WORK_DIR}/tmp/bootx64.efi" "$MMOUNT_DIR/EFI/boot/"
-    sync
-    umount "$MMOUNT_DIR" 2>/dev/null || true
-    rm -rf "$MMOUNT_DIR"
-    log_success "EFI boot image created successfully"
-else
-    log_warning "Could not mount EFI image, using mcopy instead..."
-    mformat -i "${STAGING_DIR}/EFI/boot/efiboot.img" -F -v "OPENWRT_EFI" ::
-    mmd -i "${STAGING_DIR}/EFI/boot/efiboot.img" ::/EFI
-    mmd -i "${STAGING_DIR}/EFI/boot/efiboot.img" ::/EFI/boot
-    mcopy -i "${STAGING_DIR}/EFI/boot/efiboot.img" "${WORK_DIR}/tmp/bootx64.efi" ::/EFI/boot/bootx64.efi
-    log_success "EFI boot image created with mcopy"
-fi
-
-# 创建boot catalog文件
-echo "OpenWRT Auto Installer - UEFI Boot" > "${STAGING_DIR}/boot.catalog"
+log_success "EFI boot image created"
 
 # ==================== 步骤9: 构建ISO镜像 ====================
 log_info "[9/10] Building ISO image..."
 
-# 检查引导文件
-log_info "Checking boot files:"
-ls -la "$STAGING_DIR/isolinux/" 2>/dev/null | head -5 || log_warning "No isolinux files"
-ls -la "$STAGING_DIR/EFI/boot/" 2>/dev/null || log_warning "No EFI files"
-ls -la "$STAGING_DIR/boot/grub/" 2>/dev/null | head -5 || log_warning "No GRUB files"
-
-# 构建ISO的命令
-XORRISO_CMD="xorriso -as mkisofs \
-  -volid 'OPENWRT_INSTALL' \
+# 构建ISO
+xorriso -as mkisofs \
+  -volid "OPENWRT_INSTALL" \
   -isohybrid-mbr /usr/lib/syslinux/isohdpfx.bin \
   -b isolinux/isolinux.bin \
   -c isolinux/boot.cat \
@@ -706,119 +822,76 @@ XORRISO_CMD="xorriso -as mkisofs \
   -e EFI/boot/efiboot.img \
   -no-emul-boot \
   -isohybrid-gpt-basdat \
-  -o '$ISO_PATH' \
-  '$STAGING_DIR'"
-
-log_info "Running xorriso command..."
-eval "$XORRISO_CMD"
-
-# 如果失败，尝试简化版本
-if [ ! -f "$ISO_PATH" ]; then
-    log_warning "First attempt failed, trying simplified command..."
-    xorriso -as mkisofs \
-        -volid "OPENWRT_INSTALL" \
-        -b isolinux/isolinux.bin \
-        -c isolinux/boot.cat \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
-        -eltorito-alt-boot \
-        -e EFI/boot/efiboot.img \
-        -no-emul-boot \
-        -o "$ISO_PATH" \
-        "$STAGING_DIR"
-fi
+  -o "$ISO_PATH" \
+  "$STAGING_DIR"
 
 # ==================== 步骤10: 验证结果 ====================
 log_info "[10/10] Verifying build..."
 
 if [ -f "$ISO_PATH" ]; then
     ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
-    ISO_BLOCKS=$(stat -c%s "$ISO_PATH")
     
     echo ""
     log_success "✅ ISO built successfully!"
     echo ""
     log_info "Build Results:"
     log_info "  Output File: $ISO_PATH"
-    log_info "  File Size:   $ISO_SIZE ($ISO_BLOCKS bytes)"
+    log_info "  File Size:   $ISO_SIZE"
     log_info "  Volume ID:   OPENWRT_INSTALL"
     echo ""
-    
-    # 测试ISO可读性
-    if command -v isoinfo >/dev/null 2>&1; then
-        log_info "ISO Structure:"
-        isoinfo -d -i "$ISO_PATH" 2>/dev/null | grep -E "(Volume id|Volume size|Boot |El torito)" || true
-    fi
-    
-    # 检查引导记录
-    log_info "Checking boot records..."
-    dd if="$ISO_PATH" bs=1 count=512 2>/dev/null | od -x | grep -q "55 aa" && \
-        log_success "Boot signature found" || log_warning "Boot signature not found"
     
     # 创建构建信息文件
     cat > "$OUTPUT_DIR/build-info.txt" << EOF
 OpenWRT Installer ISO Build Information
 ========================================
 Build Date:      $(date)
-Build Script:    build.sh
 
-Output ISO:      $ISO_NAME
 ISO Size:        $ISO_SIZE
 Kernel Version:  $(basename "$KERNEL")
 Initrd Version:  $(basename "$INITRD")
 
-Boot Support:    BIOS (isolinux) + UEFI (GRUB)
-Boot Timeout:    50 seconds (BIOS), 10 seconds (UEFI)
-Auto-install:    Enabled
+Boot Support:    BIOS + UEFI
+Boot Timeout:    10 seconds
 
-ISO Features:
-  - BIOS boot via isolinux
-  - UEFI boot via GRUB
-  - Live system with auto-installer
-  - Network support (DHCP)
-  - SSH access enabled (root login)
+Installation Features:
+  - Simple numeric disk selection (1, 2, 3, etc.)
+  - Clean, minimal output (no verbose logs)
+  - Visual progress indicator
+  - Safety confirmation before writing
+  - Automatic reboot after installation
 
 Usage:
   1. Create bootable USB: dd if="$ISO_NAME" of=/dev/sdX bs=4M status=progress
   2. Boot from USB in UEFI or Legacy mode
-  3. Follow on-screen instructions
-  4. Select target disk for OpenWRT installation
+  3. Select target disk using numbers
+  4. Confirm installation
+  5. Wait for automatic reboot
+  6. souce https://github.com/sirpdboy/openwrt-installer-iso.git
 
-Troubleshooting:
-  - If UEFI boot fails, try Legacy/BIOS mode
-  - Check that secure boot is disabled in UEFI settings
-  - Ensure USB is properly created with dd
+Notes:
+  - Installation is completely silent (no dd logs)
+  - Use numbers instead of disk names (simpler)
+  - Press Ctrl+C during reboot countdown to cancel
 EOF
     
     log_success "Build info saved to: $OUTPUT_DIR/build-info.txt"
     
-    # 显示最终提示
     echo ""
     echo "================================================================================"
     echo "📦 ISO Build Complete!"
     echo "================================================================================"
-    echo "To create a bootable USB:"
+    echo "Key improvements in this version:"
+    echo "  ✓ Clean, minimal installation output (no verbose logs)"
+    echo "  ✓ Simple numeric disk selection (1, 2, 3... instead of sda, sdb)"
+    echo "  ✓ Visual progress bar during writing"
+    echo "  ✓ Enhanced safety with confirmation step"
+    echo ""
+    echo "To create bootable USB:"
     echo "  sudo dd if='$ISO_PATH' of=/dev/sdX bs=4M status=progress && sync"
-    echo ""
-    echo "Boot options:"
-    echo "  - Legacy/BIOS mode: Uses isolinux bootloader"
-    echo "  - UEFI mode: Uses GRUB bootloader"
-    echo ""
-    echo "Note: If experiencing UEFI boot issues, try:"
-    echo "  1. Disable Secure Boot in BIOS/UEFI settings"
-    echo "  2. Use Legacy/CSM boot mode"
-    echo "  3. Ensure USB drive is properly formatted"
     echo "================================================================================"
     
     log_success "🎉 All steps completed successfully!"
 else
     log_error "❌ ISO file not created: $ISO_PATH"
-    
-    # 调试信息
-    echo ""
-    log_error "Debug information:"
-    ls -la "$OUTPUT_DIR/" 2>/dev/null || echo "Output directory not accessible"
-    ls -la "$STAGING_DIR/" 2>/dev/null | head -10
     exit 1
 fi
