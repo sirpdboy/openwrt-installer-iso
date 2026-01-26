@@ -524,11 +524,15 @@ MENU COLOR tabmsg       31;40   #30ffffff #00000000 std
 
 
 LABEL linux
-  MENU LABEL ^Install OpenWRT
+  MENU LABEL ^Install OpenWRT (Live Mode)
   MENU DEFAULT
   KERNEL /live/vmlinuz
   APPEND initrd=/live/initrd boot=live components quiet splash
 
+LABEL linux-nosplash
+  MENU LABEL Install OpenWRT (verbose mode)
+  KERNEL /live/vmlinuz
+  APPEND initrd=/live/initrd boot=live components
 ISOLINUX_CFG
 
 # 复制isolinux文件
@@ -560,6 +564,13 @@ set menu_color_highlight=white/blue
 menuentry "Install OpenWRT (UEFI Mode)" --class gnu-linux --class gnu --class os {
     echo "Loading kernel..."
     linux /live/vmlinuz boot=live components quiet splash
+    echo "Loading initrd..."
+    initrd /live/initrd
+}
+
+menuentry "Install OpenWRT (verbose mode)" --class gnu-linux --class gnu --class os {
+    echo "Loading kernel..."
+    linux /live/vmlinuz boot=live components
     echo "Loading initrd..."
     initrd /live/initrd
 }
@@ -705,8 +716,9 @@ Boot Support:
   - BIOS (ISOLINUX/SYSLINUX)
   - UEFI x86_64 (GRUB2)
   - Secure Boot (via shim)
-Boot Timeout:    5 seconds
-Auto-install:    Enabled
+Boot Modes:
+  1. Install OpenWRT (Live Mode) - default
+  2. Install OpenWRT (verbose mode)
 
 Usage:
   1. Flash: dd if="$ISO_NAME" of=/dev/sdX bs=4M status=progress
