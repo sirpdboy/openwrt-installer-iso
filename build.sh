@@ -62,7 +62,6 @@ IMG_SIZE=$(ls -lh "$OPENWRT_IMG" | awk '{print $5}')
 log_success "Found OpenWRT image: $IMG_SIZE"
 
 # 修复Debian buster源
-
 cat > /etc/apt/sources.list <<EOF
 deb http://archive.debian.org/debian buster main contrib non-free
 deb http://archive.debian.org/debian-security buster/updates main
@@ -176,7 +175,6 @@ dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
 apt-get install -y parted openssh-server bash-completion cifs-utils curl dbus dosfstools firmware-linux-free gddrescue gdisk iputils-ping isc-dhcp-client less nfs-common ntfs-3g openssh-client open-vm-tools procps vim wimtools wget grub-efi-amd64-bin grub-common
-
 
 # 清理包缓存
 apt-get clean
@@ -389,8 +387,8 @@ rm -f /etc/machine-id
 
 echo "List installed packages"
 dpkg --get-selections|tee /packages.txt
-# 8. 记录安装的包
-# 配置live-boot
+
+# 8. 配置live-boot
 mkdir -p /etc/live/boot
 echo "live" > /etc/live/boot.conf
 
@@ -433,12 +431,9 @@ EOF
 chown -v root:root "${CHROOT_DIR}/etc/systemd/network/99-dhcp-en.network"
 chmod 644 "${CHROOT_DIR}/etc/systemd/network/99-dhcp-en.network"
 
-
 # ==================== 步骤6: 提取内核和initrd ====================
 log_info "[6/10] Extracting kernel and initrd..."
 
-mkdir -p $WORK_DIR/{staging/{EFI/boot,boot/grub/x86_64-efi,isolinux,live},tmp}
-# 重新挂载以访问文件
 # 卸载chroot挂载点（关键步骤！）
 log_info "Unmounting chroot filesystems..."
 safe_umount "$CHROOT_DIR/dev/pts"
@@ -481,6 +476,7 @@ root/.bash_history
 root/.cache
 EOF
 
+# 创建squashfs，使用排除列表
 if mksquashfs "$CHROOT_DIR" "$STAGING_DIR/live/filesystem.squashfs" \
     -comp xz \
     -b 1M \
@@ -502,14 +498,13 @@ touch "$STAGING_DIR/live/filesystem.packages"
 # ==================== 步骤8: 创建引导配置 ====================
 log_info "[8/10] Creating boot configuration..."
 
-
 # 创建isolinux配置
 cat > "$STAGING_DIR/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
 UI vesamenu.c32
 
 MENU TITLE OpenWRT Installer Boot Menu
 DEFAULT linux
-TIMEOUT 5
+TIMEOUT 50
 PROMPT 0
 MENU RESOLUTION 640 480
 MENU COLOR border       30;44   #40ffffff #a0000000 std
@@ -521,7 +516,6 @@ MENU COLOR timeout_msg  37;40   #80ffffff #00000000 std
 MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
 MENU COLOR msg07        37;40   #90ffffff #a0000000 std
 MENU COLOR tabmsg       31;40   #30ffffff #00000000 std
-
 
 LABEL linux
   MENU LABEL ^Install OpenWRT (Live Mode)
@@ -544,12 +538,13 @@ cp /usr/lib/syslinux/modules/bios/vesamenu.c32 "$STAGING_DIR/isolinux/" 2>/dev/n
 cp /usr/lib/syslinux/modules/bios/libutil.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
 cp /usr/lib/syslinux/modules/bios/libcom32.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
 cp /usr/lib/syslinux/modules/bios/chain.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
+
 # 创建GRUB配置
 cat > "$STAGING_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=5
 set default=0
 
-
+# 设置图形模式
 if loadfont /boot/grub/fonts/unicode.pf2; then
     set gfxmode=auto
     insmod efi_gop
@@ -574,6 +569,16 @@ menuentry "Install OpenWRT (verbose mode)" --class gnu-linux --class gnu --class
     echo "Loading initrd..."
     initrd /live/initrd
 }
+
+menuentry "Reboot" {
+    echo "Rebooting..."
+    reboot
+}
+
+menuentry "Power Off" {
+    echo "Powering off..."
+    halt
+}
 GRUB_CFG
 
 # 复制GRUB模块和字体
@@ -589,6 +594,7 @@ log_info "Creating UEFI boot structure..."
 
 # 创建EFI目录结构
 mkdir -p "$STAGING_DIR/EFI/BOOT"
+
 # 方法1: 直接复制GRUB EFI文件
 if [ -f "/usr/lib/grub/x86_64-efi/monolithic/grubx64.efi" ]; then
     cp "/usr/lib/grub/x86_64-efi/monolithic/grubx64.efi" "$STAGING_DIR/EFI/BOOT/grubx64.efi"
@@ -649,7 +655,6 @@ mcopy -i boot.img BOOT/grub.cfg ::/EFI/BOOT/ 2>/dev/null || true
 
 mv boot.img "$STAGING_DIR/EFI/boot/"
 log_success "EFI boot image created"
-
 
 # ==================== 步骤9: 构建ISO镜像 ====================
 log_info "[9/10] Building ISO image..."
@@ -716,6 +721,7 @@ Boot Support:
   - BIOS (ISOLINUX/SYSLINUX)
   - UEFI x86_64 (GRUB2)
   - Secure Boot (via shim)
+
 Boot Modes:
   1. Install OpenWRT (Live Mode) - default
   2. Install OpenWRT (verbose mode)
@@ -725,6 +731,7 @@ Usage:
   2. Boot from USB/CD
   3. Select installation mode
   4. Follow on-screen instructions
+
 Troubleshooting:
   - If UEFI boot fails, try disabling Secure Boot in BIOS
   - For older systems, use BIOS/Legacy boot mode
