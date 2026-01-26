@@ -241,6 +241,10 @@ GETTY_OVERRIDE
 cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/bash
 
+pkill -9 systemd-timesyncd 2>/dev/null
+pkill -9 journald 2>/dev/null
+echo 0 > /proc/sys/kernel/printk 2>/dev/null
+    
 clear
 cat << "EOF"
 
@@ -459,15 +463,10 @@ if [ $DD_EXIT -eq 0 ]; then
     echo -e "1. Remove the installation media"
     echo -e "2. Boot from the newly installed disk"
     echo -e "3. OpenWRT should start automatically"
-    echo -e "\nDefault network settings:"
-    echo -e "  - LAN: 192.168.10.1"
-    echo -e "  - Username: root"
-    echo -e "  - Password: (check your OpenWRT image documentation)"
     echo -e "\n══════════════════════════════════════════════════════════\n"
     
     # 倒计时重启
     echo -e "System will reboot in 10 seconds..."
-    echo -e "Press Ctrl+C to cancel reboot and return to shell\n"
     
     for i in {10..1}; do
         echo -ne "Rebooting in $i seconds...\r"
