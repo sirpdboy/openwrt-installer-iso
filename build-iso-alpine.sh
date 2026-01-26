@@ -1,7 +1,7 @@
 #!/bin/ash
-# OpenWRT Alpine Installer ISO Builder
-# Fixed version - supports offline/online package installation
+# OpenWRT Alpine Installer ISO Builder - Fixed Version
 # Supports BIOS/UEFI dual boot
+# All English, no special characters
 
 set -e
 
@@ -26,7 +26,7 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# ==================== Install Packages with Fallback ====================
+# ==================== Install Packages ====================
 install_packages() {
     log_info "Installing required packages..."
     
@@ -37,30 +37,31 @@ http://dl-cdn.alpinelinux.org/alpine/v3.19/community
 EOF
     
     # Update package index
-    apk update || {
-        log_warning "Failed to update package index, trying alternative mirror..."
-        cat > /etc/apk/repositories << EOF
-http://mirror.leaseweb.com/alpine/v3.19/main
-http://mirror.leaseweb.com/alpine/v3.19/community
-EOF
-        apk update
-    }
+    apk update
     
-    # Install packages with individual error handling
-    local packages="alpine-sdk xorriso"
-    
-    for pkg in $packages; do
-        if ! apk add --no-cache $pkg 2>/dev/null; then
-            log_warning "Package $pkg not available, skipping..."
-        fi
-    done
-    
-    # Try to install remaining packages
-    apk add --no-cache syslinux grub-bios grub-efi mtools dosfstools \
-        squashfs-tools parted e2fsprogs sfdisk dialog pv bash \
-        coreutils findutils grep util-linux e2fsprogs-extra || {
-        log_warning "Some packages failed to install, continuing with available packages..."
-    }
+    # Install essential packages
+    apk add --no-cache \
+        xorriso \
+        syslinux \
+        grub-bios \
+        grub-efi \
+        mtools \
+        dosfstools \
+        squashfs-tools \
+        parted \
+        e2fsprogs \
+        e2fsprogs-extra \
+        sfdisk \
+        pv \
+        bash \
+        coreutils \
+        findutils \
+        grep \
+        util-linux \
+        gzip \
+        cpio \
+        wget \
+        busybox
     
     log_success "Package installation completed"
 }
@@ -78,7 +79,9 @@ check_prerequisites() {
     # Create working directories
     rm -rf "$WORK_DIR"
     mkdir -p "$WORK_DIR" "$CHROOT_DIR" "$OUTPUT_DIR"
-    mkdir -p "$WORK_DIR/iso/boot/grub"
+    
+    # Create ISO directory structure
+    mkdir -p "$WORK_DIR/iso/boot"
     mkdir -p "$WORK_DIR/iso/EFI/BOOT"
     
     # Install packages
@@ -91,45 +94,53 @@ check_prerequisites() {
 create_alpine_base() {
     log_info "Creating Alpine Linux base system..."
     
-    # Use local apk cache to create chroot
-    mkdir -p "$CHROOT_DIR/etc/apk"
+    # First, ensure CHROOT_DIR exists and create directory structure
+    mkdir -p "$CHROOT_DIR"
     
-    # Copy APK configuration from host
-    cp /etc/apk/repositories "$CHROOT_DIR/etc/apk/"
-    cp /etc/apk/arch "$CHROOT_DIR/etc/apk/" 2>/dev/null || true
-    cp /etc/apk/world "$CHROOT_DIR/etc/apk/" 2>/dev/null || true
-    
-    # Create minimal directory structure
+    # Create essential directory structure
     mkdir -p "$CHROOT_DIR"/{bin,dev,etc,home,lib,mnt,opt,proc,root,run,sbin,srv,sys,tmp,usr,var}
     mkdir -p "$CHROOT_DIR/usr"/{bin,sbin,lib}
     mkdir -p "$CHROOT_DIR/var"/{cache,lib,local,lock,log,opt,run,spool,tmp}
     
-    # Create a minimal busybox-based system manually
     log_info "Creating minimal system using busybox..."
     
-    # Copy busybox if available
-    if command -v busybox >/dev/null; then
-        cp $(which busybox) "$CHROOT_DIR/bin/busybox"
-        chroot "$CHROOT_DIR" /bin/busybox --install -s
-    else
-        # Download busybox statically compiled
-        log_info "Downloading busybox..."
-        wget -q -O "$CHROOT_DIR/bin/busybox" https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
-        chmod +x "$CHROOT_DIR/bin/busybox"
-        chroot "$CHROOT_DIR" /bin/busybox --install -s
-    fi
+    # Copy busybox to chroot
+    mkdir -p "$CHROOT_DIR/bin"
+    cp /bin/busybox "$CHROOT_DIR/bin/busybox"
+    chmod 755 "$CHROOT_DIR/bin/busybox"
     
-    # Create essential symlinks
-    ln -sf /bin/busybox "$CHROOT_DIR/bin/sh"
-    ln -sf /bin/busybox "$CHROOT_DIR/bin/ash"
-    ln -sf /bin/busybox "$CHROOT_DIR/bin/mount"
-    ln -sf /bin/busybox "$CHROOT_DIR/bin/umount"
+    # Create busybox symlinks
+    cat > "$CHROOT_DIR/setup-busybox.sh" << 'EOF'
+#!/bin/sh
+# Setup busybox symlinks
+
+cd /bin
+./busybox --install -s
+
+# Create essential symlinks
+ln -sf busybox sh
+ln -sf busybox ash
+ln -sf busybox mount
+ln -sf busybox umount
+ln -sf busybox cat
+ln -sf busybox ls
+ln -sf busybox echo
+ln -sf busybox mkdir
+ln -sf busybox rmdir
+ln -sf busybox cp
+ln -sf busybox mv
+ln -sf busybox rm
+ln -sf busybox chmod
+ln -sf busybox chown
+ln -sf busybox ln
+ln -sf busybox sleep
+ln -sf busybox sync
+EOF
     
-    # Create essential directories for mounting
-    mkdir -p "$CHROOT_DIR"/{proc,sys,dev}
+    chmod +x "$CHROOT_DIR/setup-busybox.sh"
     
     # Create minimal /etc files
-    cat > "$CHROOT_DIR/etc/inittab" << 'INITTAB'
+    cat > "$CHROOT_DIR/etc/inittab" << 'EOF'
 ::sysinit:/bin/mount -t proc proc /proc
 ::sysinit:/bin/mount -t sysfs sysfs /sys
 ::sysinit:/bin/mount -t devtmpfs devtmpfs /dev
@@ -143,15 +154,15 @@ tty3::respawn:/bin/getty 38400 tty3
 ttyS0::respawn:/bin/getty -L ttyS0 115200 vt100
 
 ::shutdown:/bin/umount -a -r
-INITTAB
+EOF
 
     # Create fstab
-    cat > "$CHROOT_DIR/etc/fstab" << 'FSTAB'
+    cat > "$CHROOT_DIR/etc/fstab" << 'EOF'
 proc           /proc        proc    defaults          0       0
 sysfs          /sys         sysfs   defaults          0       0
 devtmpfs       /dev         devtmpfs defaults         0       0
 tmpfs          /tmp         tmpfs   defaults          0       0
-FSTAB
+EOF
 
     # Create hostname
     echo "openwrt-installer" > "$CHROOT_DIR/etc/hostname"
@@ -159,6 +170,13 @@ FSTAB
     # Create resolv.conf
     echo "nameserver 8.8.8.8" > "$CHROOT_DIR/etc/resolv.conf"
     echo "nameserver 1.1.1.1" >> "$CHROOT_DIR/etc/resolv.conf"
+    
+    # Create profile
+    cat > "$CHROOT_DIR/etc/profile" << 'EOF'
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PS1='\u@\h:\w\$ '
+export TERM=linux
+EOF
     
     log_success "Minimal Alpine system created"
 }
@@ -171,7 +189,7 @@ create_installer_system() {
     cp "$OPENWRT_IMG" "$CHROOT_DIR/openwrt.img"
     
     # Create init script
-    cat > "$CHROOT_DIR/init" << 'INIT_SCRIPT'
+    cat > "$CHROOT_DIR/init" << 'EOF'
 #!/bin/sh
 # OpenWRT installer init script
 
@@ -186,6 +204,7 @@ mount -t devpts devpts /dev/pts
 exec < /dev/tty1 > /dev/tty1 2>&1
 
 # Show welcome message
+clear
 echo "========================================"
 echo "   OpenWRT Alpine Installer"
 echo "========================================"
@@ -206,160 +225,191 @@ if [ ! -f "/openwrt.img" ]; then
 fi
 
 # Start installer
-exec /bin/installer
-INIT_SCRIPT
+exec /sbin/installer
+EOF
     chmod +x "$CHROOT_DIR/init"
     
     # Create installer script
-    cat > "$CHROOT_DIR/bin/installer" << 'INSTALLER_SCRIPT'
+    mkdir -p "$CHROOT_DIR/sbin"
+    cat > "$CHROOT_DIR/sbin/installer" << 'EOF'
 #!/bin/sh
 # OpenWRT installer
 
-clear
+clear() {
+    printf "\033[2J\033[H"
+}
 
-echo "========================================"
-echo "      OpenWRT Disk Installer"
-echo "========================================"
-echo ""
-
-# Function to show disks
 show_disks() {
     echo "Available disks:"
     echo "----------------"
     
-    local index=1
+    index=1
     for disk in /sys/block/sd* /sys/block/nvme* /sys/block/vd*; do
         [ -e "$disk" ] || continue
         
-        local disk_name=$(basename "$disk")
-        local size=$(cat "$disk/size" 2>/dev/null)
-        local model=""
+        disk_name=$(basename "$disk")
+        size=""
+        model=""
+        
+        if [ -f "$disk/size" ]; then
+            size_blocks=$(cat "$disk/size" 2>/dev/null)
+            if [ -n "$size_blocks" ]; then
+                size_mb=$((size_blocks * 512 / 1024 / 1024))
+                size="${size_mb}MB"
+            fi
+        fi
         
         if [ -f "$disk/device/model" ]; then
             model=$(cat "$disk/device/model" 2>/dev/null | tr -d '\n' | sed 's/  */ /g')
         fi
         
-        if [ -n "$size" ]; then
-            size=$((size * 512 / 1024 / 1024))
-            printf "  [%d] /dev/%s - %d MB - %s\n" "$index" "$disk_name" "$size" "$model"
+        if [ -n "$size" ] && [ -n "$model" ]; then
+            echo "  [$index] /dev/$disk_name - $size - $model"
+        elif [ -n "$size" ]; then
+            echo "  [$index] /dev/$disk_name - $size"
+        elif [ -n "$model" ]; then
+            echo "  [$index] /dev/$disk_name - $model"
         else
-            printf "  [%d] /dev/%s - %s\n" "$index" "$disk_name" "$model"
+            echo "  [$index] /dev/$disk_name"
         fi
         
+        eval "DISK_$index=/dev/$disk_name"
         index=$((index + 1))
     done
     
     TOTAL_DISKS=$((index - 1))
 }
 
-# Main loop
-while true; do
-    show_disks
-    
-    if [ $TOTAL_DISKS -eq 0 ]; then
-        echo ""
-        echo "No disks found!"
-        echo "Press Enter to rescan..."
-        read
+main_menu() {
+    while true; do
         clear
-        continue
-    fi
-    
-    echo ""
-    echo "----------------------------------------"
-    echo "Select disk number (1-$TOTAL_DISKS)"
-    echo "Or press 'q' to quit"
-    echo -n "Your choice: "
-    
-    read choice
-    
-    case "$choice" in
-        [Qq])
-            echo "Exiting..."
-            exit 0
-            ;;
-        [0-9]*)
-            if [ "$choice" -ge 1 ] && [ "$choice" -le "$TOTAL_DISKS" ]; then
-                # Find selected disk
-                local selected_index=1
-                for disk in /sys/block/sd* /sys/block/nvme* /sys/block/vd*; do
-                    [ -e "$disk" ] || continue
+        echo "========================================"
+        echo "      OpenWRT Disk Installer"
+        echo "========================================"
+        echo ""
+        
+        show_disks
+        
+        if [ $TOTAL_DISKS -eq 0 ]; then
+            echo ""
+            echo "No disks detected!"
+            echo ""
+            echo "Press Enter to rescan..."
+            read
+            continue
+        fi
+        
+        echo ""
+        echo "----------------------------------------"
+        echo "Select disk number (1-$TOTAL_DISKS)"
+        echo "Press 'q' to quit"
+        echo -n "Your choice: "
+        
+        read choice
+        
+        case "$choice" in
+            q|Q)
+                echo "Exiting installer..."
+                exit 0
+                ;;
+            [0-9]*)
+                if [ "$choice" -ge 1 ] && [ "$choice" -le $TOTAL_DISKS ]; then
+                    # Get selected disk
+                    eval "target_disk=\"\$DISK_$choice\""
                     
-                    if [ "$selected_index" -eq "$choice" ]; then
-                        DISK_NAME=$(basename "$disk")
-                        break
-                    fi
-                    selected_index=$((selected_index + 1))
-                done
-                
-                if [ -n "$DISK_NAME" ]; then
+                    clear
+                    echo "========================================"
+                    echo "      Installation Confirmation"
+                    echo "========================================"
                     echo ""
-                    echo "Selected disk: /dev/$DISK_NAME"
+                    echo "Selected disk: $target_disk"
                     echo ""
-                    echo "WARNING: This will erase ALL data on /dev/$DISK_NAME"
+                    echo "WARNING: This will ERASE ALL DATA on $target_disk"
                     echo ""
-                    echo -n "Type 'YES' to confirm: "
+                    echo -n "Type 'YES' to confirm installation: "
                     read confirm
                     
                     if [ "$confirm" = "YES" ]; then
-                        echo ""
-                        echo "Installing OpenWRT to /dev/$DISK_NAME..."
-                        echo "This may take a few minutes..."
-                        echo ""
-                        
-                        # Write image
-                        if command -v pv >/dev/null 2>&1; then
-                            pv /openwrt.img | dd of="/dev/$DISK_NAME" bs=4M 2>/dev/null
-                        else
-                            dd if=/openwrt.img of="/dev/$DISK_NAME" bs=4M status=progress 2>&1
-                        fi
-                        
-                        if [ $? -eq 0 ]; then
-                            sync
-                            echo ""
-                            echo "SUCCESS: OpenWRT installed!"
-                            echo ""
-                            echo "Next steps:"
-                            echo "1. Remove installation media"
-                            echo "2. Boot from the installed disk"
-                            echo "3. OpenWRT will start automatically"
-                            echo ""
-                            echo "System will reboot in 10 seconds..."
-                            
-                            for i in 10 9 8 7 6 5 4 3 2 1; do
-                                echo -ne "Rebooting in $i seconds...\r"
-                                sleep 1
-                            done
-                            
-                            echo ""
-                            echo "Rebooting now..."
-                            reboot -f
-                        else
-                            echo ""
-                            echo "ERROR: Installation failed!"
-                            echo "Press Enter to continue..."
-                            read
-                        fi
+                        install_openwrt "$target_disk"
                     else
-                        echo "Installation cancelled"
+                        echo "Installation cancelled."
                         sleep 2
                     fi
+                else
+                    echo "Invalid selection. Please choose 1-$TOTAL_DISKS"
+                    sleep 2
                 fi
-            else
-                echo "Invalid selection"
+                ;;
+            *)
+                echo "Invalid input"
                 sleep 2
-            fi
-            ;;
-        *)
-            echo "Invalid input"
-            sleep 2
-            ;;
-    esac
+                ;;
+        esac
+    done
+}
+
+install_openwrt() {
+    target_disk="$1"
     
     clear
-done
-INSTALLER_SCRIPT
-    chmod +x "$CHROOT_DIR/bin/installer"
+    echo "========================================"
+    echo "      Installing OpenWRT"
+    echo "========================================"
+    echo ""
+    echo "Target: $target_disk"
+    echo "Image size: $(ls -lh /openwrt.img | awk '{print $5}')"
+    echo ""
+    echo "Installing... This may take several minutes."
+    echo ""
+    
+    # Write image
+    if command -v pv >/dev/null 2>&1; then
+        total_size=$(stat -c%s /openwrt.img)
+        pv -s $total_size /openwrt.img | dd of="$target_disk" bs=4M 2>/dev/null
+    else
+        dd if=/openwrt.img of="$target_disk" bs=4M 2>&1 | grep -E 'bytes|copied' || true
+    fi
+    
+    if [ $? -eq 0 ]; then
+        sync
+        echo ""
+        echo "SUCCESS: OpenWRT installed successfully!"
+        echo ""
+        echo "Next steps:"
+        echo "1. Remove installation media"
+        echo "2. Boot from $target_disk"
+        echo "3. OpenWRT will start automatically"
+        echo ""
+        echo "System will reboot in 10 seconds..."
+        
+        count=10
+        while [ $count -gt 0 ]; do
+            echo -ne "Rebooting in $count seconds...\r"
+            sleep 1
+            count=$((count - 1))
+        done
+        
+        echo ""
+        echo "Rebooting now..."
+        reboot -f
+    else
+        echo ""
+        echo "ERROR: Installation failed!"
+        echo ""
+        echo "Possible reasons:"
+        echo "- Disk is in use or mounted"
+        echo "- Not enough space"
+        echo "- Disk is damaged"
+        echo ""
+        echo "Press Enter to return to main menu..."
+        read
+    fi
+}
+
+# Start installer
+main_menu
+EOF
+    chmod +x "$CHROOT_DIR/sbin/installer"
     
     log_success "Installer system created"
 }
@@ -368,26 +418,32 @@ INSTALLER_SCRIPT
 create_boot_files() {
     log_info "Creating boot files..."
     
-    # Check for kernel
+    # Copy kernel
     if [ -f /boot/vmlinuz-lts ]; then
         cp /boot/vmlinuz-lts "$WORK_DIR/iso/boot/vmlinuz"
-        log_info "Using kernel: $(basename /boot/vmlinuz-lts)"
+        log_info "Using kernel: vmlinuz-lts"
     elif [ -f /boot/vmlinuz ]; then
         cp /boot/vmlinuz "$WORK_DIR/iso/boot/vmlinuz"
-        log_info "Using kernel: $(basename /boot/vmlinuz)"
+        log_info "Using kernel: vmlinuz"
     else
-        # Try to download a kernel
-        log_warning "No kernel found, attempting to download..."
-        wget -q -O "$WORK_DIR/iso/boot/vmlinuz" \
-            https://github.com/dhruvvyas90/qemu-rpi-kernel/raw/master/kernel-qemu-4.19.50-buster || \
-        cp "$CHROOT_DIR/bin/busybox" "$WORK_DIR/iso/boot/vmlinuz"
+        # Try to find kernel
+        for kernel in /boot/vmlinuz-*; do
+            if [ -f "$kernel" ]; then
+                cp "$kernel" "$WORK_DIR/iso/boot/vmlinuz"
+                log_info "Using kernel: $(basename "$kernel")"
+                break
+            fi
+        done
     fi
     
     # Create initramfs
-    (cd "$CHROOT_DIR" && find . -print0 | cpio -0 -o -H newc | gzip -9 > "$WORK_DIR/iso/boot/initrd.img") 2>/dev/null
+    log_info "Creating initramfs..."
+    (cd "$CHROOT_DIR" && find . 2>/dev/null | cpio -o -H newc | gzip -9 > "$WORK_DIR/iso/boot/initrd.img" 2>/dev/null) || {
+        log_warning "Initramfs creation had warnings, continuing..."
+    }
     
     # Create SYSLINUX config for BIOS
-    cat > "$WORK_DIR/iso/boot/syslinux.cfg" << 'SYSLINUX_CFG'
+    cat > "$WORK_DIR/iso/boot/syslinux.cfg" << 'EOF'
 DEFAULT openwrt
 TIMEOUT 50
 PROMPT 0
@@ -397,18 +453,19 @@ LABEL openwrt
     KERNEL /boot/vmlinuz
     INITRD /boot/initrd.img
     APPEND console=tty0 console=ttyS0,115200
-SYSLINUX_CFG
+EOF
 
     # Copy SYSLINUX files
-    if [ -f /usr/share/syslinux/isolinux.bin ]; then
-        cp /usr/share/syslinux/isolinux.bin "$WORK_DIR/iso/boot/"
-        cp /usr/share/syslinux/ldlinux.c32 "$WORK_DIR/iso/boot/"
-    else
-        log_warning "SYSLINUX files not found, BIOS boot may not work"
-    fi
+    cp /usr/share/syslinux/isolinux.bin "$WORK_DIR/iso/boot/" 2>/dev/null || \
+    cp /usr/lib/syslinux/isolinux.bin "$WORK_DIR/iso/boot/" 2>/dev/null || \
+    log_warning "isolinux.bin not found"
+    
+    cp /usr/share/syslinux/ldlinux.c32 "$WORK_DIR/iso/boot/" 2>/dev/null || \
+    cp /usr/lib/syslinux/ldlinux.c32 "$WORK_DIR/iso/boot/" 2>/dev/null || \
+    log_warning "ldlinux.c32 not found"
     
     # Create GRUB config for UEFI
-    cat > "$WORK_DIR/iso/boot/grub/grub.cfg" << 'GRUB_CFG'
+    cat > "$WORK_DIR/iso/boot/grub/grub.cfg" << 'EOF'
 set timeout=5
 set default=0
 
@@ -416,7 +473,7 @@ menuentry "Install OpenWRT" {
     linux /boot/vmlinuz console=tty0 console=ttyS0,115200
     initrd /boot/initrd.img
 }
-GRUB_CFG
+EOF
     
     log_success "Boot files created"
 }
@@ -425,32 +482,35 @@ GRUB_CFG
 create_uefi_boot() {
     log_info "Creating UEFI boot..."
     
+    # Create directory for EFI files
+    mkdir -p "$WORK_DIR/efi_tmp"
+    
     # Try to create UEFI boot file
     if command -v grub-mkstandalone >/dev/null 2>&1; then
-        mkdir -p "$WORK_DIR/efi_tmp"
-        
         grub-mkstandalone \
             --format=x86_64-efi \
             --output="$WORK_DIR/efi_tmp/bootx64.efi" \
             --locales="" \
             --fonts="" \
-            "boot/grub/grub.cfg=$WORK_DIR/iso/boot/grub/grub.cfg" || {
-            log_warning "Failed to create GRUB EFI file"
+            "boot/grub/grub.cfg=$WORK_DIR/iso/boot/grub/grub.cfg" 2>/dev/null || {
+            log_warning "Failed to create GRUB EFI file, trying alternative method"
         }
+    fi
+    
+    if [ -f "$WORK_DIR/efi_tmp/bootx64.efi" ]; then
+        # Create EFI boot image
+        dd if=/dev/zero of="$WORK_DIR/efiboot.img" bs=1M count=16
+        mkfs.vfat -F 32 -n "OPENWRT_EFI" "$WORK_DIR/efiboot.img" >/dev/null 2>&1
         
-        if [ -f "$WORK_DIR/efi_tmp/bootx64.efi" ]; then
-            # Create EFI image
-            dd if=/dev/zero of="$WORK_DIR/efiboot.img" bs=1M count=10
-            mkfs.vfat -F 32 "$WORK_DIR/efiboot.img" >/dev/null 2>&1
-            
-            # Copy EFI file
-            mcopy -i "$WORK_DIR/efiboot.img" "$WORK_DIR/efi_tmp/bootx64.efi" ::/EFI/BOOT/
-            cp "$WORK_DIR/efiboot.img" "$WORK_DIR/iso/EFI/BOOT/"
-            
-            log_success "UEFI boot files created"
-        fi
+        # Copy EFI file
+        mcopy -i "$WORK_DIR/efiboot.img" "$WORK_DIR/efi_tmp/bootx64.efi" ::/EFI/BOOT/ 2>/dev/null || \
+        mmd -i "$WORK_DIR/efiboot.img" ::/EFI/BOOT && \
+        mcopy -i "$WORK_DIR/efiboot.img" "$WORK_DIR/efi_tmp/bootx64.efi" ::/EFI/BOOT/
+        
+        cp "$WORK_DIR/efiboot.img" "$WORK_DIR/iso/EFI/BOOT/"
+        log_success "UEFI boot files created"
     else
-        log_warning "grub-mkstandalone not found, UEFI boot may not work"
+        log_warning "UEFI boot files could not be created, ISO will be BIOS-only"
     fi
 }
 
@@ -458,19 +518,28 @@ create_uefi_boot() {
 build_iso() {
     log_info "Building ISO image..."
     
-    # Check for isolinux.bin
-    if [ ! -f "$WORK_DIR/iso/boot/isolinux.bin" ]; then
-        log_warning "isolinux.bin not found, creating BIOS-only ISO"
+    # Check if we have UEFI boot file
+    UEFI_OPTIONS=""
+    if [ -f "$WORK_DIR/iso/EFI/BOOT/efiboot.img" ]; then
+        UEFI_OPTIONS="-eltorito-alt-boot -e EFI/BOOT/efiboot.img -no-emul-boot -isohybrid-gpt-basdat"
+        log_info "Creating hybrid ISO (BIOS+UEFI)"
+    else
+        log_info "Creating BIOS-only ISO"
     fi
     
     # Build ISO
     xorriso -as mkisofs \
         -volid "OPENWRT_INSTALL" \
+        -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
+        -c boot/boot.cat \
+        -b boot/isolinux.bin \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
+        $UEFI_OPTIONS \
         -output "$ISO_FILE" \
-        -full-iso9660-filenames \
-        "$WORK_DIR/iso" || {
-        # Fallback: simple ISO creation
-        log_warning "Using simple ISO creation method"
+        "$WORK_DIR/iso" 2>/dev/null || {
+        log_warning "xorriso failed, trying genisoimage..."
         genisoimage -volid "OPENWRT_INSTALL" \
             -o "$ISO_FILE" \
             "$WORK_DIR/iso"
@@ -478,32 +547,38 @@ build_iso() {
     
     if [ -f "$ISO_FILE" ]; then
         ISO_SIZE=$(ls -lh "$ISO_FILE" | awk '{print $5}')
-        log_success "ISO created: $ISO_FILE ($ISO_SIZE)"
+        log_success "ISO created successfully: $ISO_FILE ($ISO_SIZE)"
         
+        # Show build summary
         echo ""
         echo "========================================"
-        echo "BUILD COMPLETE"
+        echo "BUILD SUMMARY"
         echo "========================================"
-        echo "Output: $ISO_FILE"
-        echo "Size:   $ISO_SIZE"
+        echo "Output file: $ISO_FILE"
+        echo "File size:   $ISO_SIZE"
+        echo ""
+        echo "Boot support:"
+        if [ -f "$WORK_DIR/iso/EFI/BOOT/efiboot.img" ]; then
+            echo "  ✓ BIOS (Legacy) boot"
+            echo "  ✓ UEFI boot"
+        else
+            echo "  ✓ BIOS (Legacy) boot"
+            echo "  ✗ UEFI boot (not available)"
+        fi
         echo ""
         echo "To create bootable USB:"
-        echo "dd if='$ISO_FILE' of=/dev/sdX bs=4M status=progress"
+        echo "  sudo dd if='$ISO_FILE' of=/dev/sdX bs=4M status=progress"
+        echo "  sudo sync"
         echo "========================================"
     else
-        log_error "Failed to create ISO"
+        log_error "Failed to create ISO file"
         exit 1
     fi
 }
 
 # ==================== Cleanup ====================
 cleanup() {
-    log_info "Cleaning up..."
-    
-    # Unmount any mounted filesystems
-    umount "$CHROOT_DIR/proc" 2>/dev/null || true
-    umount "$CHROOT_DIR/sys" 2>/dev/null || true
-    umount "$CHROOT_DIR/dev" 2>/dev/null || true
+    log_info "Cleaning up temporary files..."
     
     # Remove working directory
     rm -rf "$WORK_DIR"
@@ -511,14 +586,15 @@ cleanup() {
     log_success "Cleanup completed"
 }
 
-# ==================== Main ====================
+# ==================== Main Execution ====================
 main() {
     echo ""
     echo "========================================"
-    echo "OpenWRT Alpine Installer Builder"
+    echo "OpenWRT Alpine Installer ISO Builder"
     echo "========================================"
     echo ""
     
+    # Execute build steps
     check_prerequisites
     create_alpine_base
     create_installer_system
@@ -528,7 +604,7 @@ main() {
     cleanup
     
     echo ""
-    log_success "Build completed successfully!"
+    log_success "Build process completed successfully!"
     echo ""
 }
 
