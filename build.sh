@@ -62,7 +62,6 @@ IMG_SIZE=$(ls -lh "$OPENWRT_IMG" | awk '{print $5}')
 log_success "Found OpenWRT image: $IMG_SIZE"
 
 # 修复Debian buster源
-
 cat > /etc/apt/sources.list <<EOF
 deb http://archive.debian.org/debian buster main contrib non-free
 deb http://archive.debian.org/debian-security buster/updates main
@@ -73,7 +72,7 @@ echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check-
 # 安装必要工具
 log_info "Installing required packages..."
 apt-get update
-apt-get -y install debootstrap squashfs-tools xorriso isolinux syslinux-efi  grub-pc-bin grub-efi-amd64-bin mtools dosfstools parted
+apt-get -y install debootstrap squashfs-tools xorriso isolinux syslinux-efi grub-pc-bin grub-efi-amd64-bin grub-efi mtools dosfstools parted pv grub-common grub2-common
 
 # ==================== 步骤2: 创建目录结构 ====================
 log_info "[2/10] Creating directory structure..."
@@ -82,7 +81,7 @@ mkdir -p "$WORK_DIR"
 mkdir -p "$CHROOT_DIR"
 mkdir -p "$WORK_DIR/tmp"
 mkdir -p "$OUTPUT_DIR"
-
+mkdir -p "$STAGING_DIR"/{EFI/boot,boot/grub/x86_64-efi,isolinux,live}
 
 # ==================== 步骤3: 引导Debian最小系统 ====================
 log_info "[3/10] Bootstrapping Debian minimal system..."
@@ -142,7 +141,7 @@ sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
-apt-get install -y parted openssh-server bash-completion cifs-utils curl dbus dosfstools firmware-linux-free gddrescue gdisk iputils-ping isc-dhcp-client less nfs-common ntfs-3g openssh-client open-vm-tools procps vim wimtools wget
+apt-get install -y parted openssh-server bash-completion cifs-utils curl dbus dosfstools firmware-linux-free gddrescue gdisk iputils-ping isc-dhcp-client less nfs-common ntfs-3g openssh-client open-vm-tools procps vim wimtools wget pv
 
 # 清理包缓存
 apt-get clean
@@ -380,6 +379,7 @@ chroot "$CHROOT_DIR" /install-chroot.sh
 # 清理chroot
 rm -f "$CHROOT_DIR/install-chroot.sh"
 
+# 创建网络配置文件
 cat > "${CHROOT_DIR}/etc/systemd/network/99-dhcp.network" <<EOF
 [Match]
 Name=e*
@@ -393,15 +393,11 @@ EOF
 chown -v root:root "${CHROOT_DIR}/etc/systemd/network/99-dhcp.network"
 chmod 644 "${CHROOT_DIR}/etc/systemd/network/99-dhcp.network"
 
-
-
 # 卸载chroot挂载点（关键步骤！）
 log_info "Unmounting chroot filesystems..."
 safe_umount "$CHROOT_DIR/dev"
 safe_umount "$CHROOT_DIR/proc"
 safe_umount "$CHROOT_DIR/sys"
-
-mkdir -p "$STAGING_DIR"/{EFI/boot,boot/grub/x86_64-efi,isolinux,live}
 
 # ==================== 复制OpenWRT镜像 ====================
 log_info "[5/10] Copying OpenWRT image..."
@@ -446,10 +442,10 @@ fi
 # 创建live-boot需要的文件
 echo "live" > "$STAGING_DIR/live/filesystem.squashfs.type"
 touch "$STAGING_DIR/live/filesystem.packages"
-touch $STAGING_DIR/DEBIAN_CUSTOM
+touch "$STAGING_DIR/DEBIAN_CUSTOM"
+
 # ==================== 步骤7: 创建引导配置 ====================
 log_info "[7/10] Creating boot configuration..."
-
 
 # 创建isolinux配置
 cat > "$STAGING_DIR/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
@@ -468,8 +464,6 @@ MENU COLOR timeout_msg  37;40   #80ffffff #00000000 std
 MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
 MENU COLOR msg07        37;40   #90ffffff #a0000000 std
 MENU COLOR tabmsg       31;40   #30ffffff #00000000 std
-
-
 
 LABEL linux
   MENU LABEL ^Install OpenWRT
@@ -500,71 +494,150 @@ menuentry "Install OpenWRT x86-UEFI Installer [EFI/GRUB]" {
 }
 GRUB_CFG
 
-
+# 创建GRUB独立配置文件
 cat > "${WORK_DIR}/tmp/grub-standalone.cfg" << 'STAD_CFG'
 search --set=root --file /DEBIAN_CUSTOM
 set prefix=($root)/boot/grub/
 configfile /boot/grub/grub.cfg
 STAD_CFG
 
-touch "${STAGING_DIR}/DEBIAN_CUSTOM"
-
 # 复制引导文件
+log_info "[8/10] Extracting kernel and initrd..."
 
-log_info "[8/10] Extracting kernel initrd efi..."
+# 查找最新的内核和initrd
+KERNEL=$(ls -t "${CHROOT_DIR}/boot"/vmlinuz-* 2>/dev/null | head -1)
+INITRD=$(ls -t "${CHROOT_DIR}/boot"/initrd.img-* 2>/dev/null | head -1)
 
-cp "${CHROOT_DIR}/boot"/vmlinuz-* "${STAGING_DIR}/live/vmlinuz"
-cp "${CHROOT_DIR}/boot"/initrd.img-* "${STAGING_DIR}/live/initrd"
+if [ -z "$KERNEL" ] || [ -z "$INITRD" ]; then
+    log_error "Kernel or initrd not found in ${CHROOT_DIR}/boot"
+    log_error "Available files:"
+    ls -la "${CHROOT_DIR}/boot/" 2>/dev/null || echo "Cannot list boot directory"
+    exit 1
+fi
+
+cp "$KERNEL" "$STAGING_DIR/live/vmlinuz"
+cp "$INITRD" "$STAGING_DIR/live/initrd"
 log_success "Kernel: $(basename "$KERNEL")"
 log_success "Initrd: $(basename "$INITRD")"
 
+# 复制ISOLINUX文件
+if [ -f /usr/lib/ISOLINUX/isolinux.bin ]; then
+    cp /usr/lib/ISOLINUX/isolinux.bin "$STAGING_DIR/isolinux/"
+    cp /usr/lib/ISOLINUX/isohdpfx.bin "$WORK_DIR/tmp/isohdpfx.bin"
+elif [ -f /usr/lib/syslinux/isolinux.bin ]; then
+    cp /usr/lib/syslinux/isolinux.bin "$STAGING_DIR/isolinux/"
+    cp /usr/lib/syslinux/isohdpfx.bin "$WORK_DIR/tmp/isohdpfx.bin"
+else
+    log_warning "isolinux.bin not found, trying to install syslinux..."
+    apt-get install -y syslinux-common
+    cp /usr/lib/syslinux/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || \
+    cp /usr/lib/ISOLINUX/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || \
+    log_error "Cannot find isolinux.bin"
+fi
 
-cp /usr/lib/ISOLINUX/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || \
-cp /usr/lib/syslinux/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || true
+# 复制ISOLINUX模块
+if [ -d /usr/lib/syslinux/modules/bios ]; then
+    cp /usr/lib/syslinux/modules/bios/* "$STAGING_DIR/isolinux/" 2>/dev/null || true
+fi
 
-cp -v /usr/lib/syslinux/modules/bios/* "$STAGING_DIR/isolinux/" || true
-cp -v -r /usr/lib/grub/x86_64-efi/* "$STAGING_DIR/boot/grub/x86_64-efi/" || true
+# 复制GRUB EFI模块
+if [ -d /usr/lib/grub/x86_64-efi ]; then
+    cp -r /usr/lib/grub/x86_64-efi/* "$STAGING_DIR/boot/grub/x86_64-efi/" 2>/dev/null || true
+fi
 
-# 创建UEFI引导文件
-log_info "Creat UEFI boot file ..."
-grub-mkstandalone --format=x86_64-efi --output=${WORK_DIR}/tmp/bootx64.efi --locales=""  --fonts="" "boot/grub/grub.cfg=${WORK_DIR}/tmp/grub-standalone.cfg"
+# ==================== 创建UEFI引导文件 ====================
+log_info "[8.5/10] Creating UEFI boot file..."
 
+# 确保目标目录存在
+mkdir -p "${STAGING_DIR}/EFI/boot"
 
-# 创建EFI映像
-cd "${STAGING_DIR}/EFI/boot"
-SIZE=`expr $(stat --format=%s $HOME/LIVE_BOOT/tmp/bootx64.efi) + 65536`
-dd if=/dev/zero of=efiboot.img bs=$SIZE count=1
-/sbin/mkfs.vfat efiboot.img
-mmd -i efiboot.img efi efi/boot
+# 创建GRUB EFI引导文件
+cd "$WORK_DIR/tmp"
+grub-mkstandalone \
+    --format=x86_64-efi \
+    --output="${WORK_DIR}/tmp/bootx64.efi" \
+    --locales="" \
+    --fonts="" \
+    "boot/grub/grub.cfg=${WORK_DIR}/tmp/grub-standalone.cfg"
 
-mcopy -vi efiboot.img ${WORK_DIR}/tmp/bootx64.efi ::efi/boot/
+if [ ! -f "${WORK_DIR}/tmp/bootx64.efi" ]; then
+    log_error "Failed to create bootx64.efi"
+    exit 1
+fi
 
-ls -l $STAGING_DIR/isolinux/
-ls -l $STAGING_DIR/boot/grub/x86_64-efi/
-ls -l ${WORK_DIR}/tmp
+# 创建EFI引导镜像
+log_info "Creating EFI boot image..."
+EFI_SIZE=$(($(stat --format=%s "${WORK_DIR}/tmp/bootx64.efi") + 65536))
+dd if=/dev/zero of="${STAGING_DIR}/EFI/boot/efiboot.img" bs=1 count=0 seek=${EFI_SIZE} 2>/dev/null
+mkfs.fat -F 12 -n "OPENWRT_INST" "${STAGING_DIR}/EFI/boot/efiboot.img" >/dev/null 2>&1 || \
+mkfs.fat -F 32 -n "OPENWRT_INST" "${STAGING_DIR}/EFI/boot/efiboot.img" >/dev/null 2>&1
+
+# 复制EFI文件到镜像
+MMOUNT_DIR="${WORK_DIR}/tmp/efi_mount"
+mkdir -p "$MMOUNT_DIR"
+mount "${STAGING_DIR}/EFI/boot/efiboot.img" "$MMOUNT_DIR" 2>/dev/null || true
+
+mkdir -p "$MMOUNT_DIR/EFI/boot"
+cp "${WORK_DIR}/tmp/bootx64.efi" "$MMOUNT_DIR/EFI/boot/bootx64.efi"
+
+# 尝试卸载，如果失败就继续
+umount "$MMOUNT_DIR" 2>/dev/null || true
+rm -rf "$MMOUNT_DIR"
+
+log_success "UEFI boot files created successfully"
+
 # ==================== 步骤9: 构建ISO镜像 ====================
 log_info "[9/10] Building ISO image..."
 
-echo Build ISO
-xorriso \
-    -as mkisofs \
-    -iso-level 3 \
-    -output "${ISO_PATH}" \
-    -full-iso9660-filenames \
-    -volid "DEBIAN_CUSTOM" \
-    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-    -eltorito-boot isolinux/isolinux.bin \
-    -no-emul-boot \
-    -boot-load-size 4 \
-    -boot-info-table \
-    -eltorito-catalog isolinux/isolinux.cat \
-    -eltorito-alt-boot \
-    -e /EFI/boot/efiboot.img \
-    -no-emul-boot \
-    -isohybrid-gpt-basdat \
-    -append_partition 2 0xef $STAGING_DIR/EFI/boot/efiboot.img \
-    "$STAGING_DIR"
+# 检查isohdpfx.bin是否存在
+if [ ! -f "$WORK_DIR/tmp/isohdpfx.bin" ]; then
+    if [ -f /usr/lib/ISOLINUX/isohdpfx.bin ]; then
+        cp /usr/lib/ISOLINUX/isohdpfx.bin "$WORK_DIR/tmp/isohdpfx.bin"
+    elif [ -f /usr/lib/syslinux/isohdpfx.bin ]; then
+        cp /usr/lib/syslinux/isohdpfx.bin "$WORK_DIR/tmp/isohdpfx.bin"
+    else
+        log_warning "isohdpfx.bin not found, generating ISO without hybrid MBR..."
+    fi
+fi
 
+# 构建ISO
+log_info "Running xorriso to create ISO..."
+if [ -f "$WORK_DIR/tmp/isohdpfx.bin" ]; then
+    xorriso \
+        -as mkisofs \
+        -iso-level 3 \
+        -output "${ISO_PATH}" \
+        -full-iso9660-filenames \
+        -volid "DEBIAN_CUSTOM" \
+        -isohybrid-mbr "$WORK_DIR/tmp/isohdpfx.bin" \
+        -eltorito-boot isolinux/isolinux.bin \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
+        -eltorito-catalog isolinux/isolinux.cat \
+        -eltorito-alt-boot \
+        -e EFI/boot/efiboot.img \
+        -no-emul-boot \
+        -isohybrid-gpt-basdat \
+        -append_partition 2 0xef "${STAGING_DIR}/EFI/boot/efiboot.img" \
+        "$STAGING_DIR"
+else
+    xorriso \
+        -as mkisofs \
+        -iso-level 3 \
+        -output "${ISO_PATH}" \
+        -full-iso9660-filenames \
+        -volid "DEBIAN_CUSTOM" \
+        -eltorito-boot isolinux/isolinux.bin \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
+        -eltorito-catalog isolinux/isolinux.cat \
+        -eltorito-alt-boot \
+        -e EFI/boot/efiboot.img \
+        -no-emul-boot \
+        "$STAGING_DIR"
+fi
 
 # ==================== 步骤10: 验证结果 ====================
 log_info "[10/10] Verifying build..."
@@ -588,7 +661,6 @@ OpenWRT Installer ISO Build Information
 Build Date:      $(date)
 Build Script:    build.sh
 
-Output ISO:      $ISO_NAME
 ISO Size:        $ISO_SIZE
 Kernel Version:  $(basename "$KERNEL")
 
@@ -605,12 +677,11 @@ EOF
     
     log_success "Build info saved to: $OUTPUT_DIR/build-info.txt"
     
-    # 卸载挂载点
-    umount "$CHROOT_DIR/proc" 2>/dev/null || true
-    umount "$CHROOT_DIR/sys" 2>/dev/null || true
-    umount "$CHROOT_DIR/dev" 2>/dev/null || true
+    # 显示ISO信息
+    echo "ISO contents:"
+    isoinfo -d -i "$ISO_PATH" 2>/dev/null | grep -E "(Volume id|Boot |El torito)" || true
     
-    log_success "� All steps completed successfully!"
+    log_success "🎉 All steps completed successfully!"
 else
     log_error "❌ ISO file not created: $ISO_PATH"
     exit 1
