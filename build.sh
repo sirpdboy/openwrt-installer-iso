@@ -2,7 +2,7 @@
 # build.sh - OpenWRT ISO构建脚本（在Docker容器内运行）
 set -e
 
-echo "🚀 Starting OpenWRT ISO build inside Docker container..."
+echo "� Starting OpenWRT ISO build inside Docker container..."
 echo "========================================================"
 
 # 从环境变量获取参数，或使用默认值
@@ -62,6 +62,7 @@ IMG_SIZE=$(ls -lh "$OPENWRT_IMG" | awk '{print $5}')
 log_success "Found OpenWRT image: $IMG_SIZE"
 
 # 修复Debian buster源
+
 cat > /etc/apt/sources.list <<EOF
 deb http://archive.debian.org/debian buster main contrib non-free
 deb http://archive.debian.org/debian-security buster/updates main
@@ -372,6 +373,7 @@ while true; do
     
     for i in {10..1}; do
         echo -ne "Rebooting in $i seconds...\r"
+
     done
     
     reboot -f
@@ -410,7 +412,8 @@ BASHRC
 # 7. 删除machine-id（重要！每次启动重新生成）
 rm -f /etc/machine-id
 
-# 8. 配置live-boot
+# 8. 记录安装的包
+# 配置live-boot
 mkdir -p /etc/live/boot
 echo "live" > /etc/live/boot.conf
 
@@ -476,14 +479,34 @@ cp "${CHROOT_DIR}/boot"/initrd.img-* "${STAGING_DIR}/live/initrd"
 
 cp "$KERNEL" "$STAGING_DIR/live/vmlinuz"
 cp "$INITRD" "$STAGING_DIR/live/initrd"
-
 log_success "Kernel: $(basename "$KERNEL")"
 log_success "Initrd: $(basename "$INITRD")"
 
 # ==================== 步骤7: 创建squashfs文件系统 ====================
 log_info "[7/10] Creating squashfs filesystem..."
 
-# 创建简单的squashfs（不排除太多文件）
+# 创建排除文件
+EXCLUDE_FILE="$WORK_DIR/exclude.list"
+cat > "$EXCLUDE_FILE" << 'EOF'
+proc
+sys
+dev
+tmp
+run
+mnt
+media
+boot
+var/cache
+var/tmp
+var/log
+var/lib/apt/lists
+var/lib/dpkg
+etc/machine-id
+etc/ssh/ssh_host_*
+root/.bash_history
+root/.cache
+EOF
+
 if mksquashfs "$CHROOT_DIR" "$STAGING_DIR/live/filesystem.squashfs" \
     -comp gzip -b 1M -noappend -no-progress \
     -e "proc/*" "sys/*" "dev/*" "tmp/*" "run/*"; then
@@ -500,179 +523,123 @@ echo "live" > "$STAGING_DIR/live/filesystem.squashfs.type"
 # ==================== 步骤8: 创建引导配置 ====================
 log_info "[8/10] Creating boot configuration..."
 
-# 使用最简单的ISOLINUX配置（无图形菜单）
+
+# 创建isolinux配置
 cat > "$STAGING_DIR/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
 DEFAULT live
-TIMEOUT 10
-PROMPT 1
-F1 boot.msg
+TIMEOUT 50
+PROMPT 0
+UI menu.c32
+
+MENU TITLE OpenWRT Auto Installer
 
 LABEL live
-  MENU LABEL Install OpenWRT
+  MENU LABEL ^Install OpenWRT
   MENU DEFAULT
   KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd boot=live components quiet splash
+  APPEND initrd=/live/initrd boot=live components quiet
+  TEXT HELP
+  Automatically start OpenWRT installer
+  ENDTEXT
 ISOLINUX_CFG
 
-# 创建boot.msg文件（简单的文本菜单）
-cat > "$STAGING_DIR/isolinux/boot.msg" << 'BOOT_MSG'
-========================================================================
-                      OpenWRT Auto Installer
-========================================================================
-
-This is a live system for installing OpenWRT to disk.
-
-To start the installer automatically, press Enter.
-To enter rescue shell, type 'live rescue' at the boot prompt.
-
-Default boot will start in 10 seconds...
-========================================================================
-BOOT_MSG
-
-# 复制必要的引导文件
-if [ -f /usr/lib/ISOLINUX/isolinux.bin ]; then
-    cp /usr/lib/ISOLINUX/isolinux.bin "$STAGING_DIR/isolinux/"
-    cp /usr/lib/ISOLINUX/ldlinux.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
-elif [ -f /usr/lib/syslinux/isolinux.bin ]; then
-    cp /usr/lib/syslinux/isolinux.bin "$STAGING_DIR/isolinux/"
-    cp /usr/lib/syslinux/modules/bios/ldlinux.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
-fi
-
-# 创建GRUB配置（UEFI引导）
+# 创建GRUB配置
 cat > "$STAGING_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=5
 set default=0
 
 menuentry "Install OpenWRT" {
-    linux /live/vmlinuz boot=live components quiet splash
-    initrd /live/initrd
-}
-
-menuentry "Rescue Shell" {
-    linux /live/vmlinuz boot=live components quiet splash rescue
+    linux /live/vmlinuz boot=live components quiet
     initrd /live/initrd
 }
 GRUB_CFG
 
-# 创建EFI引导
-log_info "Creating UEFI boot files..."
 
-# 如果grub-mkstandalone可用，使用它
-if command -v grub-mkstandalone >/dev/null 2>&1; then
-    # 创建简单的grub配置
-    cat > "${WORK_DIR}/tmp/grub.cfg" << 'GRUB_STANDALONE'
-search --set=root --file /live/vmlinuz
-set timeout=5
-set default=0
+cat > "${WORK_DIR}/tmp/grub-standalone.cfg" << 'STAD_CFG'
+search --set=root --file /DEBIAN_CUSTOM
+set prefix=($root)/boot/grub/
+configfile /boot/grub/grub.cfg
+STAD_CFG
 
-menuentry "Install OpenWRT" {
-    linux /live/vmlinuz boot=live components quiet splash
-    initrd /live/initrd
-}
-GRUB_STANDALONE
-    
-    # 创建EFI文件
-    grub-mkstandalone \
-        --format=x86_64-efi \
-        --output="${STAGING_DIR}/EFI/boot/bootx64.efi" \
-        --locales="" \
-        --fonts="" \
-        "boot/grub/grub.cfg=${WORK_DIR}/tmp/grub.cfg" 2>&1 | grep -v "warning" || {
-        log_warning "Failed to create GRUB EFI, using alternative method"
-    }
+touch "${STAGING_DIR}/DEBIAN_CUSTOM"
+# 复制引导文件
+cp /usr/lib/ISOLINUX/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || \
+cp /usr/lib/syslinux/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || true
+
+cp /usr/lib/syslinux/modules/bios/ldlinux.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
+# 复制GRUB模块
+if [ -d /usr/lib/grub/x86_64-efi ]; then
+    mkdir -p "${STAGING_DIR}/boot/grub/x86_64-efi"
+    cp -r /usr/lib/grub/x86_64-efi/* "${STAGING_DIR}/boot/grub/x86_64-efi/" 2>/dev/null || true
 fi
 
-# 如果EFI文件创建失败，尝试复制现有文件
-if [ ! -f "${STAGING_DIR}/EFI/boot/bootx64.efi" ]; then
-    log_info "Using alternative EFI boot method..."
-    # 复制现有的EFI文件
+# 创建UEFI引导文件
+log_info "Creat UEFI boot file ..."
+grub-mkstandalone \
+    --format=x86_64-efi \
+    --output="${WORK_DIR}/tmp/bootx64.efi" \
+    --locales="" \
+    --fonts="" \
+    "boot/grub/grub.cfg=${WORK_DIR}/tmp/grub-standalone.cfg" 2>/dev/null || {
+    log_warning "GRUB standalone创建失败，使用备用方案"
+    # 备用：直接复制已有的EFI文件
     if [ -f /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed ]; then
-        cp /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed "${STAGING_DIR}/EFI/boot/bootx64.efi"
-    elif [ -f /usr/lib/grub/x86_64-efi/monolithic/grub.efi ]; then
-        cp /usr/lib/grub/x86_64-efi/monolithic/grub.efi "${STAGING_DIR}/EFI/boot/bootx64.efi"
+        cp /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed "${WORK_DIR}/tmp/bootx64.efi"
     fi
-fi
+}
 
-# 创建EFI目录结构
-if [ -f "${STAGING_DIR}/EFI/boot/bootx64.efi" ]; then
-    log_success "UEFI boot file created"
+# 创建EFI映像
+cd "${STAGING_DIR}/EFI/boot"
+if [ -f "${WORK_DIR}/tmp/bootx64.efi" ]; then
+    EFI_SIZE=$(stat --format=%s "${WORK_DIR}/tmp/bootx64.efi" 2>/dev/null || echo 65536)
+    EFI_SIZE=$((EFI_SIZE + 65536))
+    
+    dd if=/dev/zero of=efiboot.img bs=1 count=0 seek=${EFI_SIZE} 2>/dev/null
+    /sbin/mkfs.vfat -F 32 efiboot.img 2>/dev/null || true
+    
+    mmd -i efiboot.img efi 2>/dev/null || true
+    mmd -i efiboot.img efi/boot 2>/dev/null || true
+    mcopy -i efiboot.img "${WORK_DIR}/tmp/bootx64.efi" ::efi/boot/bootx64.efi 2>/dev/null || true
+    
+    log_success "UEFI file sucess!"
 else
-    log_warning "No UEFI boot file created - UEFI boot may not work"
+    log_warning "UEFI creat boot error!"
+    rm -f efiboot.img
 fi
 
 # ==================== 步骤9: 构建ISO镜像 ====================
 log_info "[9/10] Building ISO image..."
-
-# 卸载chroot挂载
-umount "$CHROOT_DIR/proc" 2>/dev/null || true
-
-# 构建ISO - 使用最简单的配置
-log_info "Creating ISO with xorriso..."
-
-# 准备xorriso命令
-XORRISO_CMD="xorriso -as mkisofs \
-    -r -V 'OPENWRT_INSTALL' \
-    -J -joliet-long \
-    -cache-inodes \
+xorriso -as mkisofs \
     -iso-level 3 \
-    -partition_offset 16 \
-    -A 'OpenWRT Installer' \
-    -p 'OpenWRT Project' \
-    -b isolinux/isolinux.bin \
-    -c isolinux/boot.cat \
+    -full-iso9660-filenames \
+    -volid "OPENWRT_INSTALL" \
+    -eltorito-boot isolinux/isolinux.bin \
+    -eltorito-catalog isolinux/boot.cat \
     -no-emul-boot \
     -boot-load-size 4 \
     -boot-info-table \
     -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-    -eltorito-alt-boot \
-    -e EFI/boot/bootx64.efi \
-    -no-emul-boot \
-    -isohybrid-gpt-basdat \
-    -o '$ISO_PATH' \
-    '$STAGING_DIR' 2>/dev/null"
+    -output "$ISO_PATH" \
+    "$STAGING_DIR" 2>&1 | grep -E "(^[^.]|%)" || true
 
-# 如果没有EFI文件，移除相关参数
-if [ ! -f "${STAGING_DIR}/EFI/boot/bootx64.efi" ]; then
-    XORRISO_CMD="xorriso -as mkisofs \
-        -r -V 'OPENWRT_INSTALL' \
-        -J -joliet-long \
-        -cache-inodes \
-        -iso-level 3 \
-        -partition_offset 16 \
-        -A 'OpenWRT Installer' \
-        -p 'OpenWRT Project' \
-        -b isolinux/isolinux.bin \
-        -c isolinux/boot.cat \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
-        -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-        -o '$ISO_PATH' \
-        '$STAGING_DIR' 2>/dev/null"
-fi
-
-# 执行ISO构建
-eval "$XORRISO_CMD"
-
-if [ $? -eq 0 ]; then
-    log_success "ISO created successfully"
-else
-    log_error "Failed to create ISO, trying simpler method..."
-    
-    # 尝试更简单的命令
+# 如果UEFI文件存在，添加UEFI引导
+if [ -f "${STAGING_DIR}/EFI/boot/efiboot.img" ]; then
+    log_info "添加UEFI引导支持..."
     xorriso -as mkisofs \
-        -r -V 'OPENWRT_INSTALL' \
-        -b isolinux/isolinux.bin \
-        -c isolinux/boot.cat \
+        -iso-level 3 \
+        -full-iso9660-filenames \
+        -volid "OPENWRT_INSTALL" \
+        -eltorito-boot isolinux/isolinux.bin \
+        -eltorito-catalog isolinux/boot.cat \
         -no-emul-boot \
         -boot-load-size 4 \
         -boot-info-table \
+        -eltorito-alt-boot \
+        -e EFI/boot/efiboot.img \
+        -no-emul-boot \
         -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-        -o "$ISO_PATH" \
-        "$STAGING_DIR" 2>/dev/null || {
-        log_error "ISO creation failed completely"
-        exit 1
-    }
+        -output "${ISO_PATH}" \
+        "${STAGING_DIR}" 2>&1 | tee /tmp/xorriso.log
 fi
 
 # ==================== 步骤10: 验证结果 ====================
@@ -690,10 +657,6 @@ if [ -f "$ISO_PATH" ]; then
     log_info "  Volume ID:   OPENWRT_INSTALL"
     echo ""
     
-    # 检查ISO内容
-    log_info "ISO contents:"
-    xorriso -indev "$ISO_PATH" -find / -type f 2>/dev/null | grep -E "(vmlinuz|initrd|isolinux|grub)" | head -5
-    
     # 创建构建信息文件
     cat > "$OUTPUT_DIR/build-info.txt" << EOF
 OpenWRT Installer ISO Build Information
@@ -706,23 +669,20 @@ Output ISO:      $ISO_NAME
 ISO Size:        $ISO_SIZE
 Kernel Version:  $(basename "$KERNEL")
 
-Boot Support:    BIOS + UEFI (if available)
-Boot Method:     Simple text-based boot
+Boot Support:    BIOS + UEFI
+Boot Timeout:    5 seconds
 Auto-install:    Enabled
 
 Usage:
   1. Flash: dd if="$ISO_NAME" of=/dev/sdX bs=4M status=progress
   2. Boot from USB
-  3. System will start installer automatically
-  4. Follow on-screen instructions
-
-Notes:
-  - If boot fails, try selecting "Install OpenWRT" from boot menu
-  - Press Enter at boot prompt to start installer
-  - Type 'live rescue' for rescue shell
+  3. Select target disk
+  4. Confirm installation
 EOF
     
     log_success "Build info saved to: $OUTPUT_DIR/build-info.txt"
+    
+    
     log_success "🎉 All steps completed successfully!"
 else
     log_error "❌ ISO file not created: $ISO_PATH"
