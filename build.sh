@@ -540,7 +540,6 @@ cp /usr/lib/syslinux/modules/bios/vesamenu.c32 "$STAGING_DIR/isolinux/" 2>/dev/n
 cp /usr/lib/syslinux/modules/bios/libutil.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
 cp /usr/lib/syslinux/modules/bios/libcom32.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
 cp /usr/lib/syslinux/modules/bios/chain.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
-ls -l $STAGING_DIR/isolinux/
 # 创建GRUB配置
 cat > "$STAGING_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=5
@@ -563,9 +562,6 @@ menuentry "Install OpenWRT (UEFI Mode)" --class gnu-linux --class gnu --class os
     linux /live/vmlinuz boot=live components quiet splash
     echo "Loading initrd..."
     initrd /live/initrd
-}
-    linux ($root)/live/vmlinuz boot=live
-    initrd ($root)/live/initrd
 }
 GRUB_CFG
 
