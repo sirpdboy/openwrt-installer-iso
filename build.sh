@@ -485,10 +485,6 @@ search --set=root --file /DEBIAN_CUSTOM
 set default="0"
 set timeout=5
 
-# If X has issues finding screens, experiment with/without nomodeset.
-# Load EFI video drivers. This device is EFI so keep the
-# video mode while booting the linux kernel.
-
 insmod efi_gop
 insmod font
 if loadfont ${prefix}/fonts/unicode.pf2
@@ -536,7 +532,6 @@ grub-mkstandalone --format=x86_64-efi --output=${WORK_DIR}/tmp/bootx64.efi --loc
 
 # 创建EFI映像
 cd "${STAGING_DIR}/EFI/boot"
-cd $HOME/LIVE_BOOT/staging/EFI/boot
 SIZE=`expr $(stat --format=%s $HOME/LIVE_BOOT/tmp/bootx64.efi) + 65536`
 dd if=/dev/zero of=efiboot.img bs=$SIZE count=1
 /sbin/mkfs.vfat efiboot.img
