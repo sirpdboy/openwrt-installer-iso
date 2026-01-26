@@ -124,15 +124,7 @@ mkdir -p "$OUTPUT_DIR"
 log_info "Starting ISO build..."
 chmod +x build.sh
 # 方法1：使用预安装所有依赖的Docker镜像（推荐）
-if docker images | grep -q "openwrt-iso-builder"; then
-    log_info "Using existing Docker image: openwrt-iso-builder"
-    docker run --privileged --rm \
-        -v "$INPUT_IMG:/mnt/ezopwrt.img:ro" \
-        -v "$OUTPUT_DIR:/output" \
-        -v "$(pwd)/build.sh:/build.sh:ro" \
-        openwrt-iso-builder
-
-elif docker images | grep -q "debian:buster"; then
+if  docker images | grep -q "debian:buster"; then
     log_info "Using existing Docker image: debian:buster"
     docker run --privileged --rm \
         -v "$INPUT_IMG:/mnt/ezopwrt.img:ro" \
@@ -150,6 +142,13 @@ elif docker images | grep -q "debian:buster"; then
        
               /build.sh
               "
+elif docker images | grep -q "openwrt-iso-builder"; then
+    log_info "Using existing Docker image: openwrt-iso-builder"
+    docker run --privileged --rm \
+        -v "$INPUT_IMG:/mnt/ezopwrt.img:ro" \
+        -v "$OUTPUT_DIR:/output" \
+        -v "$(pwd)/build.sh:/build.sh:ro" \
+        openwrt-iso-builder
 else
     # 方法2：动态构建镜像
     log_info "Creating Docker image with all dependencies..."
