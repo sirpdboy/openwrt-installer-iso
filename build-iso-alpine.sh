@@ -84,6 +84,7 @@ apk add --no-cache \
     syslinux \
     grub \
     grub-efi \
+    grub-bios \
     mtools \
     dosfstools \
     gzip \
@@ -133,11 +134,8 @@ log_info "[4/10] Creating ISO directory structure..."
 
 # Create ALL directories upfront to avoid "No such file or directory" errors
 ISO_DIR="$WORK_DIR/iso"
-mkdir -p "$ISO_DIR"
 mkdir -p "$ISO_DIR/isolinux"
-mkdir -p "$ISO_DIR/boot"
-mkdir -p "$ISO_DIR/boot/grub"  # Create this early!
-mkdir -p "$ISO_DIR/EFI"
+mkdir -p "$ISO_DIR/boot/grub"
 mkdir -p "$ISO_DIR/EFI/BOOT"
 
 log_success "ISO directory structure created"
@@ -392,6 +390,7 @@ fi
 # ==================== Step 9: Create UEFI boot configuration ====================
 log_info "[9/10] Creating UEFI boot configuration..."
 
+mkdir -p "$ISO_DIR/boot/grub"
 # Create GRUB configuration - directory already exists from step 4
 cat > "$ISO_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=5
