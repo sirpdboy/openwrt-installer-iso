@@ -548,13 +548,6 @@ cp /usr/lib/syslinux/modules/bios/libutil.c32 "$STAGING_DIR/isolinux/" 2>/dev/nu
 # 创建UEFI引导文件
 log_info "Creating UEFI boot file..."
 grub-mkstandalone \
---format=x86_64-efi \
---output=${WORK_DIR}/tmp/bootx64.efi \
---locales=""  \
---fonts="" \
-"boot/grub/grub.cfg=${WORK_DIR}/tmp/grub-standalone.cfg"
-
-grub-mkstandalone \
     --format=x86_64-efi \
     --output="${WORK_DIR}/tmp/bootx64.efi" \
     --locales="" \
@@ -595,9 +588,10 @@ xorriso -as mkisofs \
     -e /EFI/boot/efiboot.img \
     -no-emul-boot \
     -isohybrid-gpt-basdat \
-    -append_partition 2 0xef ${STAGING_DIR}/EFI/boot/efiboot.img \
-    "$STAGING_DIR"
-
+    . || {
+    log_error "Failed to create ISO with xorriso"
+    exit 1
+}
 
 # ==================== 步骤10: 验证结果 ====================
 log_info "[10/10] Verifying build..."
