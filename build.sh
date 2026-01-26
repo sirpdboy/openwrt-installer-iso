@@ -659,7 +659,6 @@ Build Date:      $(date)
 Build Script:    build.sh
 Docker Image:    openwrt-iso-builder:latest
 
-Input Image:     $(basename "$OPENWRT_IMG")
 Output ISO:      $ISO_NAME
 ISO Size:        $ISO_SIZE
 Kernel Version:  $(basename "$KERNEL")
