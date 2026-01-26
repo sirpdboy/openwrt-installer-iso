@@ -2,7 +2,7 @@
 # build.sh - OpenWRT ISO构建脚本（在Docker容器内运行）
 set -e
 
-echo "� Starting OpenWRT ISO build inside Docker container..."
+echo "🚀 Starting OpenWRT ISO build inside Docker container..."
 echo "========================================================"
 
 # 从环境变量获取参数，或使用默认值
@@ -29,7 +29,19 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-
+# 安全卸载函数
+safe_umount() {
+    local mount_point="$1"
+    if mountpoint -q "$mount_point"; then
+        log_info "Unmounting $mount_point..."
+        umount -l "$mount_point" 2>/dev/null || true
+        sleep 1
+        if mountpoint -q "$mount_point"; then
+            log_warning "Force unmounting $mount_point..."
+            umount -f "$mount_point" 2>/dev/null || true
+        fi
+    fi
+}
 
 # 显示配置信息
 log_info "Build Configuration:"
@@ -60,34 +72,8 @@ echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check-
 
 # 安装必要工具
 apt-get update
-apt-get -y install \
-    debootstrap \
-    squashfs-tools \
-    xorriso \
-    isolinux \
-    syslinux \
-    syslinux-common \
-    grub-pc-bin \
-    grub-efi-amd64-bin \
-    mtools \
-    dosfstools \
-    parted \
-    wget \
-    curl \
-    gnupg \
-    dialog \
-    live-boot \
-    live-boot-initramfs-tools \
-    git \
-    pv \
-    file \
-    gddrescue \
-    gdisk \
-    cifs-utils \
-    nfs-common \
-    ntfs-3g \
-    open-vm-tools \
-    wimtools
+apt-get -y install debootstrap squashfs-tools xorriso isolinux syslinux-efi  grub-pc-bin grub-efi-amd64-bin mtools dosfstools parted
+
 
 # ==================== 步骤2: 创建目录结构 ====================
 log_info "[2/10] Creating directory structure..."
@@ -155,7 +141,7 @@ echo "Updating packages..."
 apt-get update
 apt-get -y install apt || true
 apt-get -y upgrade
-echo Set locale
+echo "Setting locale..."
 apt-get -y install locales
 sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 dpkg-reconfigure --frontend=noninteractive locales
@@ -334,7 +320,7 @@ while true; do
     
     for i in {10..1}; do
         echo -ne "Rebooting in $i seconds...\r"
-
+        sleep 1
     done
     
     reboot -f
@@ -373,7 +359,7 @@ BASHRC
 # 7. 删除machine-id（重要！每次启动重新生成）
 rm -f /etc/machine-id
 
-echo List installed packages
+echo "List installed packages"
 dpkg --get-selections|tee /packages.txt
 # 8. 记录安装的包
 # 配置live-boot
@@ -394,9 +380,11 @@ CHROOT_EOF
 chmod +x "$CHROOT_DIR/install-chroot.sh"
 
 # 挂载文件系统并执行chroot配置
-mount -t proc none "${CHROOT_DIR}/proc"
+log_info "Mounting filesystems for chroot..."
+mount -t proc proc "${CHROOT_DIR}/proc"
+mount -t sysfs sys "${CHROOT_DIR}/sys"
 mount -o bind /dev "${CHROOT_DIR}/dev"
-mount -o bind /sys "${CHROOT_DIR}/sys"
+mount -t devpts devpts "${CHROOT_DIR}/dev/pts" -o gid=5,mode=620
 
 log_info "Running chroot configuration..."
 chroot "$CHROOT_DIR" /install-chroot.sh
@@ -414,21 +402,23 @@ DHCP=yes
 [DHCP]
 ClientIdentifier=mac
 EOF
-chown -v root:root ${CHROOT_DIR}/etc/systemd/network/99-dhcp-en.network
+chown -v root:root "${CHROOT_DIR}/etc/systemd/network/99-dhcp-en.network"
 chmod 644 "${CHROOT_DIR}/etc/systemd/network/99-dhcp-en.network"
 
-# 卸载挂载点（重要：在复制文件前卸载）
-umount "$CHROOT_DIR/proc" 2>/dev/null || true
-umount "$CHROOT_DIR/sys" 2>/dev/null || true
-umount "$CHROOT_DIR/dev" 2>/dev/null || true
 
 # ==================== 步骤6: 提取内核和initrd ====================
 log_info "[6/10] Extracting kernel and initrd..."
 
 mkdir -p $WORK_DIR/{staging/{EFI/boot,boot/grub/x86_64-efi,isolinux,live},tmp}
 # 重新挂载以访问文件
-mount -t proc none "${CHROOT_DIR}/proc" 2>/dev/null || true
+# 卸载chroot挂载点（关键步骤！）
+log_info "Unmounting chroot filesystems..."
+safe_umount "$CHROOT_DIR/dev/pts"
+safe_umount "$CHROOT_DIR/dev"
+safe_umount "$CHROOT_DIR/proc"
+safe_umount "$CHROOT_DIR/sys"
 
+# 查找内核文件（在卸载挂载点后）
 KERNEL=$(find "$CHROOT_DIR/boot" -name "vmlinuz-*" -type f | head -1)
 INITRD=$(find "$CHROOT_DIR/boot" -name "initrd.img-*" -type f | head -1)
 
@@ -450,10 +440,30 @@ log_success "Initrd: $(basename "$INITRD")"
 # ==================== 步骤7: 创建squashfs文件系统 ====================
 log_info "[7/10] Creating squashfs filesystem..."
 
+# 创建排除文件列表
+cat > "$WORK_DIR/squashfs-exclude.txt" << 'EOF'
+proc/*
+sys/*
+dev/*
+tmp/*
+run/*
+var/tmp/*
+var/run/*
+var/cache/*
+var/log/*
+boot/*.old
+home/*
+root/.bash_history
+root/.cache
+EOF
 
 if mksquashfs "$CHROOT_DIR" "$STAGING_DIR/live/filesystem.squashfs" \
-    -comp gzip -b 1M -noappend -no-progress \
-    -e "proc/*" "sys/*" "dev/*" "tmp/*" "run/*"; then
+    -comp xz \
+    -b 1M \
+    -noappend \
+    -no-progress \
+    -wildcards \
+    -ef "$WORK_DIR/squashfs-exclude.txt"; then
     SQUASHFS_SIZE=$(ls -lh "$STAGING_DIR/live/filesystem.squashfs" | awk '{print $5}')
     log_success "Squashfs created successfully: $SQUASHFS_SIZE"
 else
@@ -531,14 +541,12 @@ cp /usr/lib/ISOLINUX/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || \
 cp /usr/lib/syslinux/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || true
 
 cp /usr/lib/syslinux/modules/bios/ldlinux.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
-
-cp -v /usr/lib/ISOLINUX/isolinux.bin "$STAGING_DIR/isolinux/"
-cp -v /usr/lib/syslinux/modules/bios/* "$STAGING_DIR/isolinux/"
-cp -v -r /usr/lib/grub/x86_64-efi/* "$STAGING_DIR/boot/grub/x86_64-efi/"
+cp /usr/lib/syslinux/modules/bios/vesamenu.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
+cp /usr/lib/syslinux/modules/bios/libutil.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
 
 
 # 创建UEFI引导文件
-log_info "Creat UEFI boot file ..."
+log_info "Creating UEFI boot file..."
 grub-mkstandalone \
 --format=x86_64-efi \
 --output=${WORK_DIR}/tmp/bootx64.efi \
@@ -552,32 +560,33 @@ grub-mkstandalone \
     --locales="" \
     --fonts="" \
     "boot/grub/grub.cfg=${WORK_DIR}/tmp/grub-standalone.cfg" 2>/dev/null || {
-    log_warning "GRUB standalone创建失败，使用备用方案"
-
+    log_warning "GRUB standalone creation failed, trying alternative method..."
+    # 备用方案
+    cp /usr/lib/grub/x86_64-efi/monolithic/grubx64.efi "${WORK_DIR}/tmp/bootx64.efi" 2>/dev/null || true
 }
 
 # 创建EFI映像
 cd "${STAGING_DIR}/EFI/boot"
-SIZE=`expr $(stat --format=%s ${WORK_DIR}/tmp/bootx64.efi) + 65536`
-dd if=/dev/zero of=efiboot.img bs=$SIZE count=1
+SIZE=$(( $(stat --format=%s "${WORK_DIR}/tmp/bootx64.efi" 2>/dev/null || echo 1048576) + 65536 ))
+dd if=/dev/zero of=efiboot.img bs="$SIZE" count=1
 /sbin/mkfs.vfat efiboot.img
 mmd -i efiboot.img efi efi/boot
-mcopy -vi efiboot.img ${WORK_DIR}/tmp/bootx64.efi ::efi/boot/
+mcopy -vi efiboot.img "${WORK_DIR}/tmp/bootx64.efi" ::efi/boot/
   
 log_success "UEFI file sucess!"
 
 
 # ==================== 步骤9: 构建ISO镜像 ====================
 log_info "[9/10] Building ISO image..."
-xorriso \
-    -as mkisofs \
+
+cd "$STAGING_DIR"
+xorriso -as mkisofs \
     -iso-level 3 \
     -output "${ISO_PATH}" \
     -full-iso9660-filenames \
     -volid "OPENWRT_INSTALL" \
     -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-    -eltorito-boot \
-    isolinux/isolinux.bin \
+    -eltorito-boot isolinux/isolinux.bin \
     -no-emul-boot \
     -boot-load-size 4 \
     -boot-info-table \
@@ -630,6 +639,13 @@ EOF
     
     log_success "Build info saved to: $OUTPUT_DIR/build-info.txt"
     
+    # 清理工作目录
+    log_info "Cleaning up..."
+    safe_umount "$CHROOT_DIR/dev/pts" 2>/dev/null || true
+    safe_umount "$CHROOT_DIR/dev" 2>/dev/null || true
+    safe_umount "$CHROOT_DIR/proc" 2>/dev/null || true
+    safe_umount "$CHROOT_DIR/sys" 2>/dev/null || true
+    rm -rf "$WORK_DIR"
     
     log_success "🎉 All steps completed successfully!"
 else
