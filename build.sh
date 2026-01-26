@@ -72,7 +72,7 @@ echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check-
 # 安装必要工具
 log_info "Installing required packages..."
 apt-get update
-apt-get -y install debootstrap squashfs-tools xorriso isolinux syslinux-efi grub-pc-bin grub-efi-amd64-bin grub-efi mtools dosfstools parted pv grub-common grub2-common efibootmgr
+apt-get -y install debootstrap squashfs-tools xorriso isolinux syslinux-efi grub-pc-bin grub-efi-amd64-bin grub-efi mtools dosfstools parted pv grub-common grub2-common
 
 # ==================== 步骤2: 创建目录结构 ====================
 log_info "[2/10] Creating directory structure..."
@@ -141,7 +141,7 @@ sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
-apt-get install -y parted openssh-server bash-completion cifs-utils curl dbus dosfstools firmware-linux-free gddrescue gdisk iputils-ping isc-dhcp-client less nfs-common ntfs-3g openssh-client open-vm-tools procps vim wimtools wget pv grub-efi-amd64-bin dialog whiptail
+apt-get install -y parted openssh-server bash-completion cifs-utils curl dbus dosfstools firmware-linux-free gddrescue gdisk iputils-ping isc-dhcp-client less nfs-common ntfs-3g openssh-client open-vm-tools procps vim wimtools wget pv
 
 # 清理包缓存
 apt-get clean
@@ -238,11 +238,10 @@ Type=idle
 GETTY_OVERRIDE
 
 # 创建安装脚本
+mkdir -p /opt
 cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/bash
-
 exec 2>/dev/null
-
 clear
 cat << "EOF"
 
@@ -252,243 +251,73 @@ cat << "EOF"
 
 EOF
 
-echo -e "\nChecking OpenWRT image..."
+echo ""
+echo "Checking OpenWRT image..."
 if [ ! -f "/openwrt.img" ]; then
-    echo -e "\n❌ ERROR: OpenWRT image not found!"
-    echo -e "\nImage file should be at: /openwrt.img"
-    echo -e "\nPress Enter for shell..."
+    echo "❌ ERROR: OpenWRT image not found!"
+    echo ""
+    echo "Press Enter for shell..."
     read
     exec /bin/bash
 fi
 
-IMG_SIZE=$(ls -lh /openwrt.img | awk '{print $5}')
-echo -e "✅ OpenWRT image found: $IMG_SIZE\n"
+echo "✅ OpenWRT image found: $(ls -lh /openwrt.img | awk '{print $5}')"
+echo ""
 
-# 获取磁盘列表函数
-get_disk_list() {
-    # 获取所有磁盘，排除loop设备和只读设备
-    DISK_LIST=()
-    DISK_INDEX=1
-    
-    echo "Scanning available disks..."
-    
-    # 使用lsblk获取磁盘信息
-    while IFS= read -r line; do
-        if [ -n "$line" ]; then
-            DISK_NAME=$(echo "$line" | awk '{print $1}')
-            DISK_SIZE=$(echo "$line" | awk '{print $2}')
-            DISK_MODEL=$(echo "$line" | cut -d' ' -f3-)
-            
-            # 检查是否为有效磁盘（排除CD/DVD）
-            if [[ $DISK_NAME =~ ^(sd|hd|nvme|vd) ]]; then
-                DISK_LIST[DISK_INDEX]="$DISK_NAME"
-                echo "  [$DISK_INDEX] /dev/$DISK_NAME - $DISK_SIZE - $DISK_MODEL"
-                ((DISK_INDEX++))
-            fi
-        fi
-    done < <(lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^(sd|hd|nvme|vd)')
-    
-    TOTAL_DISKS=$((DISK_INDEX - 1))
-}
-
-# 主循环
 while true; do
-    # 获取磁盘列表
-    get_disk_list
+    echo "Available disks:"
+    echo "================="
+    lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^(sd|hd|nvme)' || echo "No disks detected"
+    echo "================="
+    echo ""
     
-    if [ $TOTAL_DISKS -eq 0 ]; then
-        echo -e "\n❌ No disks detected!"
-        echo -e "Please check your storage devices and try again.\n"
-        read -p "Press Enter to rescan..." _
-        clear
+    read -p "Enter target disk (e.g., sda): " TARGET_DISK
+    
+    if [ -z "$TARGET_DISK" ]; then
+        echo "Please enter a disk name"
         continue
     fi
     
-    echo -e "\n══════════════════════════════════════════════════════════"
-    echo -e "Please select target disk (1-$TOTAL_DISKS):"
-    echo -e "══════════════════════════════════════════════════════════\n"
+    if [ ! -b "/dev/$TARGET_DISK" ]; then
+        echo "❌ Disk /dev/$TARGET_DISK not found!"
+        continue
+    fi
     
-    # 获取用户选择
-    while true; do
-        read -p "Select disk number (1-$TOTAL_DISKS) or 'r' to rescan: " SELECTION
-        
-        case $SELECTION in
-            [Rr])
-                clear
-                break 2  # 跳出两层循环，重新扫描
-                ;;
-            [0-9]*)
-                if [[ $SELECTION -ge 1 && $SELECTION -le $TOTAL_DISKS ]]; then
-                    TARGET_DISK=${DISK_LIST[$SELECTION]}
-                    break 2  # 跳出两层循环，继续安装
-                else
-                    echo "❌ Invalid selection. Please choose between 1 and $TOTAL_DISKS."
-                fi
-                ;;
-            *)
-                echo "❌ Invalid input. Please enter a number or 'r' to rescan."
-                ;;
-        esac
-    done
-done
-
-# 确认安装
-clear
-echo -e "\n══════════════════════════════════════════════════════════"
-echo -e "           CONFIRM INSTALLATION"
-echo -e "══════════════════════════════════════════════════════════\n"
-echo -e "Target disk: /dev/$TARGET_DISK"
-echo -e "\n⚠️  ⚠️  ⚠️   WARNING: This will ERASE ALL DATA on /dev/$TARGET_DISK!  ⚠️  ⚠️  ⚠️"
-echo -e "\nALL existing partitions and data will be permanently deleted!"
-echo -e "\n══════════════════════════════════════════════════════════\n"
-
-while true; do
-    read -p "Type 'YES' to continue or 'NO' to cancel: " CONFIRM
+    echo ""
+    echo "⚠️  WARNING: This will erase ALL data on /dev/$TARGET_DISK!"
+    echo ""
+    read -p "Type 'YES' to confirm: " CONFIRM
     
-    case $CONFIRM in
-        YES|yes|Y|y)
-            echo -e "\nProceeding with installation...\n"
-            break
-            ;;
-        NO|no|N|n)
-            echo -e "\nInstallation cancelled.\n"
-            read -p "Press Enter to return to disk selection..." _
-            exec /opt/install-openwrt.sh  # 重新启动安装程序
-            ;;
-        *)
-            echo "Please type 'YES' to confirm or 'NO' to cancel."
-            ;;
-    esac
-done
-
-# 开始安装
-clear
-echo -e "\n══════════════════════════════════════════════════════════"
-echo -e "           INSTALLING OPENWRT"
-echo -e "══════════════════════════════════════════════════════════\n"
-echo -e "Target: /dev/$TARGET_DISK"
-echo -e "Image size: $IMG_SIZE"
-echo -e "\nThis may take several minutes. Please wait...\n"
-echo -e "══════════════════════════════════════════════════════════\n"
-
-# 显示进度条函数
-show_progress() {
-    local pid=$1
-    local delay=0.1
-    local spinstr='|/-\'
+    if [ "$CONFIRM" != "YES" ]; then
+        echo "Cancelled."
+        continue
+    fi
     
-    echo -n "Writing image: ["
+    clear
+    echo ""
+    echo "Installing OpenWRT to /dev/$TARGET_DISK..."
+    echo ""
     
-    # 创建进度条背景
-    for ((i=0; i<50; i++)); do
-        echo -n " "
-    done
-    echo -n "]"
+    if command -v pv >/dev/null 2>&1; then
+        pv /openwrt.img | dd of="/dev/$TARGET_DISK" bs=4M
+    else
+        dd if=/openwrt.img of="/dev/$TARGET_DISK" bs=4M status=progress
+    fi
     
-    # 移动光标到进度条开始位置
-    echo -ne "\rWriting image: ["
-    
-    # 等待dd进程完成并显示进度
-    while kill -0 $pid 2>/dev/null; do
-        # 获取dd进度（如果可用）
-        if kill -USR1 $pid 2>/dev/null; then
-            sleep 1
-            # 尝试从/proc获取进度信息
-            if [ -f "/proc/$pid/io" ]; then
-                bytes_written=$(grep "^write_bytes" "/proc/$pid/io" | awk '{print $2}')
-                total_bytes=$(ls -l /openwrt.img | awk '{print $5}')
-                if [ -n "$bytes_written" ] && [ "$total_bytes" -gt 0 ]; then
-                    percentage=$((bytes_written * 100 / total_bytes))
-                    if [ $percentage -gt 100 ]; then
-                        percentage=100
-                    fi
-                    
-                    # 更新进度条
-                    filled=$((percentage / 2))
-                    empty=$((50 - filled))
-                    
-                    echo -ne "\rWriting image: ["
-                    for ((i=0; i<filled; i++)); do
-                        echo -n "█"
-                    done
-                    for ((i=0; i<empty; i++)); do
-                        echo -n " "
-                    done
-                    echo -ne "] ${percentage}%"
-                fi
-            fi
-        fi
-        sleep 2
-    done
-    
-    # 等待进程完成
-    wait $pid
-    return $?
-}
-
-# 执行安装（禁用所有输出日志）
-echo -e "Starting installation process...\n"
-
-# 使用dd写入镜像，禁用所有状态输出
-if command -v pv >/dev/null 2>&1; then
-    # 使用pv显示进度
-    pv -p -t -e -r /openwrt.img | dd of="/dev/$TARGET_DISK" bs=4M 2>/dev/null
-    DD_EXIT=$?
-else
-    # 使用静默dd
-    dd if=/openwrt.img of="/dev/$TARGET_DISK" bs=4M 2>/dev/null &
-    DD_PID=$!
-    
-    # 显示自定义进度
-    show_progress $DD_PID
-    DD_EXIT=$?
-fi
-
-# 检查dd结果
-if [ $DD_EXIT -eq 0 ]; then
-    # 同步磁盘
     sync
-    echo -e "\n\n✅ Installation successful!"
-    echo -e "\nOpenWRT has been installed to /dev/$TARGET_DISK"
+    echo ""
+    echo "✅ Installation complete!"
+    echo ""
     
-    # 显示安装后信息
-    echo -e "\n══════════════════════════════════════════════════════════"
-    echo -e "           INSTALLATION COMPLETE"
-    echo -e "══════════════════════════════════════════════════════════\n"
-    echo -e "Next steps:"
-    echo -e "1. Remove the installation media"
-    echo -e "2. Boot from the newly installed disk"
-    echo -e "3. OpenWRT should start automatically"
-    echo -e "\nDefault network settings:"
-    echo -e "  - LAN: 192.168.10.1"
-    echo -e "  - Username: root"
-    echo -e "  - Password: (check your OpenWRT image documentation)"
-    echo -e "\n══════════════════════════════════════════════════════════\n"
-    
-    # 倒计时重启
-    echo -e "System will reboot in 10 seconds..."
-    echo -e "Press Ctrl+C to cancel reboot and return to shell\n"
+    echo "System will reboot in 10 seconds..."
     
     for i in {10..1}; do
         echo -ne "Rebooting in $i seconds...\r"
         sleep 1
     done
     
-    echo -e "\nRebooting now..."
-    sleep 2
     reboot -f
-    
-else
-    echo -e "\n\n❌ Installation failed! Error code: $DD_EXIT"
-    echo -e "\nPossible issues:"
-    echo -e "1. Disk may be in use or mounted"
-    echo -e "2. Disk may be failing"
-    echo -e "3. Not enough space on target disk"
-    echo -e "\nPlease check the disk and try again.\n"
-    
-    read -p "Press Enter to return to disk selection..." _
-    exec /opt/install-openwrt.sh  # 重新启动安装程序
-fi
+done
 INSTALL_SCRIPT
 chmod +x /opt/install-openwrt.sh
 
@@ -839,42 +668,19 @@ Initrd Version:  $(basename "$INITRD")
 Boot Support:    BIOS + UEFI
 Boot Timeout:    10 seconds
 
-Installation Features:
-  - Simple numeric disk selection (1, 2, 3, etc.)
-  - Clean, minimal output (no verbose logs)
-  - Visual progress indicator
-  - Safety confirmation before writing
-  - Automatic reboot after installation
-
 Usage:
-  1. Create bootable USB: dd if="$ISO_NAME" of=/dev/sdX bs=4M status=progress
-  2. Boot from USB in UEFI or Legacy mode
-  3. Select target disk using numbers
+  1. Flash: dd if="$ISO_NAME" of=/dev/sdX bs=4M status=progress
+  2. Boot from USB
+  3. Select target disk
   4. Confirm installation
-  5. Wait for automatic reboot
-  6. souce https://github.com/sirpdboy/openwrt-installer-iso.git
-
-Notes:
-  - Installation is completely silent (no dd logs)
-  - Use numbers instead of disk names (simpler)
-  - Press Ctrl+C during reboot countdown to cancel
+  5. souce https://github.com/sirpdboy/openwrt-installer-iso.git
 EOF
     
     log_success "Build info saved to: $OUTPUT_DIR/build-info.txt"
     
-    echo ""
-    echo "================================================================================"
-    echo "📦 ISO Build Complete!"
-    echo "================================================================================"
-    echo "Key improvements in this version:"
-    echo "  ✓ Clean, minimal installation output (no verbose logs)"
-    echo "  ✓ Simple numeric disk selection (1, 2, 3... instead of sda, sdb)"
-    echo "  ✓ Visual progress bar during writing"
-    echo "  ✓ Enhanced safety with confirmation step"
-    echo ""
-    echo "To create bootable USB:"
-    echo "  sudo dd if='$ISO_PATH' of=/dev/sdX bs=4M status=progress && sync"
-    echo "================================================================================"
+    # 显示ISO信息
+    echo "ISO contents:"
+    isoinfo -d -i "$ISO_PATH" 2>/dev/null | grep -E "(Volume id|Boot |El torito)" || true
     
     log_success "🎉 All steps completed successfully!"
 else
