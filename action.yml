@@ -44,14 +44,10 @@ runs:
         echo "Output Dir: ${{ inputs.OUTPUT_DIR }}"
         echo "ISO Name: ${{ inputs.OUTPUT_ISO_NAME }}"
         echo ""
-        
-        # 确保脚本可执行
-        ls -la ./
-        
+        # ls -la ./
     - name: Run Docker Build
       shell: bash
       run: |
-        # 检查脚本是否存在
         if [ ! -f "./dockerrun.sh" ]; then
           echo "❌ dockerrun.sh not found!"
           echo "Current directory contents:"
