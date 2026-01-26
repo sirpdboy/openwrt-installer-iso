@@ -55,7 +55,7 @@ log_success "Found OpenWRT image: $IMG_SIZE"
 log_info "[2/7] Installing build tools..."
 
 # Temporarily disable GRUB triggers to avoid errors
-mkdir -p /etc/apk
+mkdir -p /etc/apk/scripts
 echo "#!/bin/sh" > /etc/apk/scripts/grub-2.12-r5.trigger
 echo "exit 0" >> /etc/apk/scripts/grub-2.12-r5.trigger
 chmod +x /etc/apk/scripts/grub-2.12-r5.trigger
