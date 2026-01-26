@@ -1,53 +1,52 @@
-FROM debian:buster-slim
+FROM alpine:3.20
 
-# 设置元数据
-LABEL maintainer="sirpdboy"
-LABEL description="OpenWRT IMG to ISO Builder"
-LABEL version="1.0"
+# Method 1: Install packages BEFORE creating triggers directory
+RUN echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > /etc/apk/repositories && \
+    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> /etc/apk/repositories
 
-# 设置环境
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LC_ALL=C.UTF-8
-ENV LANG=C.UTF-8
+# Create fake triggers directory to prevent real triggers from running
+RUN mkdir -p /etc/apk/scripts.fake && \
+    rm -rf /etc/apk/scripts && \
+    ln -sf /etc/apk/scripts.fake /etc/apk/scripts
 
-# 设置工作目录
-WORKDIR /build
-
-# 安装必要工具
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
-        wget \
-        curl \
-        gnupg \
-        && \
-    echo "deb http://archive.debian.org/debian buster main" > /etc/apt/sources.list && \
-    echo "deb http://archive.debian.org/debian-security buster/updates main" >> /etc/apt/sources.list && \
-    echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
-        debootstrap \
-        squashfs-tools \
+# Install packages with --no-scripts to avoid triggers
+RUN apk update && \
+    apk add --no-scripts --no-cache \
+        bash \
         xorriso \
-        isolinux \
-        syslinux \
-        syslinux-common \
-        grub-pc-bin \
-        grub-efi-amd64-bin \
         mtools \
         dosfstools \
+        gzip \
+        cpio \
+        wget \
+        curl \
         parted \
-        live-boot \
-        live-boot-initramfs-tools \
+        e2fsprogs \
         pv \
-        file \
         dialog \
-        && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+        linux-lts \
+        kmod \
+        busybox \
+        coreutils \
+        findutils \
+        grep \
+        util-linux
 
-# 创建挂载点
-RUN mkdir -p /mnt /output
+# Now install syslinux and grub separately with force
+RUN apk add --no-scripts --no-cache --force syslinux && \
+    apk add --no-scripts --no-cache --force grub grub-efi
 
-# 设置入口点
-ENTRYPOINT ["/build.sh"]
+# Verify installation
+RUN which xorriso && which mkfs.vfat && which mcopy && which cpio
+
+# Copy build script
+COPY build-openwrt-alpine-iso.sh /usr/local/bin/build-iso
+RUN chmod +x /usr/local/bin/build-iso
+
+# Create directories
+RUN mkdir -p /build /output
+
+WORKDIR /build
+VOLUME /output
+
+ENTRYPOINT ["/usr/local/bin/build-iso"]
