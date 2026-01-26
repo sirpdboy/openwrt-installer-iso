@@ -124,18 +124,19 @@ deb http://archive.debian.org/debian-security buster/updates main
 EOF
 
 echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check
+echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check
 
 # 设置主机名和DNS
 echo "openwrt-installer" > /etc/hostname
-
-rm /etc/resolv.conf
-ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 
 # 更新并安装包
 echo "Updating packages..."
 apt-get update
 apt-get -y install apt || true
 apt-get -y upgrade
+echo "Setting locale..."
 apt-get -y install locales
 sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 dpkg-reconfigure --frontend=noninteractive locales
