@@ -29,19 +29,7 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# 清理函数
-cleanup() {
-    echo "Performing cleanup..."
-    # 卸载所有挂载
-    umount -f "$CHROOT_DIR"/proc 2>/dev/null || true
-    umount -f "$CHROOT_DIR"/sys 2>/dev/null || true
-    umount -f "$CHROOT_DIR"/dev 2>/dev/null || true
-    # 删除工作目录
-    rm -rf "$WORK_DIR" 2>/dev/null || true
-}
 
-# 设置trap确保清理
-trap cleanup EXIT INT TERM
 
 # 显示配置信息
 log_info "Build Configuration:"
@@ -165,43 +153,16 @@ echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 # 更新并安装包
 echo "Updating packages..."
 apt-get update
-
-echo "Installing system packages..."
-apt-get install -y --no-install-recommends \
-    apt \
-    locales \
-    linux-image-amd64 \
-    live-boot \
-    systemd-sysv \
-    parted \
-    openssh-server \
-    bash-completion \
-    cifs-utils \
-    curl \
-    dbus \
-    dosfstools \
-    firmware-linux-free \
-    gddrescue \
-    gdisk \
-    iputils-ping \
-    isc-dhcp-client \
-    less \
-    nfs-common \
-    ntfs-3g \
-    openssh-client \
-    open-vm-tools \
-    procps \
-    vim \
-    wimtools \
-    wget \
-    dialog \
-    pv
-
-# 配置locale
-echo "Configuring locale..."
-sed -i 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+apt-get -y install apt || true
+apt-get -y upgrade
+echo Set locale
+apt-get -y install locales
+sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
+apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
+apt-get install -y parted openssh-server bash-completion cifs-utils curl dbus dosfstools firmware-linux-free gddrescue gdisk iputils-ping isc-dhcp-client less nfs-common ntfs-3g openssh-client open-vm-tools procps vim wimtools wget
+
 
 # 清理包缓存
 apt-get clean
@@ -412,6 +373,8 @@ BASHRC
 # 7. 删除machine-id（重要！每次启动重新生成）
 rm -f /etc/machine-id
 
+echo List installed packages
+dpkg --get-selections|tee /packages.txt
 # 8. 记录安装的包
 # 配置live-boot
 mkdir -p /etc/live/boot
@@ -451,6 +414,7 @@ DHCP=yes
 [DHCP]
 ClientIdentifier=mac
 EOF
+chown -v root:root ${CHROOT_DIR}/etc/systemd/network/99-dhcp-en.network
 chmod 644 "${CHROOT_DIR}/etc/systemd/network/99-dhcp-en.network"
 
 # 卸载挂载点（重要：在复制文件前卸载）
@@ -461,6 +425,7 @@ umount "$CHROOT_DIR/dev" 2>/dev/null || true
 # ==================== 步骤6: 提取内核和initrd ====================
 log_info "[6/10] Extracting kernel and initrd..."
 
+mkdir -p $WORK_DIR/{staging/{EFI/boot,boot/grub/x86_64-efi,isolinux,live},tmp}
 # 重新挂载以访问文件
 mount -t proc none "${CHROOT_DIR}/proc" 2>/dev/null || true
 
@@ -474,8 +439,8 @@ fi
 
 # 复制内核文件
 
-cp "${CHROOT_DIR}/boot"/vmlinuz-* "${STAGING_DIR}/live/vmlinuz"
-cp "${CHROOT_DIR}/boot"/initrd.img-* "${STAGING_DIR}/live/initrd"
+cp -v ${CHROOT_DIR}/boot/vmlinuz-* ${STAGING_DIR}/live/vmlinuz
+cp -v ${CHROOT_DIR}/boot/initrd.img-* ${STAGING_DIR}/live/initrd
 
 cp "$KERNEL" "$STAGING_DIR/live/vmlinuz"
 cp "$INITRD" "$STAGING_DIR/live/initrd"
@@ -485,27 +450,6 @@ log_success "Initrd: $(basename "$INITRD")"
 # ==================== 步骤7: 创建squashfs文件系统 ====================
 log_info "[7/10] Creating squashfs filesystem..."
 
-# 创建排除文件
-EXCLUDE_FILE="$WORK_DIR/exclude.list"
-cat > "$EXCLUDE_FILE" << 'EOF'
-proc
-sys
-dev
-tmp
-run
-mnt
-media
-boot
-var/cache
-var/tmp
-var/log
-var/lib/apt/lists
-var/lib/dpkg
-etc/machine-id
-etc/ssh/ssh_host_*
-root/.bash_history
-root/.cache
-EOF
 
 if mksquashfs "$CHROOT_DIR" "$STAGING_DIR/live/filesystem.squashfs" \
     -comp gzip -b 1M -noappend -no-progress \
@@ -526,31 +470,51 @@ log_info "[8/10] Creating boot configuration..."
 
 # 创建isolinux配置
 cat > "$STAGING_DIR/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
-DEFAULT live
-TIMEOUT 50
-PROMPT 0
-UI menu.c32
+UI vesamenu.c32
 
-MENU TITLE OpenWRT Auto Installer
+MENU TITLE Boot Menu
+DEFAULT linux
+TIMEOUT 5
+MENU RESOLUTION 640 480
+MENU COLOR border       30;44   #40ffffff #a0000000 std
+MENU COLOR title        1;36;44 #9033ccff #a0000000 std
+MENU COLOR sel          7;37;40 #e0ffffff #20ffffff all
+MENU COLOR unsel        37;44   #50ffffff #a0000000 std
+MENU COLOR help         37;40   #c0ffffff #a0000000 std
+MENU COLOR timeout_msg  37;40   #80ffffff #00000000 std
+MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
+MENU COLOR msg07        37;40   #90ffffff #a0000000 std
+MENU COLOR tabmsg       31;40   #30ffffff #00000000 std
 
-LABEL live
+
+LABEL linux
   MENU LABEL ^Install OpenWRT
   MENU DEFAULT
   KERNEL /live/vmlinuz
   APPEND initrd=/live/initrd boot=live components quiet
-  TEXT HELP
-  Automatically start OpenWRT installer
-  ENDTEXT
+
 ISOLINUX_CFG
 
 # 创建GRUB配置
 cat > "$STAGING_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
+search --set=root --file /DEBIAN_CUSTOM
 set timeout=5
 set default=0
 
-menuentry "Install OpenWRT" {
-    linux /live/vmlinuz boot=live components quiet
-    initrd /live/initrd
+
+insmod efi_gop
+insmod font
+if loadfont ${prefix}/fonts/unicode.pf2
+then
+        insmod gfxterm
+        set gfxmode=auto
+        set gfxpayload=keep
+        terminal_output gfxterm
+fi
+
+menuentry "Install OpenWRT x86-UEFI Installer [EFI/GRUB]" {
+    linux ($root)/live/vmlinuz boot=live
+    initrd ($root)/live/initrd
 }
 GRUB_CFG
 
@@ -567,14 +531,21 @@ cp /usr/lib/ISOLINUX/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || \
 cp /usr/lib/syslinux/isolinux.bin "$STAGING_DIR/isolinux/" 2>/dev/null || true
 
 cp /usr/lib/syslinux/modules/bios/ldlinux.c32 "$STAGING_DIR/isolinux/" 2>/dev/null || true
-# 复制GRUB模块
-if [ -d /usr/lib/grub/x86_64-efi ]; then
-    mkdir -p "${STAGING_DIR}/boot/grub/x86_64-efi"
-    cp -r /usr/lib/grub/x86_64-efi/* "${STAGING_DIR}/boot/grub/x86_64-efi/" 2>/dev/null || true
-fi
+
+cp -v /usr/lib/ISOLINUX/isolinux.bin "$STAGING_DIR/isolinux/"
+cp -v /usr/lib/syslinux/modules/bios/* "$STAGING_DIR/isolinux/"
+cp -v -r /usr/lib/grub/x86_64-efi/* "$STAGING_DIR/boot/grub/x86_64-efi/"
+
 
 # 创建UEFI引导文件
 log_info "Creat UEFI boot file ..."
+grub-mkstandalone \
+--format=x86_64-efi \
+--output=${WORK_DIR}/tmp/bootx64.efi \
+--locales=""  \
+--fonts="" \
+"boot/grub/grub.cfg=${WORK_DIR}/tmp/grub-standalone.cfg"
+
 grub-mkstandalone \
     --format=x86_64-efi \
     --output="${WORK_DIR}/tmp/bootx64.efi" \
@@ -582,65 +553,42 @@ grub-mkstandalone \
     --fonts="" \
     "boot/grub/grub.cfg=${WORK_DIR}/tmp/grub-standalone.cfg" 2>/dev/null || {
     log_warning "GRUB standalone创建失败，使用备用方案"
-    # 备用：直接复制已有的EFI文件
-    if [ -f /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed ]; then
-        cp /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed "${WORK_DIR}/tmp/bootx64.efi"
-    fi
+
 }
 
 # 创建EFI映像
 cd "${STAGING_DIR}/EFI/boot"
-if [ -f "${WORK_DIR}/tmp/bootx64.efi" ]; then
-    EFI_SIZE=$(stat --format=%s "${WORK_DIR}/tmp/bootx64.efi" 2>/dev/null || echo 65536)
-    EFI_SIZE=$((EFI_SIZE + 65536))
-    
-    dd if=/dev/zero of=efiboot.img bs=1 count=0 seek=${EFI_SIZE} 2>/dev/null
-    /sbin/mkfs.vfat -F 32 efiboot.img 2>/dev/null || true
-    
-    mmd -i efiboot.img efi 2>/dev/null || true
-    mmd -i efiboot.img efi/boot 2>/dev/null || true
-    mcopy -i efiboot.img "${WORK_DIR}/tmp/bootx64.efi" ::efi/boot/bootx64.efi 2>/dev/null || true
-    
-    log_success "UEFI file sucess!"
-else
-    log_warning "UEFI creat boot error!"
-    rm -f efiboot.img
-fi
+SIZE=`expr $(stat --format=%s ${WORK_DIR}/tmp/bootx64.efi) + 65536`
+dd if=/dev/zero of=efiboot.img bs=$SIZE count=1
+/sbin/mkfs.vfat efiboot.img
+mmd -i efiboot.img efi efi/boot
+mcopy -vi efiboot.img ${WORK_DIR}/tmp/bootx64.efi ::efi/boot/
+  
+log_success "UEFI file sucess!"
+
 
 # ==================== 步骤9: 构建ISO镜像 ====================
 log_info "[9/10] Building ISO image..."
-xorriso -as mkisofs \
+xorriso \
+    -as mkisofs \
     -iso-level 3 \
+    -output "${ISO_PATH}" \
     -full-iso9660-filenames \
     -volid "OPENWRT_INSTALL" \
-    -eltorito-boot isolinux/isolinux.bin \
-    -eltorito-catalog isolinux/boot.cat \
+    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+    -eltorito-boot \
+    isolinux/isolinux.bin \
     -no-emul-boot \
     -boot-load-size 4 \
     -boot-info-table \
-    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-    -output "$ISO_PATH" \
-    "$STAGING_DIR" 2>&1 | grep -E "(^[^.]|%)" || true
+    --eltorito-catalog isolinux/isolinux.cat \
+    -eltorito-alt-boot \
+    -e /EFI/boot/efiboot.img \
+    -no-emul-boot \
+    -isohybrid-gpt-basdat \
+    -append_partition 2 0xef ${STAGING_DIR}/EFI/boot/efiboot.img \
+    "$STAGING_DIR"
 
-# 如果UEFI文件存在，添加UEFI引导
-if [ -f "${STAGING_DIR}/EFI/boot/efiboot.img" ]; then
-    log_info "添加UEFI引导支持..."
-    xorriso -as mkisofs \
-        -iso-level 3 \
-        -full-iso9660-filenames \
-        -volid "OPENWRT_INSTALL" \
-        -eltorito-boot isolinux/isolinux.bin \
-        -eltorito-catalog isolinux/boot.cat \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
-        -eltorito-alt-boot \
-        -e EFI/boot/efiboot.img \
-        -no-emul-boot \
-        -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-        -output "${ISO_PATH}" \
-        "${STAGING_DIR}" 2>&1 | tee /tmp/xorriso.log
-fi
 
 # ==================== 步骤10: 验证结果 ====================
 log_info "[10/10] Verifying build..."
