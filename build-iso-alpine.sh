@@ -51,9 +51,17 @@ fi
 IMG_SIZE=$(ls -lh "$OPENWRT_IMG" | awk '{print $5}')
 log_success "Found OpenWRT image: $IMG_SIZE"
 
-# ==================== Step 2: Install build tools ====================
+# ==================== Step 2: Install build tools (ignore GRUB errors) ====================
 log_info "[2/7] Installing build tools..."
+
+# Temporarily disable GRUB triggers to avoid errors
+mkdir -p /etc/apk
+echo "#!/bin/sh" > /etc/apk/scripts/grub-2.12-r5.trigger
+echo "exit 0" >> /etc/apk/scripts/grub-2.12-r5.trigger
+chmod +x /etc/apk/scripts/grub-2.12-r5.trigger
+
 apk update --no-cache
+# Install packages, ignoring any trigger errors
 apk add --no-cache \
     alpine-sdk \
     xorriso \
@@ -72,81 +80,74 @@ apk add --no-cache \
     e2fsprogs \
     gzip \
     cpio \
-    linux-lts \
-    linux-firmware-none
+    linux-lts 2>/dev/null || {
+    log_warning "Some packages had warnings, continuing..."
+}
 
 log_success "Build tools installed"
 
-# ==================== Step 2.5: Download Alpine kernel ====================
-log_info "[2.5/7] Downloading Alpine Linux kernel..."
+# ==================== Step 2.5: Get kernel ====================
+log_info "[2.5/7] Getting kernel..."
 
-# Create directory for kernel
-KERNEL_DIR="$WORK_DIR/kernel"
-mkdir -p "$KERNEL_DIR"
+# First try to find kernel from installed linux-lts package
+log_info "Looking for kernel from linux-lts package..."
+KERNEL_FOUND=false
 
-# Try to download Alpine kernel from repository
-ALPINE_KERNEL_URL="http://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64"
-KERNEL_PACKAGE="linux-lts-6.6.23-r0.apk"
-
-if curl -s -I "$ALPINE_KERNEL_URL/$KERNEL_PACKAGE" | head -1 | grep -q "200"; then
-    log_info "Downloading kernel package..."
-    wget -q "$ALPINE_KERNEL_URL/$KERNEL_PACKAGE" -O "$KERNEL_DIR/kernel.apk"
+# Check common kernel locations
+for kernel_path in \
+    "/boot/vmlinuz-lts" \
+    "/boot/vmlinuz" \
+    "/boot/vmlinuz-$(uname -r)" \
+    "/lib/modules/*/vmlinuz"; do
     
-    # Extract kernel from APK
-    tar -xzf "$KERNEL_DIR/kernel.apk" -C "$KERNEL_DIR" 2>/dev/null || true
-    
-    # Look for kernel files
-    KERNEL_FOUND=false
-    for kernel_path in "$KERNEL_DIR"/boot/*; do
-        if [[ "$kernel_path" == *vmlinuz* ]]; then
-            cp "$kernel_path" "$WORK_DIR/vmlinuz"
-            KERNEL_FOUND=true
-            log_success "Downloaded kernel: $(basename "$kernel_path")"
-            break
-        fi
-    done
-fi
+    if [ -f "$kernel_path" ] 2>/dev/null; then
+        cp "$kernel_path" "$WORK_DIR/vmlinuz"
+        KERNEL_FOUND=true
+        log_success "Found kernel: $kernel_path"
+        break
+    fi
+done
 
-# If download failed, use host kernel
+# If not found, extract from APK cache
 if [ ! -f "$WORK_DIR/vmlinuz" ]; then
-    log_warning "Could not download kernel, using host kernel..."
+    log_info "Extracting kernel from APK cache..."
     
-    # Try to find kernel on host system
-    if [ -f "/boot/vmlinuz-lts" ]; then
-        cp "/boot/vmlinuz-lts" "$WORK_DIR/vmlinuz"
-        log_info "Using host kernel: vmlinuz-lts"
-    elif [ -f "/boot/vmlinuz" ]; then
-        cp "/boot/vmlinuz" "$WORK_DIR/vmlinuz"
-        log_info "Using host kernel: vmlinuz"
-    elif ls /boot/vmlinuz-* 2>/dev/null | head -1; then
-        KERNEL_FILE=$(ls /boot/vmlinuz-* 2>/dev/null | head -1)
-        cp "$KERNEL_FILE" "$WORK_DIR/vmlinuz"
-        log_info "Using host kernel: $(basename "$KERNEL_FILE")"
-    else
-        # As last resort, extract kernel from installed linux-lts package
-        log_info "Extracting kernel from installed package..."
-        apk info -L linux-lts | grep -E '/boot/vmlinuz' | while read -r line; do
-            if [ -f "$line" ]; then
-                cp "$line" "$WORK_DIR/vmlinuz"
-                log_info "Using kernel: $line"
+    # Find linux-lts APK in cache
+    APK_CACHE=$(find /var/cache/apk -name "linux-lts*.apk" 2>/dev/null | head -1)
+    if [ -f "$APK_CACHE" ]; then
+        # Extract kernel from APK
+        TEMP_DIR="$WORK_DIR/apk_extract"
+        mkdir -p "$TEMP_DIR"
+        
+        # Extract APK
+        tar -xzf "$APK_CACHE" -C "$TEMP_DIR" 2>/dev/null || true
+        
+        # Look for kernel
+        for kernel_file in "$TEMP_DIR"/boot/vmlinuz* "$TEMP_DIR"/lib/modules/*/vmlinuz; do
+            if [ -f "$kernel_file" ]; then
+                cp "$kernel_file" "$WORK_DIR/vmlinuz"
+                KERNEL_FOUND=true
+                log_success "Extracted kernel from APK"
                 break
             fi
         done
+        
+        rm -rf "$TEMP_DIR"
     fi
 fi
 
-# Verify we have a kernel
+# Final check
 if [ ! -f "$WORK_DIR/vmlinuz" ]; then
     log_error "No kernel found! Cannot continue."
     log_info "Tried:"
-    log_info "1. Downloading from Alpine repository"
-    log_info "2. Host kernel files"
-    log_info "3. Installed linux-lts package"
+    log_info "1. Standard kernel locations"
+    log_info "2. APK cache extraction"
     exit 1
 fi
 
 KERNEL_SIZE=$(ls -lh "$WORK_DIR/vmlinuz" | awk '{print $5}')
-log_success "Kernel ready: $KERNEL_SIZE"
+KERNEL_INFO=$(file "$WORK_DIR/vmlinuz" 2>/dev/null | head -c 100)
+log_success "Kernel ready: $KERNEL_SIZE ($KERNEL_INFO)"
 
 # ==================== Step 3: Create minimal root filesystem ====================
 log_info "[3/7] Creating minimal root filesystem..."
@@ -154,20 +155,24 @@ log_info "[3/7] Creating minimal root filesystem..."
 ROOTFS_DIR="$WORK_DIR/rootfs"
 mkdir -p "$ROOTFS_DIR"
 
-# Create basic directory structure
-mkdir -p "$ROOTFS_DIR"/{bin,dev,etc,lib,proc,sys,tmp,usr,var,sbin,lib/modules}
+# Create basic directory structure - ALL directories first
+log_info "Creating directory structure..."
+mkdir -p "$ROOTFS_DIR"/{bin,dev,etc,lib,proc,sys,tmp,usr,var,sbin}
 mkdir -p "$ROOTFS_DIR"/usr/{bin,sbin}
 mkdir -p "$ROOTFS_DIR"/var/lib
+mkdir -p "$ROOTFS_DIR"/etc/modules-load.d  # Create this directory first!
+mkdir -p "$ROOTFS_DIR"/lib/modules
 
-# Create init script with proper kernel modules loading
+# Create init script
+log_info "Creating init script..."
 cat > "$ROOTFS_DIR/init" << 'INIT_EOF'
 #!/bin/busybox sh
-# Minimal init script with kernel modules support
+# Minimal init script
 
 # Mount essential filesystems
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 
 # Create device nodes
 mknod /dev/console c 5 1 2>/dev/null || true
@@ -178,13 +183,6 @@ mknod /dev/zero c 1 5 2>/dev/null || true
 exec 0</dev/console
 exec 1</dev/console
 exec 2</dev/console
-
-# Load essential modules if available
-if [ -d /lib/modules ]; then
-    for module in loop squashfs; do
-        modprobe $module 2>/dev/null || true
-    done
-fi
 
 clear
 echo ""
@@ -203,18 +201,13 @@ if [ -f "/openwrt.img" ]; then
     # Show available disks
     echo "Available disks:"
     echo "----------------"
-    # Use simple disk listing
+    
+    # Simple disk detection
     for disk in /dev/sd[a-z] /dev/nvme[0-9]n[0-9] /dev/vd[a-z]; do
-        if [ -b "$disk" ]; then
-            size=$(blockdev --getsize64 "$disk" 2>/dev/null || echo "unknown")
-            if [ "$size" != "unknown" ]; then
-                size_gb=$((size / 1024 / 1024 / 1024))
-                echo "  $disk - ${size_gb}GB"
-            else
-                echo "  $disk"
-            fi
+        if [ -b "$disk" ] 2>/dev/null; then
+            echo "  $disk"
         fi
-    done 2>/dev/null
+    done
     
     echo "----------------"
     echo ""
@@ -251,18 +244,21 @@ if [ -f "/openwrt.img" ]; then
     echo "This may take a few minutes..."
     echo ""
     
-    # Write image with progress indicator
-    echo "Progress:"
-    TOTAL_SIZE=$(stat -c%s /openwrt.img 2>/dev/null || echo 0)
-    
-    if command -v pv >/dev/null 2>&1 && [ "$TOTAL_SIZE" -gt 0 ]; then
-        pv -s "$TOTAL_SIZE" /openwrt.img | dd of="/dev/$TARGET_DISK" bs=4M 2>/dev/null
+    # Write image
+    if command -v pv >/dev/null 2>&1; then
+        # Try to get file size for pv
+        if [ -f /proc/self/fd/0 ] && [ "$(stat -c%s /openwrt.img 2>/dev/null || echo 0)" -gt 0 ]; then
+            pv /openwrt.img | dd of="/dev/$TARGET_DISK" bs=4M 2>/dev/null
+        else
+            dd if=/openwrt.img of="/dev/$TARGET_DISK" bs=4M 2>&1 | tail -1
+        fi
     else
-        # Simple progress using dd status
         dd if=/openwrt.img of="/dev/$TARGET_DISK" bs=4M 2>&1 | tail -1
     fi
     
-    if [ $? -eq 0 ]; then
+    DD_EXIT=$?
+    
+    if [ $DD_EXIT -eq 0 ]; then
         sync
         echo ""
         echo "✓ Installation complete!"
@@ -272,7 +268,7 @@ if [ -f "/openwrt.img" ]; then
         reboot -f
     else
         echo ""
-        echo "✗ Installation failed!"
+        echo "✗ Installation failed! (Error: $DD_EXIT)"
         sleep 5
     fi
 else
@@ -296,7 +292,7 @@ if command -v busybox >/dev/null 2>&1; then
     
     # Create essential symlinks
     cd "$ROOTFS_DIR/bin"
-    for app in sh ls cat echo dd mount umount modprobe blockdev reboot sync; do
+    for app in sh ls cat echo dd mount umount reboot sync; do
         ln -sf busybox $app 2>/dev/null || true
     done
     cd "$WORK_DIR"
@@ -305,11 +301,14 @@ fi
 # Copy essential binaries
 for tool in dd pv sync; do
     if command -v $tool >/dev/null 2>&1; then
-        cp $(which $tool) "$ROOTFS_DIR/bin/" 2>/dev/null || true
+        tool_path=$(which $tool)
+        mkdir -p "$(dirname "$ROOTFS_DIR$tool_path")" 2>/dev/null || true
+        cp "$tool_path" "$ROOTFS_DIR$tool_path" 2>/dev/null || true
     fi
 done
 
 # Create essential /etc files
+log_info "Creating /etc files..."
 cat > "$ROOTFS_DIR/etc/passwd" << EOF
 root:x:0:0:root:/root:/bin/sh
 EOF
@@ -318,8 +317,7 @@ cat > "$ROOTFS_DIR/etc/group" << EOF
 root:x:0:root
 EOF
 
-# Create minimal modules.dep for modprobe
-mkdir -p "$ROOTFS_DIR/etc/modprobe.d"
+# Create modules-load.d files - directory already exists
 echo "loop" > "$ROOTFS_DIR/etc/modules-load.d/loop.conf"
 echo "squashfs" > "$ROOTFS_DIR/etc/modules-load.d/squashfs.conf"
 
@@ -339,7 +337,7 @@ cp "$OPENWRT_IMG" "$ISO_DIR/openwrt.img"
 
 # Copy kernel to ISO
 cp "$WORK_DIR/vmlinuz" "$ISO_DIR/boot/vmlinuz"
-log_info "Kernel copied to ISO: $(ls -lh "$ISO_DIR/boot/vmlinuz" | awk '{print $5}')"
+log_success "Kernel copied to ISO: $(ls -lh "$ISO_DIR/boot/vmlinuz" | awk '{print $5}')"
 
 # Create initramfs
 log_info "Creating initramfs..."
@@ -355,13 +353,19 @@ if [ -f "$ROOTFS_DIR/bin/busybox" ]; then
     chmod +x "$INITRAMFS_DIR/bin/busybox"
 fi
 
+# Create minimal /etc for initramfs
+mkdir -p "$INITRAMFS_DIR/etc"
+cat > "$INITRAMFS_DIR/etc/passwd" << EOF
+root:x:0:0:root:/root:/bin/sh
+EOF
+
 # Create initramfs archive
 cd "$INITRAMFS_DIR"
 find . | cpio -H newc -o 2>/dev/null | gzip -9 > "$ISO_DIR/boot/initrd.img" 2>/dev/null
 cd "$WORK_DIR"
 
 INITRD_SIZE=$(ls -lh "$ISO_DIR/boot/initrd.img" 2>/dev/null | awk '{print $5}' || echo "unknown")
-log_info "Initramfs created: $INITRD_SIZE"
+log_success "Initramfs created: $INITRD_SIZE"
 
 # ==================== Step 5: Create BIOS boot (SYSLINUX) ====================
 log_info "[5/7] Creating BIOS boot configuration..."
@@ -390,25 +394,27 @@ SYSLINUX_CFG
 
 # Copy SYSLINUX files
 log_info "Copying SYSLINUX files..."
-for file in isolinux.bin ldlinux.c32 libcom32.c32 libutil.c32 menu.c32 vesamenu.c32; do
+for file in isolinux.bin ldlinux.c32 libutil.c32 menu.c32; do
     find /usr -name "$file" -type f 2>/dev/null | head -1 | xargs -I {} cp {} "$ISO_DIR/boot/syslinux/" 2>/dev/null || true
 done
 
 # Verify isolinux.bin exists
 if [ ! -f "$ISO_DIR/boot/syslinux/isolinux.bin" ]; then
-    log_warning "isolinux.bin not found, trying alternative locations..."
-    # Try to download if missing
-    if command -v wget >/dev/null 2>&1; then
-        wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/Testing/6.04/syslinux-6.04-pre1.tar.gz" -O "$WORK_DIR/syslinux.tar.gz"
-        tar -xzf "$WORK_DIR/syslinux.tar.gz" -C "$WORK_DIR" 2>/dev/null || true
-        find "$WORK_DIR" -name "isolinux.bin" -type f | head -1 | xargs -I {} cp {} "$ISO_DIR/boot/syslinux/" 2>/dev/null || true
-    fi
+    log_warning "isolinux.bin not found, trying to locate..."
+    # Try alternative paths
+    for path in /usr/lib/syslinux /usr/share/syslinux /usr/lib/ISOLINUX; do
+        if [ -f "$path/isolinux.bin" ]; then
+            cp "$path/isolinux.bin" "$ISO_DIR/boot/syslinux/"
+            log_info "Found isolinux.bin at $path"
+            break
+        fi
+    done
 fi
 
 if [ -f "$ISO_DIR/boot/syslinux/isolinux.bin" ]; then
-    log_success "SYSLINUX boot files ready"
+    log_success "BIOS boot files ready"
 else
-    log_error "SYSLINUX boot files missing, BIOS boot may not work"
+    log_warning "isolinux.bin not found, BIOS boot may not work"
 fi
 
 # ==================== Step 6: Create UEFI boot (GRUB) ====================
@@ -418,9 +424,6 @@ log_info "[6/7] Creating UEFI boot configuration..."
 cat > "$ISO_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=5
 set default=0
-
-insmod all_video
-loadfont unicode
 
 menuentry "Install OpenWRT (UEFI)" {
     linux /boot/vmlinuz console=tty0 console=ttyS0,115200
@@ -439,7 +442,7 @@ EFI_IMG="$WORK_DIR/efiboot.img"
 dd if=/dev/zero of="$EFI_IMG" bs=1M count=32 2>/dev/null
 mkfs.vfat -F 32 -n "UEFI_BOOT" "$EFI_IMG" >/dev/null 2>&1
 
-# Create GRUB EFI binary
+# Create GRUB EFI binary (skip if grub-mkstandalone fails)
 if command -v grub-mkstandalone >/dev/null 2>&1; then
     log_info "Building GRUB EFI binary..."
     
@@ -447,56 +450,30 @@ if command -v grub-mkstandalone >/dev/null 2>&1; then
     mkdir -p "$GRUB_TMP/boot/grub"
     cp "$ISO_DIR/boot/grub/grub.cfg" "$GRUB_TMP/boot/grub/"
     
-    # Build standalone GRUB
+    # Build standalone GRUB (suppress errors)
     if grub-mkstandalone \
         --format=x86_64-efi \
         --output="$GRUB_TMP/bootx64.efi" \
-        --locales="en@quot" \
-        --themes="" \
+        --locales="" \
         --fonts="" \
-        "boot/grub/grub.cfg=$GRUB_TMP/boot/grub/grub.cfg" 2>&1 | tee "$WORK_DIR/grub.log"; then
+        "boot/grub/grub.cfg=$GRUB_TMP/boot/grub/grub.cfg" 2>/dev/null; then
         
         log_success "GRUB EFI binary created"
         
-        # Mount EFI image and copy files
-        EFI_MOUNT="$WORK_DIR/efi_mount"
-        mkdir -p "$EFI_MOUNT"
+        # Mount EFI image and copy files using mcopy (more reliable)
+        mmd -i "$EFI_IMG" ::/EFI
+        mmd -i "$EFI_IMG" ::/EFI/BOOT
+        mcopy -i "$EFI_IMG" "$GRUB_TMP/bootx64.efi" ::/EFI/BOOT/
         
-        if mount -o loop "$EFI_IMG" "$EFI_MOUNT" 2>/dev/null; then
-            mkdir -p "$EFI_MOUNT/EFI/BOOT"
-            cp "$GRUB_TMP/bootx64.efi" "$EFI_MOUNT/EFI/BOOT/"
-            
-            # Also create fallback bootx64.efi
-            cp "$GRUB_TMP/bootx64.efi" "$EFI_MOUNT/EFI/BOOT/grubx64.efi"
-            
-            # Create basic grub.cfg in EFI partition
-            cat > "$EFI_MOUNT/EFI/BOOT/grub.cfg" << 'EFI_GRUB_CFG'
-search --file /openwrt.img --set=root
-configfile /boot/grub/grub.cfg
-EFI_GRUB_CFG
-            
-            umount "$EFI_MOUNT"
-            
-            # Copy EFI image to ISO
-            cp "$EFI_IMG" "$ISO_DIR/EFI/BOOT/efiboot.img"
-            log_success "UEFI boot image created"
-        else
-            # Use mcopy if mount fails
-            log_warning "Mount failed, using mcopy..."
-            mformat -i "$EFI_IMG" -F ::
-            mmd -i "$EFI_IMG" ::/EFI
-            mmd -i "$EFI_IMG" ::/EFI/BOOT
-            mcopy -i "$EFI_IMG" "$GRUB_TMP/bootx64.efi" ::/EFI/BOOT/
-            cp "$EFI_IMG" "$ISO_DIR/EFI/BOOT/efiboot.img"
-            log_success "UEFI boot image created (via mcopy)"
-        fi
+        # Copy EFI image to ISO
+        cp "$EFI_IMG" "$ISO_DIR/EFI/BOOT/efiboot.img"
+        log_success "UEFI boot image created"
     else
-        log_warning "Failed to create GRUB EFI binary"
-        log_info "GRUB build log:"
-        cat "$WORK_DIR/grub.log"
+        log_warning "Failed to create GRUB EFI binary, skipping UEFI boot"
+        rm -f "$EFI_IMG"
     fi
 else
-    log_warning "grub-mkstandalone not available, UEFI boot may not work"
+    log_warning "grub-mkstandalone not available, skipping UEFI boot"
 fi
 
 # ==================== Step 7: Build final ISO ====================
@@ -513,42 +490,64 @@ else
     log_warning "UEFI boot image missing, creating BIOS-only ISO"
 fi
 
+# Find isohdpfx.bin
+ISOHDPFX=""
+for path in /usr/share/syslinux /usr/lib/syslinux; do
+    if [ -f "$path/isohdpfx.bin" ]; then
+        ISOHDPFX="$path/isohdpfx.bin"
+        break
+    fi
+done
+
 # Build ISO with xorriso
 log_info "Building ISO with xorriso..."
 if command -v xorriso >/dev/null 2>&1; then
-    xorriso -as mkisofs \
-        -volid "OPENWRT_INSTALL" \
+    XORRISO_CMD="xorriso -as mkisofs \
+        -volid 'OPENWRT_INSTALL' \
         -full-iso9660-filenames \
         -iso-level 3 \
-        -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
-        -c boot/syslinux/boot.cat \
-        -b boot/syslinux/isolinux.bin \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
-        $UEFI_OPTIONS \
-        -o "$ISO_PATH" \
-        "$ISO_DIR" 2>&1 | tee "$WORK_DIR/iso.log"
+        -output '$ISO_PATH'"
     
-    ISO_EXIT=$?
+    # Add MBR if available
+    if [ -n "$ISOHDPFX" ]; then
+        XORRISO_CMD="$XORRISO_CMD -isohybrid-mbr '$ISOHDPFX'"
+    fi
     
-    if [ $ISO_EXIT -eq 0 ] && [ -f "$ISO_PATH" ]; then
+    # Add BIOS boot if available
+    if [ -f "$ISO_DIR/boot/syslinux/isolinux.bin" ]; then
+        XORRISO_CMD="$XORRISO_CMD \
+            -c boot/syslinux/boot.cat \
+            -b boot/syslinux/isolinux.bin \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table"
+    fi
+    
+    # Add UEFI boot if available
+    if [ -n "$UEFI_OPTIONS" ]; then
+        XORRISO_CMD="$XORRISO_CMD $UEFI_OPTIONS"
+    fi
+    
+    XORRISO_CMD="$XORRISO_CMD '$ISO_DIR'"
+    
+    # Execute command
+    eval $XORRISO_CMD 2>&1 | tee "$WORK_DIR/iso.log"
+    
+    if [ -f "$ISO_PATH" ]; then
         ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
         log_success "ISO created successfully: $ISO_PATH ($ISO_SIZE)"
     else
-        log_error "ISO creation failed with exit code $ISO_EXIT"
-        log_info "ISO build log:"
-        cat "$WORK_DIR/iso.log"
+        log_error "ISO creation failed"
+        log_info "Trying simpler method..."
         
-        # Try alternative method
-        log_info "Trying alternative ISO creation method..."
-        if command -v genisoimage >/dev/null 2>&1; then
-            genisoimage -volid "OPENWRT_INSTALL" \
-                -o "$ISO_PATH" \
-                "$ISO_DIR" && \
-            log_success "ISO created with genisoimage" || \
-            log_error "genisoimage also failed"
-        fi
+        # Try simpler method
+        xorriso -as mkisofs \
+            -volid "OPENWRT_INSTALL" \
+            -o "$ISO_PATH" \
+            "$ISO_DIR" 2>/dev/null || {
+            log_error "All ISO creation methods failed"
+            exit 1
+        }
     fi
 else
     log_error "xorriso not found"
@@ -582,55 +581,37 @@ if [ -f "$ISO_PATH" ]; then
     if [ -f "$ISO_DIR/EFI/BOOT/efiboot.img" ]; then
         echo "  ✓ UEFI boot"
     else
-        echo "  ✗ UEFI boot (missing efiboot.img)"
+        echo "  ✗ UEFI boot"
     fi
     echo ""
     
-    echo "Installation Process:"
-    echo "  1. Create bootable USB: sudo dd if=$ISO_NAME of=/dev/sdX bs=4M status=progress"
-    echo "  2. Boot from USB (BIOS or UEFI)"
+    echo "Installation Steps:"
+    echo "  1. sudo dd if=$ISO_NAME of=/dev/sdX bs=4M status=progress"
+    echo "  2. Boot from USB"
     echo "  3. Select 'Install OpenWRT'"
-    echo "  4. Enter target disk (e.g., sda)"
+    echo "  4. Enter disk (e.g., sda)"
     echo "  5. Type 'YES' to confirm"
-    echo "  6. Wait for installation to complete"
-    echo "  7. System will reboot automatically"
+    echo "  6. Wait for completion"
+    echo "  7. System reboots automatically"
     echo ""
     
-    # Create detailed build info
+    # Create build info
     cat > "$OUTPUT_DIR/build-info.txt" << EOF
-OpenWRT Alpine Installer ISO - Build Report
-===========================================
-Build date:      $(date)
-Build host:      $(uname -a)
+OpenWRT Alpine Installer ISO
+============================
+Build date: $(date)
+Image: $(basename "$OPENWRT_IMG") ($IMG_SIZE)
+ISO: $ISO_NAME ($ISO_SIZE)
+Kernel: $KERNEL_SIZE
+Initramfs: $INITRD_SIZE
 
-Input Files:
-  OpenWRT image: $(basename "$OPENWRT_IMG") ($IMG_SIZE)
-  Kernel:        $(file "$ISO_DIR/boot/vmlinuz" 2>/dev/null | cut -d: -f2- | sed 's/^ //')
-  Kernel size:   $KERNEL_SIZE
-  Initramfs:     $INITRD_SIZE
+Boot support:
+  BIOS: $(if [ -f "$ISO_DIR/boot/syslinux/isolinux.bin" ]; then echo "Yes"; else echo "No"; fi)
+  UEFI: $(if [ -f "$ISO_DIR/EFI/BOOT/efiboot.img" ]; then echo "Yes"; else echo "No"; fi)
 
-Output:
-  ISO file:      $ISO_NAME ($ISO_SIZE)
-  MD5 checksum:  $(md5sum "$ISO_PATH" 2>/dev/null | awk '{print $1}' || echo "N/A")
-
-Boot Configuration:
-  BIOS boot:     $(if [ -f "$ISO_DIR/boot/syslinux/isolinux.bin" ]; then echo "Available"; else echo "Not available"; fi)
-  UEFI boot:     $(if [ -f "$ISO_DIR/EFI/BOOT/efiboot.img" ]; then echo "Available"; else echo "Not available"; fi)
-  Boot timeout:  30 seconds (BIOS), 5 seconds (UEFI)
-
-Installation Notes:
-  - The installer will display available disks
-  - Enter the disk name (e.g., sda, nvme0n1)
-  - Type 'YES' (uppercase) to confirm installation
-  - Installation will erase all data on the target disk
-  - Progress is shown during image writing
-  - System reboots automatically after installation
-
-Troubleshooting:
-  - If no disks are shown, check if system has storage devices
-  - If installation fails, try different disk or check image integrity
-  - For emergency shell, select 'Emergency Shell' from boot menu
-
+Usage:
+  dd if=$ISO_NAME of=/dev/sdX bs=4M
+  sync
 EOF
     
     log_success "Build completed successfully!"
