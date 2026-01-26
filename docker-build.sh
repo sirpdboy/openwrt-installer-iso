@@ -7,23 +7,23 @@ echo "Building OpenWRT ISO with Alpine in Docker..."
 echo "============================================="
 
 # Check input
-IMG="$1"
-ISO="${2:-openwrt-installer.iso}"
-
+IMG="${1:-/mnt/openwrt.img}"
+ISO="${3:-openwrt-autoinstall.iso}"
+OUTPUT_DIR="${2:-/output}"
 if [ ! -f "$IMG" ]; then
     echo "Usage: $0 <openwrt.img> [output.iso]"
     exit 1
 fi
 
 echo "Input: $IMG ($(ls -lh "$IMG" | awk '{print $5}'))"
-echo "Output: $ISO"
+echo "Output: $(pwd)/$(OUTPUT_DIR)/$ISO"
 echo ""
 
 # Use Alpine container but install packages manually
 echo "1. Starting Alpine container..."
 docker run --rm -it \
     -v "$(pwd)/$IMG:/build/openwrt.img:ro" \
-    -v "$(pwd):/output" \
+    -v "$(pwd)/$(OUTPUT_DIR):/output" \
     alpine:3.20 \
     sh -c "
         # Set up repositories
