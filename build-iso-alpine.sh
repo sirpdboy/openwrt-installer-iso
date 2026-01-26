@@ -1,11 +1,11 @@
 #!/bin/ash
 # OpenWRT Alpine Installer ISO Builder
-# 支持BIOS/UEFI双引导
-# 作者：基于Alpine Linux
+# Supports BIOS/UEFI dual boot
+# Based on Alpine Linux
 
 set -e
 
-# ==================== 配置参数 ====================
+# ==================== Configuration ====================
 OPENWRT_IMG="${1:-/mnt/ezopwrt.img}"
 ISO_NAME="${2:-openwrt-alpine-installer.iso}"
 WORK_DIR="/tmp/openwrt_alpine_build_$(date +%s)"
@@ -13,64 +13,64 @@ OUTPUT_DIR="/output"
 CHROOT_DIR="$WORK_DIR/alpine_root"
 ISO_FILE="$OUTPUT_DIR/$ISO_NAME"
 
-# ==================== 颜色定义 ====================
+# ==================== Color Definitions ====================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# ==================== 日志函数 ====================
+# ==================== Log Functions ====================
 log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# ==================== 检查输入文件 ====================
+# ==================== Check Prerequisites ====================
 check_prerequisites() {
-    log_info "检查依赖和输入文件..."
+    log_info "Checking dependencies and input files..."
     
-    # 检查OpenWRT镜像
+    # Check OpenWRT image
     if [ ! -f "$OPENWRT_IMG" ]; then
-        log_error "未找到OpenWRT镜像: $OPENWRT_IMG"
+        log_error "OpenWRT image not found: $OPENWRT_IMG"
         exit 1
     fi
     
-    # 安装必要工具
+    # Install required tools
     apk add --no-cache alpine-sdk xorriso syslinux grub grub-efi mtools dosfstools \
         squashfs-tools parted e2fsprogs pv dialog coreutils findutils grep
     
-    # 创建工作目录
+    # Create working directories
     rm -rf "$WORK_DIR"
     mkdir -p "$WORK_DIR" "$CHROOT_DIR" "$OUTPUT_DIR"
     mkdir -p "$WORK_DIR/iso/boot/grub"
     mkdir -p "$WORK_DIR/iso/EFI/BOOT"
     
-    log_success "环境检查完成"
+    log_success "Environment check completed"
 }
 
-# ==================== 创建Alpine基础系统 ====================
+# ==================== Create Alpine Base System ====================
 create_alpine_base() {
-    log_info "创建Alpine Linux基础系统..."
+    log_info "Creating Alpine Linux base system..."
     
-    # 设置Alpine源
+    # Set Alpine repositories
     cat > /etc/apk/repositories << EOF
 http://dl-cdn.alpinelinux.org/alpine/v3.19/main
 http://dl-cdn.alpinelinux.org/alpine/v3.19/community
 EOF
     
-    # 使用apk工具创建最小系统
+    # Create minimal system using apk
     apk --root "$CHROOT_DIR" --initdb add alpine-base busybox \
         syslinux grub-bios grub-efi dosfstools mtools parted \
         e2fsprogs sfdisk bash dialog pv
     
-    # 创建基本目录结构
+    # Create basic directory structure
     mkdir -p "$CHROOT_DIR"/{dev,proc,sys,tmp,run,var}
     mount -t proc proc "$CHROOT_DIR/proc"
     mount -t sysfs sysfs "$CHROOT_DIR/sys"
     mount -o bind /dev "$CHROOT_DIR/dev"
     
-    # 配置系统
+    # Configure system
     cat > "$CHROOT_DIR/etc/inittab" << 'INITTAB'
 ::sysinit:/sbin/openrc sysinit
 ::sysinit:/sbin/openrc boot
@@ -91,7 +91,7 @@ ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100
 ::shutdown:/sbin/openrc shutdown
 INITTAB
 
-    # 配置网络
+    # Configure network
     cat > "$CHROOT_DIR/etc/network/interfaces" << 'NETWORK'
 auto lo
 iface lo inet loopback
@@ -100,103 +100,102 @@ auto eth0
 iface eth0 inet dhcp
 NETWORK
 
-    # 配置DNS
+    # Configure DNS
     echo "nameserver 8.8.8.8" > "$CHROOT_DIR/etc/resolv.conf"
     echo "nameserver 1.1.1.1" >> "$CHROOT_DIR/etc/resolv.conf"
     
-    log_success "Alpine基础系统创建完成"
+    log_success "Alpine base system created"
 }
 
-# ==================== 创建安装系统 ====================
+# ==================== Create Installer System ====================
 create_installer_system() {
-    log_info "创建安装系统..."
+    log_info "Creating installer system..."
     
-    # 复制OpenWRT镜像
+    # Copy OpenWRT image
     cp "$OPENWRT_IMG" "$CHROOT_DIR/openwrt.img"
     
-    # 创建启动脚本
+    # Create init script
     cat > "$CHROOT_DIR/sbin/init" << 'INIT_SCRIPT'
 #!/bin/ash
 # Alpine init script for OpenWRT installer
 
-# 挂载必要的文件系统
+# Mount essential filesystems
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
 mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts
 
-# 设置控制台
+# Setup console
 echo "Setting up console..."
 exec < /dev/tty1 > /dev/tty1 2>&1
 chvt 1
 
-# 显示欢迎信息
+# Show welcome message
 clear
-cat << "WELCOME"
-╔═══════════════════════════════════════════════════════╗
-║       OpenWRT Alpine Installer System                 ║
-║        支持 BIOS 和 UEFI 双引导                      ║
-╚═══════════════════════════════════════════════════════╝
-
-系统启动中，请稍候...
-WELCOME
+echo "========================================================"
+echo "    OpenWRT Alpine Installer System"
+echo "    Supports BIOS and UEFI dual boot"
+echo "========================================================"
+echo ""
+echo "System starting up, please wait..."
+echo ""
 
 sleep 2
 
-# 检查OpenWRT镜像
+# Check OpenWRT image
 if [ ! -f "/openwrt.img" ]; then
     clear
     echo ""
-    echo "❌ 错误: 未找到OpenWRT镜像文件"
+    echo "ERROR: OpenWRT image not found"
     echo ""
-    echo "镜像文件应位于: /openwrt.img"
+    echo "Image file should be at: /openwrt.img"
     echo ""
-    echo "按回车键进入shell..."
+    echo "Press Enter to enter shell..."
     read
     exec /bin/ash
 fi
 
-# 启动安装程序
+# Start installer
 exec /sbin/openwrt-installer
 INIT_SCRIPT
     chmod +x "$CHROOT_DIR/sbin/init"
     
-    # 创建OpenWRT安装脚本
+    # Create OpenWRT installer script
     cat > "$CHROOT_DIR/sbin/openwrt-installer" << 'INSTALLER_SCRIPT'
 #!/bin/ash
-# OpenWRT安装程序主脚本
+# OpenWRT installer main script
 
-# 清理屏幕
+# Clear screen
 clear
 
-# 显示标题
+# Show header
 show_header() {
     clear
-    echo "╔══════════════════════════════════════════════════════════╗"
-    echo "║              OpenWRT Alpine 安装程序                     ║"
-    echo "╚══════════════════════════════════════════════════════════╝"
+    echo "========================================================"
+    echo "            OpenWRT Alpine Installer"
+    echo "========================================================"
     echo ""
 }
 
-# 获取磁盘列表
+# Get disk list
 get_disks() {
     show_header
-    echo "扫描可用磁盘..."
+    echo "Scanning available disks..."
     echo ""
     
     local index=1
     for disk in /sys/block/*; do
         local disk_name=$(basename "$disk")
         
-        # 排除虚拟设备
+        # Exclude virtual devices
         case "$disk_name" in
             loop*|ram*|fd*|sr*)
                 continue
                 ;;
         esac
         
-        # 获取磁盘信息
+        # Get disk info
         if [ -f "$disk/device/model" ]; then
             local model=$(cat "$disk/device/model" 2>/dev/null | tr -d '\n')
         else
@@ -219,106 +218,106 @@ get_disks() {
     TOTAL_DISKS=$((index - 1))
 }
 
-# 安装OpenWRT
+# Install OpenWRT
 install_openwrt() {
     local target_disk="$1"
     
     show_header
-    echo "目标磁盘: $target_disk"
-    echo "镜像大小: $(ls -lh /openwrt.img | awk '{print $5}')"
+    echo "Target disk: $target_disk"
+    echo "Image size: $(ls -lh /openwrt.img | awk '{print $5}')"
     echo ""
-    echo "⚠️  警告: 这将清除 $target_disk 上的所有数据！"
+    echo "WARNING: This will ERASE ALL DATA on $target_disk!"
     echo ""
-    echo "请确认以下信息:"
-    echo "1. 已备份重要数据"
-    echo "2. 目标磁盘正确"
+    echo "Please confirm:"
+    echo "1. You have backed up important data"
+    echo "2. The target disk is correct"
     echo ""
     
-    echo -n "输入 'YES' 继续安装: "
+    echo -n "Type 'YES' to continue: "
     read confirm
     
     if [ "$confirm" != "YES" ]; then
-        echo "安装已取消"
+        echo "Installation cancelled"
         sleep 2
         return 1
     fi
     
-    # 开始安装
+    # Start installation
     clear
     show_header
-    echo "正在安装OpenWRT到 $target_disk ..."
-    echo "这可能需要几分钟，请稍候..."
+    echo "Installing OpenWRT to $target_disk ..."
+    echo "This may take several minutes. Please wait..."
     echo ""
     
-    # 使用dd写入镜像
+    # Write image using dd
     if command -v pv >/dev/null 2>&1; then
-        # 使用pv显示进度
+        # Use pv for progress
         total_size=$(stat -c%s /openwrt.img)
         pv -s $total_size /openwrt.img | dd of="$target_disk" bs=4M 2>/dev/null
     else
-        # 简单进度显示
-        echo "正在写入镜像..."
+        # Simple progress display
+        echo "Writing image..."
         dd if=/openwrt.img of="$target_disk" bs=4M status=progress 2>&1
     fi
     
-    # 检查结果
+    # Check result
     if [ $? -eq 0 ]; then
         sync
         echo ""
-        echo "✅ OpenWRT安装成功！"
+        echo "SUCCESS: OpenWRT installed successfully!"
         echo ""
-        echo "下一步操作:"
-        echo "1. 移除安装介质"
-        echo "2. 从 $target_disk 启动"
-        echo "3. OpenWRT将自动启动"
+        echo "Next steps:"
+        echo "1. Remove installation media"
+        echo "2. Boot from $target_disk"
+        echo "3. OpenWRT will start automatically"
         echo ""
         
-        # 倒计时重启
-        echo "系统将在10秒后重启..."
+        # Countdown reboot
+        echo "System will reboot in 10 seconds..."
         for i in $(seq 10 -1 1); do
-            echo -ne "重启倒计时: ${i}秒...\r"
+            echo -ne "Rebooting in ${i} seconds...\r"
             sleep 1
         done
         
-        echo -e "\n正在重启..."
+        echo -e "\nRebooting now..."
         reboot -f
     else
         echo ""
-        echo "❌ 安装失败！"
+        echo "ERROR: Installation failed!"
         echo ""
-        echo "可能的原因:"
-        echo "1. 磁盘可能被挂载或使用中"
-        echo "2. 磁盘空间不足"
-        echo "3. 磁盘损坏"
+        echo "Possible reasons:"
+        echo "1. Disk may be mounted or in use"
+        echo "2. Not enough disk space"
+        echo "3. Disk is damaged"
         echo ""
-        echo "按回车键返回..."
+        echo "Press Enter to return..."
         read
     fi
 }
 
-# 主循环
+# Main loop
 main_menu() {
     while true; do
         get_disks
         
         if [ $TOTAL_DISKS -eq 0 ]; then
             echo ""
-            echo "❌ 未检测到磁盘！"
+            echo "ERROR: No disks detected!"
             echo ""
-            echo "按回车键重新扫描..."
+            echo "Press Enter to rescan..."
             read
             continue
         fi
         
         echo ""
-        echo "══════════════════════════════════════════════════════════"
-        echo "请选择目标磁盘 (1-$TOTAL_DISKS):"
-        echo -n "输入磁盘编号或 'q' 退出: "
+        echo "--------------------------------------------------------"
+        echo "Select target disk (1-$TOTAL_DISKS):"
+        echo -n "Enter disk number or 'q' to quit: "
         read choice
         
         case "$choice" in
             [Qq])
-                echo "退出安装程序"
+                echo "Exiting installer"
                 exec /bin/ash
                 ;;
             [0-9]*)
@@ -326,44 +325,44 @@ main_menu() {
                     eval "target_disk=\"\$DISK_$choice\""
                     install_openwrt "$target_disk"
                 else
-                    echo "无效的选择"
+                    echo "Invalid selection"
                     sleep 2
                 fi
                 ;;
             *)
-                echo "无效的输入"
+                echo "Invalid input"
                 sleep 2
                 ;;
         esac
     done
 }
 
-# 启动主菜单
+# Start main menu
 main_menu
 INSTALLER_SCRIPT
     chmod +x "$CHROOT_DIR/sbin/openwrt-installer"
     
-    # 创建fstab
+    # Create fstab
     cat > "$CHROOT_DIR/etc/fstab" << 'FSTAB'
 tmpfs           /tmp            tmpfs   defaults        0       0
 tmpfs           /var/log        tmpfs   defaults        0       0
 tmpfs           /var/tmp        tmpfs   defaults        0       0
 FSTAB
     
-    # 清理不必要的文件
+    # Cleanup unnecessary files
     rm -rf "$CHROOT_DIR/var/cache/apk/*"
     
-    log_success "安装系统创建完成"
+    log_success "Installer system created"
 }
 
-# ==================== 创建引导配置 ====================
+# ==================== Create Boot Configuration ====================
 create_boot_config() {
-    log_info "创建引导配置..."
+    log_info "Creating boot configuration..."
     
-    # 1. 复制内核和initramfs
+    # 1. Copy kernel
     cp "$CHROOT_DIR/boot/vmlinuz-lts" "$WORK_DIR/iso/boot/vmlinuz"
     
-    # 创建initramfs（简化版）
+    # Create simple init script
     cat > "$CHROOT_DIR/init" << 'MINI_INIT'
 #!/bin/sh
 # Minimal init for OpenWRT installer
@@ -380,10 +379,10 @@ exec /sbin/openwrt-installer
 MINI_INIT
     chmod +x "$CHROOT_DIR/init"
     
-    # 创建简单的initramfs
+    # Create simple initramfs
     (cd "$CHROOT_DIR" && find . | cpio -o -H newc | gzip -9 > "$WORK_DIR/iso/boot/initrd.img") 2>/dev/null
     
-    # 2. 创建SYSLINUX配置（BIOS引导）
+    # 2. Create SYSLINUX config (BIOS boot)
     cat > "$WORK_DIR/iso/boot/syslinux.cfg" << 'SYSLINUX_CFG'
 DEFAULT openwrt
 TIMEOUT 50
@@ -396,13 +395,13 @@ LABEL openwrt
     APPEND console=tty0 console=ttyS0,115200
 SYSLINUX_CFG
 
-    # 复制SYSLINUX文件
+    # Copy SYSLINUX files
     cp /usr/share/syslinux/isolinux.bin "$WORK_DIR/iso/boot/"
     cp /usr/share/syslinux/ldlinux.c32 "$WORK_DIR/iso/boot/"
     cp /usr/share/syslinux/libutil.c32 "$WORK_DIR/iso/boot/"
     cp /usr/share/syslinux/menu.c32 "$WORK_DIR/iso/boot/"
     
-    # 3. 创建GRUB配置（UEFI引导）
+    # 3. Create GRUB config (UEFI boot)
     cat > "$WORK_DIR/iso/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=5
 set default=0
@@ -413,64 +412,64 @@ menuentry "Install OpenWRT (UEFI)" {
 }
 GRUB_CFG
 
-    log_success "引导配置创建完成"
+    log_success "Boot configuration created"
 }
 
-# ==================== 创建UEFI引导文件 ====================
+# ==================== Create UEFI Boot Files ====================
 create_uefi_boot() {
-    log_info "创建UEFI引导文件..."
+    log_info "Creating UEFI boot files..."
     
-    # 创建EFI目录结构
+    # Create EFI directory structure
     mkdir -p "$WORK_DIR/efi/EFI/BOOT"
     
-    # 使用grub-mkimage创建UEFI引导文件
+    # Create UEFI boot file using grub-mkimage
     grub-mkimage \
         -o "$WORK_DIR/efi/EFI/BOOT/bootx64.efi" \
         -p /boot/grub \
         -O x86_64-efi \
         boot linux search normal configfile part_gpt part_msdos fat ext2 iso9660
     
-    # 复制GRUB模块
+    # Copy GRUB modules
     mkdir -p "$WORK_DIR/efi/boot/grub/x86_64-efi"
     cp -r /usr/lib/grub/x86_64-efi/* "$WORK_DIR/efi/boot/grub/x86_64-efi/" 2>/dev/null || true
     
-    # 复制grub.cfg到EFI分区
+    # Copy grub.cfg to EFI partition
     cp "$WORK_DIR/iso/boot/grub/grub.cfg" "$WORK_DIR/efi/boot/grub/"
     
-    # 创建EFI引导镜像
+    # Create EFI boot image
     dd if=/dev/zero of="$WORK_DIR/efiboot.img" bs=1M count=32
     mkfs.vfat -F 32 "$WORK_DIR/efiboot.img"
     
-    # 挂载并复制文件
+    # Mount and copy files
     mount_point="$WORK_DIR/efi_mount"
     mkdir -p "$mount_point"
     
-    # 尝试挂载
+    # Try to mount
     mount -o loop "$WORK_DIR/efiboot.img" "$mount_point" 2>/dev/null || {
-        # 如果挂载失败，使用mcopy
+        # If mount fails, use mcopy
         mcopy -i "$WORK_DIR/efiboot.img" -s "$WORK_DIR/efi/EFI" ::
         mcopy -i "$WORK_DIR/efiboot.img" -s "$WORK_DIR/efi/boot" ::
     } && {
-        # 如果挂载成功，直接复制
+        # If mount successful, copy directly
         cp -r "$WORK_DIR/efi/EFI" "$mount_point/"
         cp -r "$WORK_DIR/efi/boot" "$mount_point/"
         umount "$mount_point"
     }
     
-    # 清理挂载点
+    # Cleanup mount point
     rm -rf "$mount_point"
     
-    # 复制到ISO目录
+    # Copy to ISO directory
     cp "$WORK_DIR/efiboot.img" "$WORK_DIR/iso/EFI/BOOT/"
     
-    log_success "UEFI引导文件创建完成"
+    log_success "UEFI boot files created"
 }
 
-# ==================== 构建ISO镜像 ====================
+# ==================== Build ISO Image ====================
 build_iso() {
-    log_info "构建ISO镜像..."
+    log_info "Building ISO image..."
     
-    # 创建ISO
+    # Create ISO
     xorriso -as mkisofs \
         -volid "OPENWRT_INSTALL" \
         -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
@@ -486,65 +485,65 @@ build_iso() {
         -output "$ISO_FILE" \
         "$WORK_DIR/iso"
     
-    # 检查ISO是否创建成功
+    # Check if ISO was created successfully
     if [ -f "$ISO_FILE" ]; then
         ISO_SIZE=$(ls -lh "$ISO_FILE" | awk '{print $5}')
-        log_success "✅ ISO创建成功: $ISO_FILE ($ISO_SIZE)"
+        log_success "SUCCESS: ISO created: $ISO_FILE ($ISO_SIZE)"
         
-        # 显示构建信息
+        # Show build information
         echo ""
-        echo "══════════════════════════════════════════════════════════"
-        echo "OpenWRT Alpine Installer ISO 构建完成"
-        echo "══════════════════════════════════════════════════════════"
+        echo "========================================================"
+        echo "OpenWRT Alpine Installer ISO Build Complete"
+        echo "========================================================"
         echo ""
-        echo "📦 输出文件: $ISO_FILE"
-        echo "📏 文件大小: $ISO_SIZE"
+        echo "Output file: $ISO_FILE"
+        echo "File size: $ISO_SIZE"
         echo ""
-        echo "✅ 引导支持:"
-        echo "   - BIOS (Legacy) 引导"
-        echo "   - UEFI 引导"
+        echo "Boot support:"
+        echo "  - BIOS (Legacy) boot"
+        echo "  - UEFI boot"
         echo ""
-        echo "🚀 使用方法:"
-        echo "   1. 制作启动U盘:"
-        echo "      dd if=\"$ISO_FILE\" of=/dev/sdX bs=4M status=progress"
-        echo "   2. 从U盘启动"
-        echo "   3. 选择安装OpenWRT"
-        echo "   4. 选择目标磁盘"
-        echo "   5. 等待安装完成"
+        echo "Usage:"
+        echo "  1. Create bootable USB:"
+        echo "     dd if=\"$ISO_FILE\" of=/dev/sdX bs=4M status=progress"
+        echo "  2. Boot from USB"
+        echo "  3. Select Install OpenWRT"
+        echo "  4. Choose target disk"
+        echo "  5. Wait for installation to complete"
         echo ""
-        echo "⚠️  注意: 安装会清除目标磁盘的所有数据！"
-        echo "══════════════════════════════════════════════════════════"
+        echo "WARNING: Installation will erase all data on target disk!"
+        echo "========================================================"
     else
-        log_error "ISO创建失败"
+        log_error "ISO creation failed"
         exit 1
     fi
 }
 
-# ==================== 清理工作 ====================
+# ==================== Cleanup ====================
 cleanup() {
-    log_info "清理临时文件..."
+    log_info "Cleaning up temporary files..."
     
-    # 卸载chroot目录
+    # Unmount chroot directories
     umount "$CHROOT_DIR/proc" 2>/dev/null || true
     umount "$CHROOT_DIR/sys" 2>/dev/null || true
     umount "$CHROOT_DIR/dev" 2>/dev/null || true
     
-    # 删除工作目录
+    # Remove working directory
     rm -rf "$WORK_DIR"
     
-    log_success "清理完成"
+    log_success "Cleanup completed"
 }
 
-# ==================== 主执行流程 ====================
+# ==================== Main Execution Flow ====================
 main() {
     echo ""
-    echo "══════════════════════════════════════════════════════════"
+    echo "========================================================"
     echo "    OpenWRT Alpine Installer ISO Builder"
-    echo "    支持 BIOS 和 UEFI 双引导"
-    echo "══════════════════════════════════════════════════════════"
+    echo "    Supports BIOS and UEFI dual boot"
+    echo "========================================================"
     echo ""
     
-    # 执行所有步骤
+    # Execute all steps
     check_prerequisites
     create_alpine_base
     create_installer_system
@@ -554,9 +553,9 @@ main() {
     cleanup
     
     echo ""
-    log_success "🎉 全部构建任务完成！"
+    log_success "ALL build tasks completed successfully!"
     echo ""
 }
 
-# 执行主函数
+# Execute main function
 main "$@"
