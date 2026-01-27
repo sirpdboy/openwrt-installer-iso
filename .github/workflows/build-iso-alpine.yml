@@ -186,52 +186,65 @@ jobs:
           -v "$(pwd)/build-iso-alpine.sh:/build-iso-alpine.sh:ro" \
           alpine:${ALPINE_VERSION} \
           /bin/sh -c "
-          # 配置基础环境
-          echo '🚀 启动Alpine Linux ${ALPINE_VERSION} 构建环境'
-          
-          # 更新并安装必要工具
-          echo '📦 更新包列表...'
-          apk update --no-cache
-          
-          echo '🔧 安装构建工具...'
-          apk add --no-cache \
-              bash \
-              xorriso \
-              syslinux \
-              grub \
-              grub-efi \
-              grub-bios \
-              mtools \
-              dosfstools \
-              gzip \
-              cpio \
-              wget \
-              curl \
-              parted \
-              e2fsprogs \
-              pv \
-              dialog \
-              linux-lts \
-              kmod \
-              mkinitfs \
-              busybox \
-              coreutils \
-              findutils \
-              grep \
-              util-linux \
-              jq \
-              ca-certificates
-          
-          echo '✅ 工具安装完成'
-          
-          # 执行构建脚本
-          echo '🏗️  开始构建ISO...'
-          # chmod +x /build-iso-alpine.sh
-          /build-iso-alpine.sh
-          
-          echo '🎉 ISO构建完成'
-          "
+        # 配置基础环境
+        echo '🚀 启动Alpine Linux ${ALPINE_VERSION} 构建环境'
+        # 设置环境
+        export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       
+        # 配置DNS和网络
+        echo 'nameserver 8.8.8.8' > /etc/resolv.conf
+        echo 'nameserver 1.1.1.1' >> /etc/resolv.conf
+      
+        # 🔧 关键修复：禁用APK触发器
+        echo '禁用APK触发器...'
+        mkdir -p /etc/apk/scripts.disabled
+        if [ -d /etc/apk/scripts ]; then
+          mv /etc/apk/scripts/* /etc/apk/scripts.disabled/ 2>/dev/null || true
+        fi
+        # 创建假的触发器脚本
+        mkdir -p /etc/apk/scripts
+        cat > /etc/apk/scripts/.disable-triggers << 'EOF'
+        #!/bin/sh
+        exit 0
+        EOF
+        chmod +x /etc/apk/scripts/.disable-triggers
+      
+        # 将所有已知触发器链接到假的
+        for trigger in grub-2.12-r5 syslinux-6.04_pre1-r15 mkinitfs-3.10.1-r0; do
+          ln -sf .disable-triggers /etc/apk/scripts/\$trigger.trigger 2>/dev/null || true
+        done
+      
+        # 更新并安装工具（使用--no-scripts双重保障）
+        echo '安装构建工具...'
+        apk update --no-cache
+        apk add --no-cache --no-scripts \
+          alpine-sdk \
+          xorriso \
+          syslinux \
+          grub \
+          grub-efi \
+          grub-bios \
+          mtools \
+          dosfstools \
+          squashfs-tools \
+          wget \
+          curl \
+          e2fsprogs \
+          parted \
+          bash \
+          linux-lts \
+          mkinitfs \
+          busybox \
+        coreutils
+
+        echo '✅ 工具安装完成'
+      
+        # 执行构建脚本
+        echo '开始构建ISO...'
+        /build-iso-alpine.sh
+        
+        # apk del --no-cache .build-deps 2>/dev/null || true
+        "
         echo "✅ Docker容器执行完成"
     
     - name: Check ISO file
