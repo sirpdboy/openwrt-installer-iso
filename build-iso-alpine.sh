@@ -103,6 +103,8 @@ fi
 
 log_info "Kernel version: $KERNEL_VERSION"
 
+log_info =======/boot/ pwd: $pwd ====
+ls -l /boot/
 # 1. Copy kernel
 if [ -f "/boot/vmlinuz-lts" ]; then
     cp "/boot/vmlinuz-lts" "$WORK_DIR/vmlinuz"
@@ -122,9 +124,12 @@ else
     fi
 fi
 
-ls -l $WORK_DIR
+
 KERNEL_SIZE=$(ls -lh "$WORK_DIR/vmlinuz" | awk '{print $5}')
 log_info "Kernel size: $KERNEL_SIZE"
+
+log_info =======  WORK_DIR: $WORK_DIR  pwd: $pwd ====
+ls -l $WORK_DIR
 
 # 2. Extract kernel modules for initramfs
 log_info "Extracting kernel modules..."
@@ -154,11 +159,17 @@ else
     log_warning "Kernel modules directory not found, initramfs will be minimal"
 fi
 
+log_info =======/lib/modules/ ====
+ls -l /lib/modules/
+log_info =======$MODULES_DIR/ ====
+ls -l $MODULES_DIR/
+
 # ==================== Step 4: Create complete root filesystem ====================
 log_info "[4/9] Creating complete root filesystem..."
 
 ROOTFS_DIR="$WORK_DIR/rootfs"
 mkdir -p "$ROOTFS_DIR"
+
 
 # Create all directories
 mkdir -p "$ROOTFS_DIR"/{bin,dev,etc,lib,proc,sys,tmp,usr,var,sbin,run,root,mnt,opt,initrd}
@@ -178,29 +189,29 @@ if [ -d "$WORK_DIR/modules/lib/firmware" ]; then
     cp -r "$WORK_DIR/modules/lib/firmware"/* "$ROOTFS_DIR/lib/firmware/" 2>/dev/null || true
 fi
 
-# Create init script - FIXED VERSION with proper console handling
+# Create init script
 cat > "$ROOTFS_DIR/init" << 'INIT_EOF'
 #!/bin/sh
 # Minimal init script for OpenWRT installer
-
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 # Mount essential filesystems
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
-
-# Setup console - IMPORTANT: for early boot messages
-if [ -e /dev/console ]; then
-    exec 0</dev/console
-    exec 1>/dev/console
-    exec 2>/dev/console
-else
-    # Create console if it doesn't exist
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || {
+    echo "Creating device nodes..."
+    mkdir -p /dev
     mknod -m 622 /dev/console c 5 1
     mknod -m 666 /dev/null c 1 3
-    exec 0</dev/console
-    exec 1>/dev/console
-    exec 2>/dev/console
-fi
+    mknod -m 666 /dev/zero c 1 5
+    mknod -m 666 /dev/tty c 5 0
+}
+
+
+# 设置控制台
+exec 0</dev/console
+exec 1>/dev/console
+exec 2>/dev/console
+
 
 # Load essential modules
 echo "Loading kernel modules..."
@@ -497,6 +508,13 @@ cd "$INITRAMFS_DIR"
 find . -print0 | cpio --null -ov --format=newc | gzip -9 > "$ISO_DIR/initrd.img"
 cd "$WORK_DIR"
 
+
+echo "===== $WORK_DIR  ========"
+ls -l "$WORK_DIR"
+
+echo "===== $ISO_DIR  ========"
+ls -l $ISO_DIR
+
 INITRD_SIZE=$(ls -lh "$ISO_DIR/initrd.img" | awk '{print $5}')
 log_success "Initramfs created: $INITRD_SIZE"
 
@@ -507,27 +525,18 @@ log_info "[7/9] Creating BIOS boot configuration..."
 cat > "$ISO_DIR/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
 DEFAULT openwrt
 PROMPT 1
-TIMEOUT 50
+TIMEOUT 10
 UI menu.c32
 
 MENU TITLE OpenWRT Installer
 MENU AUTOBOOT Starting OpenWRT installer in # seconds
 
 LABEL openwrt
-  MENU LABEL Install OpenWRT
+  MENU LABEL ^Install OpenWRT
   MENU DEFAULT
   KERNEL /vmlinuz
-  APPEND initrd=/initrd.img console=tty0 console=ttyS0,115200n8 earlyprintk=vga
+  APPEND initrd=/initrd.img console=tty0 quiet
 
-LABEL debug
-  MENU LABEL Debug mode
-  KERNEL /vmlinuz
-  APPEND initrd=/initrd.img console=tty0 console=ttyS0,115200n8 earlyprintk=vga debug
-
-LABEL shell
-  MENU LABEL Emergency shell
-  KERNEL /vmlinuz
-  APPEND initrd=/initrd.img console=tty0 console=ttyS0,115200n8 earlyprintk=vga init=/bin/sh
 ISOLINUX_CFG
 
 # Copy SYSLINUX files
@@ -536,19 +545,13 @@ for file in isolinux.bin ldlinux.c32 libcom32.c32 libutil.c32 menu.c32 vesamenu.
     for path in /usr/share/syslinux /usr/lib/syslinux; do
         if [ -f "$path/$file" ]; then
             cp "$path/$file" "$ISO_DIR/isolinux/"
-            log_info "  Copied $file"
+            log_info " $path/$file Copied : $ISO_DIR/isolinux/"
             break
         fi
     done
 done
 
-# Create memtest option (optional)
-if [ -f /boot/memtest86+ ]; then
-    cp /boot/memtest86+ "$ISO_DIR/isolinux/memtest"
-    echo "LABEL memtest" >> "$ISO_DIR/isolinux/isolinux.cfg"
-    echo "  MENU LABEL Memory test" >> "$ISO_DIR/isolinux/isolinux.cfg"
-    echo "  KERNEL /isolinux/memtest" >> "$ISO_DIR/isolinux/isolinux.cfg"
-fi
+
 
 log_success "BIOS boot configuration created"
 
@@ -561,19 +564,15 @@ set timeout=10
 set default=0
 
 menuentry "Install OpenWRT" {
-    linux /vmlinuz console=tty0 console=ttyS0,115200n8 earlyprintk=vga
+    linux /vmlinuz console=tty0 quiet
     initrd /initrd.img
 }
 
-menuentry "Debug mode" {
-    linux /vmlinuz console=tty0 console=ttyS0,115200n8 earlyprintk=vga debug
-    initrd /initrd.img
-}
 
-menuentry "Emergency shell" {
-    linux /vmlinuz console=tty0 console=ttyS0,115200n8 earlyprintk=vga init=/bin/sh
-    initrd /initrd.img
-}
+    # search --file /vmlinuz --set=root
+    # linux /vmlinuz console=tty0 quiet
+    # initrd /initrd.img
+
 GRUB_CFG
 
 # Create bootx64.efi using grub-mkstandalone
@@ -592,8 +591,10 @@ if command -v grub-mkstandalone >/dev/null 2>&1; then
         --locales="" \
         --themes="" \
         "boot/grub/grub.cfg=$ISO_DIR/boot/grub/grub.cfg"
-	echo "===== $WORK_DIR/efi_boot/EFI/BOOT  ========"
+	log_info "=====grub-mkstandalone: $WORK_DIR/efi_boot/EFI/BOOT  ========"
 	ls $WORK_DIR/efi_boot/EFI/BOOT
+	log_info "=====grub-mkstandalone: $ISO_DIR/boot/grub  ========"
+	ls $ISO_DIR/boot/grub
 elif command -v grub2-mkstandalone >/dev/null 2>&1; then
     grub2-mkstandalone \
         --format=x86_64-efi \
@@ -601,7 +602,9 @@ elif command -v grub2-mkstandalone >/dev/null 2>&1; then
         --modules="part_gpt part_msdos fat ext2 iso9660" \
         "boot/grub/grub.cfg=$ISO_DIR/boot/grub/grub.cfg"
 
-	echo "===== $ISO_DIR/boot/grub  ========"
+	log_info "=====grub2-mkstandalone: $WORK_DIR/efi_boot/EFI/BOOT  ========"
+	ls $WORK_DIR/efi_boot/EFI/BOOT
+	log_info "=====grub2-mkstandalone: $ISO_DIR/boot/grub  ========"
 	ls $ISO_DIR/boot/grub
 fi
 
@@ -610,7 +613,7 @@ if [ -f "$WORK_DIR/efi_boot/EFI/BOOT/bootx64.efi" ]; then
     cp "$WORK_DIR/efi_boot/EFI/BOOT/bootx64.efi" "$ISO_DIR/EFI/BOOT/bootx64.efi"
     log_success "UEFI boot image created"
 
-	echo "===== $WORK_DIR/efi_boot/EFI/BOOT  ========"
+	log_info "===== $WORK_DIR/efi_boot/EFI/BOOT  ========"
 	ls $WORK_DIR/efi_boot/EFI/BOOT
 else
     log_warning "Could not create bootx64.efi, trying alternative..."
@@ -621,11 +624,11 @@ else
         cp /usr/lib/grub/x86_64-efi/monolithic/grubx64.efi "$ISO_DIR/EFI/BOOT/bootx64.efi"
     fi
 
-	echo "===== /usr/lib/grub/x86_64-efi/monolithic  ========"
+	log_info "===== /usr/lib/grub/x86_64-efi/monolithic  ========"
 	ls /usr/lib/grub/x86_64-efi/monolithic
 fi
 
-	echo "===== $ISO_DIR/EFI/BOOT/  ========"
+	log_info "===== $ISO_DIR/EFI/BOOT/  ========"
 	ls $ISO_DIR/EFI/BOOT/
 	
 # Also copy grub.cfg to EFI directory
@@ -643,6 +646,7 @@ ISOHDPFX=""
 for path in /usr/share/syslinux /usr/lib/syslinux; do
     if [ -f "$path/isohdpfx.bin" ]; then
         ISOHDPFX="$path/isohdpfx.bin"
+        log_info "ISOHDPFX found:$path/isohdpfx.bin"
         break
     fi
 done
