@@ -196,56 +196,100 @@ ULTRA_INIT
 
     chmod +x "${initrd_dir}/init"
     
-    # 获取busybox
+    # 获取busybox - 修复路径问题
     print_step "获取BusyBox..."
+    
+    # 确保busybox已安装
     if ! command -v busybox >/dev/null 2>&1; then
         print_warning "安装BusyBox..."
         apk add --no-cache busybox 2>/dev/null || true
     fi
     
-    BUSYBOX_PATH=`command -v busybox`
+    # 获取busybox的绝对路径
+    BUSYBOX_PATH=$(command -v busybox)
     if [ -z "$BUSYBOX_PATH" ]; then
+        # 如果which失败，尝试直接找
+        BUSYBOX_PATH="/bin/busybox"
+        if [ ! -f "$BUSYBOX_PATH" ]; then
+            BUSYBOX_PATH="/usr/bin/busybox"
+        fi
+    fi
+    
+    # 检查是否是绝对路径
+    if [[ "$BUSYBOX_PATH" != /* ]]; then
+        # 如果是相对路径，转换为绝对路径
+        BUSYBOX_PATH="$(cd $(dirname "$BUSYBOX_PATH") && pwd)/$(basename "$BUSYBOX_PATH")"
+    fi
+    
+    if [ -f "$BUSYBOX_PATH" ]; then
+        print_info "BusyBox路径: $BUSYBOX_PATH"
         cp "$BUSYBOX_PATH" "${initrd_dir}/bin/busybox"
         chmod +x "${initrd_dir}/bin/busybox"
         
         # 创建绝对最少的符号链接
         cd "${initrd_dir}"
-        ./bin/busybox --install -s ./bin
         
-        # 删除99%的applet，只保留必需的
-        print_step "精简BusyBox..."
-        KEEP_APPLETS="ash cat chmod cp dd echo grep ls mkdir mknod mount mv rm sh sleep sync umount"
-        find ./bin -type l | while read link; do
-            applet=$(basename "$link")
-            if ! echo "$KEEP_APPLETS" | grep -qw "$applet"; then
-                rm -f "$link"
-            fi
-        done
+        # 方法1: 使用busybox的--install
+        ./bin/busybox --install -s ./bin 2>/dev/null || {
+            # 方法2: 手动创建符号链接
+            print_warning "使用手动方式创建符号链接"
+            KEEP_APPLETS="sh ash cat echo ls mkdir mount umount dd cp mv rm grep sleep sync reboot"
+            for applet in $KEEP_APPLETS; do
+                ln -sf busybox ./bin/$applet 2>/dev/null || true
+            done
+        }
         
         # 确保sh存在
         ln -sf busybox ./bin/sh 2>/dev/null || true
+        
     else
-        print_error "无法获取BusyBox"
-        exit 1
+        print_error "无法找到BusyBox"
+        print_info "尝试从包管理器安装..."
+        apk add --no-cache busybox-static 2>/dev/null || apk add --no-cache busybox 2>/dev/null
+        
+        BUSYBOX_PATH=$(command -v busybox)
+        if [ -f "$BUSYBOX_PATH" ]; then
+            cp "$BUSYBOX_PATH" "${initrd_dir}/bin/busybox"
+            chmod +x "${initrd_dir}/bin/busybox"
+            cd "${initrd_dir}"
+            ln -sf busybox ./bin/sh
+        else
+            print_error "BusyBox安装失败"
+            exit 1
+        fi
     fi
     
     # 复制最小的库文件
     print_step "复制最小库文件..."
-    if [ -f "/lib/ld-musl-x86_64.so.1" ]; then
-        cp /lib/ld-musl-x86_64.so.1 "${initrd_dir}/lib/"
-        # 只复制busybox依赖的库
-        ldd "${initrd_dir}/bin/busybox" 2>/dev/null | grep "=> /lib" | awk '{print $3}' | \
-            xargs -I {} cp {} "${initrd_dir}/lib/" 2>/dev/null || true
+    
+    # 检查busybox依赖的库
+    if command -v ldd >/dev/null 2>&1 && [ -f "${initrd_dir}/bin/busybox" ]; then
+        ldd "${initrd_dir}/bin/busybox" 2>/dev/null | grep "=> /" | awk '{print $3}' | \
+            while read lib; do
+                if [ -f "$lib" ]; then
+                    cp "$lib" "${initrd_dir}/lib/" 2>/dev/null || true
+                fi
+            done
+    else
+        # 复制常见库文件
+        for lib in /lib/ld-musl-x86_64.so.1 /lib64/ld-linux-x86-64.so.2 /lib/libc.so /lib/libm.so; do
+            if [ -f "$lib" ]; then
+                cp "$lib" "${initrd_dir}/lib/" 2>/dev/null || true
+            fi
+        done
     fi
     
     # 复制OpenWRT镜像到initramfs（可选，用于更快启动）
     print_step "优化镜像处理..."
-    if [ $(stat -c%s "${WORK_DIR}/iso/img/openwrt.img" 2>/dev/null || echo 0) -lt $((100*1024*1024)) ]; then
-        # 如果镜像小于100MB，放入initramfs
-        cp "${WORK_DIR}/iso/img/openwrt.img" "${initrd_dir}/img/"
-        print_info "镜像已内置到initramfs"
-    else
-        print_info "镜像保留在ISO中"
+    if [ -f "${WORK_DIR}/iso/img/openwrt.img" ]; then
+        IMG_SIZE_BYTES=$(stat -c%s "${WORK_DIR}/iso/img/openwrt.img" 2>/dev/null || echo 0)
+        # 如果镜像小于50MB，放入initramfs
+        if [ $IMG_SIZE_BYTES -lt $((50*1024*1024)) ]; then
+            cp "${WORK_DIR}/iso/img/openwrt.img" "${initrd_dir}/img/"
+            print_info "镜像已内置到initramfs (${IMG_SIZE_BYTES} bytes)"
+        else
+            print_info "镜像保留在ISO中 (太大: ${IMG_SIZE_BYTES} bytes)"
+        fi
     fi
     
     # 极致优化：删除所有非必要内容
@@ -259,18 +303,20 @@ ULTRA_INIT
     find "${initrd_dir}" -name "*.gmo" -delete 2>/dev/null || true
     
     # 压缩前的大小
-    pre_size=$(du -sb "${initrd_dir}" 2>/dev/null | cut -f1)
-    print_info "优化前大小: $((pre_size/1024))KB"
+    if command -v du >/dev/null 2>&1; then
+        pre_size=$(du -sb "${initrd_dir}" 2>/dev/null | cut -f1)
+        print_info "优化前大小: $((pre_size/1024))KB"
+    fi
     
     # 使用UPX压缩busybox（如果可用）
-    if command -v upx >/dev/null 2>&1; then
+    if command -v upx >/dev/null 2>&1 && [ -f "${initrd_dir}/bin/busybox" ]; then
         print_step "使用UPX压缩BusyBox..."
         upx --best --ultra-brute "${initrd_dir}/bin/busybox" 2>/dev/null || \
         upx --best "${initrd_dir}/bin/busybox" 2>/dev/null || true
     fi
     
     # 删除调试符号
-    if command -v strip >/dev/null 2>&1; then
+    if command -v strip >/dev/null 2>&1 && [ -f "${initrd_dir}/bin/busybox" ]; then
         print_step "删除调试信息..."
         strip --strip-all "${initrd_dir}/bin/busybox" 2>/dev/null || true
         find "${initrd_dir}/lib" -name "*.so*" -exec strip --strip-unneeded {} \; 2>/dev/null || true
@@ -286,76 +332,97 @@ ULTRA_INIT
     mkdir -p "${temp_dir}"
     
     # 原始cpio数据
+    print_info "创建CPIO归档..."
     find . | cpio -o -H newc 2>/dev/null > "${temp_dir}/initramfs.cpio"
-    local cpio_size=$(stat -c%s "${temp_dir}/initramfs.cpio" 2>/dev/null || echo 0)
-    print_info "原始CPIO大小: $((cpio_size/1024))KB"
     
-    # 方法1: gzip -9（最兼容）
-    print_info "测试gzip压缩..."
-    gzip -9 -c "${temp_dir}/initramfs.cpio" > "${temp_dir}/initramfs.gz"
-    local gzip_size=$(stat -c%s "${temp_dir}/initramfs.gz" 2>/dev/null || echo 999999999)
-    
-    # 方法2: xz -9e（最佳压缩率）
-    print_info "测试xz压缩..."
-    xz -9e --check=crc32 -c "${temp_dir}/initramfs.cpio" > "${temp_dir}/initramfs.xz" 2>/dev/null || true
-    local xz_size=$(stat -c%s "${temp_dir}/initramfs.xz" 2>/dev/null || echo 999999999)
-    
-    # 方法3: zstd -22（如果可用）
-    local zstd_size=999999999
-    if command -v zstd >/dev/null 2>&1; then
-        print_info "测试zstd压缩..."
-        zstd -22 --ultra -T0 -c "${temp_dir}/initramfs.cpio" > "${temp_dir}/initramfs.zst" 2>/dev/null || true
-        zstd_size=$(stat -c%s "${temp_dir}/initramfs.zst" 2>/dev/null || echo 999999999)
+    if [ -f "${temp_dir}/initramfs.cpio" ]; then
+        cpio_size=$(stat -c%s "${temp_dir}/initramfs.cpio" 2>/dev/null || echo 0)
+        print_info "原始CPIO大小: $((cpio_size/1024))KB"
+        
+        # 方法1: gzip -9（最兼容）
+        print_info "测试gzip压缩..."
+        gzip -9 -c "${temp_dir}/initramfs.cpio" > "${temp_dir}/initramfs.gz" 2>/dev/null || true
+        
+        # 方法2: xz -9e（最佳压缩率）
+        print_info "测试xz压缩..."
+        xz -9e --check=crc32 -c "${temp_dir}/initramfs.cpio" > "${temp_dir}/initramfs.xz" 2>/dev/null || true
+        
+        # 方法3: zstd (如果可用)
+        local use_zstd=0
+        if command -v zstd >/dev/null 2>&1; then
+            print_info "测试zstd压缩..."
+            zstd -19 -T0 -c "${temp_dir}/initramfs.cpio" > "${temp_dir}/initramfs.zst" 2>/dev/null || true
+            use_zstd=1
+        fi
+        
+        # 方法4: lz4 (如果可用)
+        local use_lz4=0
+        if command -v lz4 >/dev/null 2>&1; then
+            print_info "测试lz4压缩..."
+            lz4 -9 -c "${temp_dir}/initramfs.cpio" > "${temp_dir}/initramfs.lz4" 2>/dev/null || true
+            use_lz4=1
+        fi
+        
+        # 获取文件大小
+        gzip_size=$(stat -c%s "${temp_dir}/initramfs.gz" 2>/dev/null || echo 999999999)
+        xz_size=$(stat -c%s "${temp_dir}/initramfs.xz" 2>/dev/null || echo 999999999)
+        zstd_size=$((use_zstd ? $(stat -c%s "${temp_dir}/initramfs.zst" 2>/dev/null || echo 999999999) : 999999999))
+        lz4_size=$((use_lz4 ? $(stat -c%s "${temp_dir}/initramfs.lz4" 2>/dev/null || echo 999999999) : 999999999))
+        
+        # 选择最佳压缩
+        print_step "压缩结果对比:"
+        print_info "  gzip:  $((gzip_size/1024))KB"
+        print_info "  xz:    $((xz_size/1024))KB"
+        [ $use_zstd -eq 1 ] && print_info "  zstd:  $((zstd_size/1024))KB"
+        [ $use_lz4 -eq 1 ] && print_info "  lz4:   $((lz4_size/1024))KB"
+        
+        local best_size=$gzip_size
+        local best_file="${temp_dir}/initramfs.gz"
+        local best_algo="gzip"
+        
+        [ $xz_size -lt $best_size ] && best_size=$xz_size && best_file="${temp_dir}/initramfs.xz" && best_algo="xz"
+        [ $use_zstd -eq 1 ] && [ $zstd_size -lt $best_size ] && best_size=$zstd_size && best_file="${temp_dir}/initramfs.zst" && best_algo="zstd"
+        [ $use_lz4 -eq 1 ] && [ $lz4_size -lt $best_size ] && best_size=$lz4_size && best_file="${temp_dir}/initramfs.lz4" && best_algo="lz4"
+        
+        print_success "选择 $best_algo 压缩: $((best_size/1024))KB"
+        
+        # 复制最佳压缩文件
+        cp "$best_file" "$output_file"
+        
+        # 计算压缩率
+        if [ $cpio_size -gt 0 ] && [ $best_size -gt 0 ]; then
+            local ratio=$(echo "scale=1; 100 * $best_size / $cpio_size" | bc 2>/dev/null || echo "0")
+            local saved=$(( (cpio_size - best_size) / 1024 ))
+            print_success "压缩率: ${ratio}% (节省: ${saved}KB)"
+        fi
+        
+        # 清理
+        rm -rf "${temp_dir}"
+        
+        # 最终大小
+        if [ -f "$output_file" ]; then
+            final_size=$(stat -c%s "$output_file" 2>/dev/null || echo 0)
+            print_success "initramfs最终大小: $((final_size/1024))KB"
+        else
+            print_error "initramfs文件未生成"
+            exit 1
+        fi
+    else
+        print_error "CPIO归档创建失败"
+        exit 1
     fi
-    
-    # 方法4: lz4（快速解压）
-    local lz4_size=999999999
-    if command -v lz4 >/dev/null 2>&1; then
-        print_info "测试lz4压缩..."
-        lz4 -9 -c "${temp_dir}/initramfs.cpio" > "${temp_dir}/initramfs.lz4" 2>/dev/null || true
-        lz4_size=$(stat -c%s "${temp_dir}/initramfs.lz4" 2>/dev/null || echo 999999999)
-    fi
-    
-    # 选择最佳压缩
-    print_step "压缩结果对比:"
-    print_info "  gzip:  $((gzip_size/1024))KB"
-    print_info "  xz:    $((xz_size/1024))KB"
-    print_info "  zstd:  $((zstd_size/1024))KB"
-    print_info "  lz4:   $((lz4_size/1024))KB"
-    
-    local best_size=$gzip_size
-    local best_file="${temp_dir}/initramfs.gz"
-    local best_algo="gzip"
-    
-    [ $xz_size -lt $best_size ] && best_size=$xz_size && best_file="${temp_dir}/initramfs.xz" && best_algo="xz"
-    [ $zstd_size -lt $best_size ] && best_size=$zstd_size && best_file="${temp_dir}/initramfs.zst" && best_algo="zstd"
-    [ $lz4_size -lt $best_size ] && best_size=$lz4_size && best_file="${temp_dir}/initramfs.lz4" && best_algo="lz4"
-    
-    print_success "选择 $best_algo 压缩: $((best_size/1024))KB"
-    
-    # 复制最佳压缩文件
-    cp "$best_file" "$output_file"
-    
-    # 计算压缩率
-    if [ $cpio_size -gt 0 ]; then
-        local ratio=$(echo "scale=1; 100 * $best_size / $cpio_size" | bc)
-        local saved=$(( (cpio_size - best_size) / 1024 ))
-        print_success "压缩率: ${ratio}% (节省: ${saved}KB)"
-    fi
-    
-    # 清理
-    rm -rf "${temp_dir}"
-    
-    # 最终大小
-    final_size=$(stat -c%s "$output_file" 2>/dev/null || echo 0)
-    print_success "initramfs最终大小: $((final_size/1024))KB"
 }
 
 # 调用极致压缩函数
 create_ultra_compressed_initramfs
 
-INITRAMFS_SIZE=$(du -h "${WORK_DIR}/iso/boot/initramfs" 2>/dev/null | cut -f1)
-print_success "Initramfs创建完成: ${INITRAMFS_SIZE}"
+if [ -f "${WORK_DIR}/iso/boot/initramfs" ]; then
+    INITRAMFS_SIZE=$(du -h "${WORK_DIR}/iso/boot/initramfs" 2>/dev/null | cut -f1)
+    print_success "Initramfs创建完成: ${INITRAMFS_SIZE}"
+else
+    print_error "Initramfs创建失败"
+    exit 1
+fi
 
 # ================= 准备内核 =================
 print_header "4. 准备极简内核"
@@ -363,27 +430,46 @@ print_header "4. 准备极简内核"
 prepare_minimal_kernel() {
     print_step "获取最小内核..."
     
-    # 方法1: 使用Alpine的minirootfs中的内核
-    ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
-    KERNEL_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/x86_64/alpine-minirootfs-${ALPINE_VERSION}.0-x86_64.tar.gz"
-    
     local kernel_found=0
     
-    # 尝试下载TinyCore Linux的极小内核 (约5MB)
-    print_info "尝试下载TinyCore Linux内核..."
-    TINYCORE_KERNEL="https://github.com/tinycorelinux/Core-scripts/raw/master/vmlinuz64"
+    # 优先使用Alpine自带的内核
+    for kernel_path in \
+        "/boot/vmlinuz-linux" \
+        "/boot/vmlinuz" \
+        "/boot/vmlinuz-hardened" \
+        "/boot/vmlinuz-grsec" \
+        "/vmlinuz" \
+        "/boot/vmlinuz-$(uname -r 2>/dev/null || echo '')"; do
+        
+        if [ -f "$kernel_path" ]; then
+            cp "$kernel_path" "${WORK_DIR}/iso/boot/vmlinuz"
+            print_success "使用系统内核: $kernel_path"
+            kernel_found=1
+            break
+        fi
+    done
     
-    if curl -s -L -o "${WORK_DIR}/iso/boot/vmlinuz.tmp" "${TINYCORE_KERNEL}"; then
-        if [ -s "${WORK_DIR}/iso/boot/vmlinuz.tmp" ]; then
+    # 如果没找到，尝试下载TinyCore Linux的极小内核
+    if [ $kernel_found -eq 0 ]; then
+        print_info "尝试下载TinyCore Linux内核..."
+        TINYCORE_KERNEL="https://github.com/tinycorelinux/Core-scripts/raw/master/vmlinuz64"
+        
+        if command -v wget >/dev/null 2>&1; then
+            wget --tries=2 --timeout=30 -q -O "${WORK_DIR}/iso/boot/vmlinuz.tmp" "${TINYCORE_KERNEL}"
+        elif command -v curl >/dev/null 2>&1; then
+            curl -L --connect-timeout 20 --retry 2 -s -o "${WORK_DIR}/iso/boot/vmlinuz.tmp" "${TINYCORE_KERNEL}"
+        fi
+        
+        if [ -f "${WORK_DIR}/iso/boot/vmlinuz.tmp" ] && [ -s "${WORK_DIR}/iso/boot/vmlinuz.tmp" ]; then
             mv "${WORK_DIR}/iso/boot/vmlinuz.tmp" "${WORK_DIR}/iso/boot/vmlinuz"
             kernel_found=1
             print_success "使用TinyCore Linux内核"
         fi
     fi
     
-    # 方法2: 如果下载失败，使用极小占位内核
+    # 如果都失败了，创建最小占位内核
     if [ $kernel_found -eq 0 ]; then
-        print_warning "下载内核失败，创建最小占位内核"
+        print_warning "无法获取内核，创建最小占位内核"
         
         # 创建能通过引导验证的最小内核文件
         cat > "${WORK_DIR}/iso/boot/vmlinuz" << 'KERNEL_STUB'
@@ -391,32 +477,45 @@ prepare_minimal_kernel() {
 # 内核占位脚本
 # 实际引导时会替换为真实内核
 
-echo "错误: 内核文件不完整"
-echo "请使用完整内核替换此文件"
+echo "=========================================="
+echo "  OpenWRT 安装器 - 内核占位文件"
+echo "=========================================="
+echo ""
+echo "错误: 这是一个占位内核文件，无法引导系统。"
+echo "请使用以下方法之一:"
+echo "1. 在构建时提供真实内核"
+echo "2. 手动替换 /boot/vmlinuz 文件"
+echo "3. 使用 --kernel 参数指定内核路径"
+echo ""
 exit 1
 KERNEL_STUB
         
         # 添加一些二进制数据使其看起来像内核
-        echo -e "\x1f\x8b\x08\x00" >> "${WORK_DIR}/iso/boot/vmlinuz"
-        dd if=/dev/urandom bs=1024 count=10 >> "${WORK_DIR}/iso/boot/vmlinuz" 2>/dev/null
+        echo -e '\x1f\x8b\x08\x00' >> "${WORK_DIR}/iso/boot/vmlinuz"
+        dd if=/dev/urandom bs=1024 count=5 >> "${WORK_DIR}/iso/boot/vmlinuz" 2>/dev/null
         
         print_info "创建了占位内核 (仅测试用)"
     fi
     
     # 压缩内核（如果真实内核）
-    if [ $kernel_found -eq 1 ]; then
+    if [ $kernel_found -eq 1 ] && [ -f "${WORK_DIR}/iso/boot/vmlinuz" ]; then
         print_step "压缩内核..."
         if command -v xz >/dev/null 2>&1; then
             # 备份原始内核
             cp "${WORK_DIR}/iso/boot/vmlinuz" "${WORK_DIR}/iso/boot/vmlinuz.orig"
-            # 使用xz压缩
-            xz -9e -c "${WORK_DIR}/iso/boot/vmlinuz.orig" > "${WORK_DIR}/iso/boot/vmlinuz.xz"
-            mv "${WORK_DIR}/iso/boot/vmlinuz.xz" "${WORK_DIR}/iso/boot/vmlinuz"
             orig_size=$(stat -c%s "${WORK_DIR}/iso/boot/vmlinuz.orig" 2>/dev/null || echo 0)
-            new_size=$(stat -c%s "${WORK_DIR}/iso/boot/vmlinuz" 2>/dev/null || echo 0)
-            if [ $orig_size -gt 0 ]; then
-                ratio=$(echo "scale=1; 100 * $new_size / $orig_size" | bc)
-                print_success "内核压缩率: ${ratio}%"
+            
+            # 使用xz压缩
+            if xz -9e -c "${WORK_DIR}/iso/boot/vmlinuz.orig" > "${WORK_DIR}/iso/boot/vmlinuz.xz" 2>/dev/null; then
+                mv "${WORK_DIR}/iso/boot/vmlinuz.xz" "${WORK_DIR}/iso/boot/vmlinuz"
+                new_size=$(stat -c%s "${WORK_DIR}/iso/boot/vmlinuz" 2>/dev/null || echo 0)
+                if [ $orig_size -gt 0 ] && [ $new_size -gt 0 ]; then
+                    ratio=$(echo "scale=1; 100 * $new_size / $orig_size" | bc 2>/dev/null || echo "0")
+                    print_success "内核压缩率: ${ratio}% ($((orig_size/1024))KB → $((new_size/1024))KB)"
+                fi
+            else
+                print_warning "内核压缩失败，使用原始内核"
+                mv "${WORK_DIR}/iso/boot/vmlinuz.orig" "${WORK_DIR}/iso/boot/vmlinuz"
             fi
         fi
     fi
@@ -435,26 +534,42 @@ print_step "配置BIOS引导..."
 
 # 查找并复制引导文件
 find_syslinux_files() {
-    for path in /usr/share/syslinux /usr/lib/syslinux /usr/lib/ISOLINUX; do
+    local found=0
+    
+    # 常见路径
+    for path in /usr/share/syslinux /usr/lib/syslinux /lib/syslinux /usr/lib/ISOLINUX; do
         if [ -d "$path" ]; then
+            print_info "找到SYSLINUX路径: $path"
+            
             # 复制必需文件
             for file in isolinux.bin ldlinux.c32 libcom32.c32 libutil.c32; do
                 if [ -f "$path/$file" ]; then
-                    cp "$path/$file" "${WORK_DIR}/iso/boot/" 2>/dev/null || true
+                    cp "$path/$file" "${WORK_DIR}/iso/boot/" 2>/dev/null
+                    found=1
                 fi
             done
-            return 0
+            
+            # 复制vesamenu.c32（可选）
+            if [ -f "$path/vesamenu.c32" ]; then
+                cp "$path/vesamenu.c32" "${WORK_DIR}/iso/boot/" 2>/dev/null
+            fi
+            
+            # 复制reboot.c32
+            if [ -f "$path/reboot.c32" ]; then
+                cp "$path/reboot.c32" "${WORK_DIR}/iso/boot/" 2>/dev/null
+            fi
+            
+            [ $found -eq 1 ] && return 0
         fi
     done
+    
     return 1
 }
 
 if find_syslinux_files; then
-    print_success "找到SYSLINUX引导文件"
+    print_success "SYSLINUX引导文件复制完成"
 else
-    print_warning "未找到SYSLINUX，创建极简引导"
-    # 创建最小isolinux.bin占位
-    echo "ISOLINUX placeholder" > "${WORK_DIR}/iso/boot/isolinux.bin"
+    print_warning "未找到SYSLINUX文件，ISO可能无法BIOS引导"
 fi
 
 # 创建极简isolinux配置
@@ -491,12 +606,14 @@ find_grub_efi() {
         /usr/share/grub/x86_64-efi \
         /usr/lib/grub/x86_64-efi \
         /usr/lib/grub/x86_64-efi-signed \
-        /usr/lib/grub/efi64; do
+        /usr/lib/grub/efi64 \
+        /usr/lib/grub/x86_64-efi-core; do
         if [ -d "$path" ]; then
+            print_info "检查GRUB路径: $path"
             for efi in grub.efi grubx64.efi bootx64.efi; do
                 if [ -f "$path/$efi" ]; then
                     cp "$path/$efi" "${WORK_DIR}/iso/EFI/boot/bootx64.efi" 2>/dev/null
-                    print_success "找到EFI引导: $path/$efi"
+                    print_success "找到EFI引导文件: $path/$efi"
                     return 0
                 fi
             done
@@ -519,8 +636,9 @@ menuentry "Emergency Shell" {
     linux /boot/vmlinuz initrd=/boot/initramfs console=ttyS0 console=tty0 init=/bin/sh
 }
 GRUB_CFG
+    print_success "UEFI引导配置完成"
 else
-    print_warning "未找到GRUB EFI，仅支持BIOS引导"
+    print_warning "未找到GRUB EFI文件，ISO仅支持BIOS引导"
 fi
 
 print_success "引导配置完成"
@@ -554,20 +672,19 @@ create_compressed_iso() {
     for tool in xorriso genisoimage mkisofs; do
         if command -v $tool >/dev/null 2>&1; then
             ISO_TOOL=$tool
+            print_info "找到ISO工具: $tool"
             break
         fi
     done
     
     if [ -z "$ISO_TOOL" ]; then
-        print_error "未找到ISO创建工具"
+        print_error "未找到ISO创建工具 (xorriso, genisoimage, mkisofs)"
         exit 1
     fi
     
-    print_info "使用工具: $ISO_TOOL"
-    
     case $ISO_TOOL in
         xorriso)
-            # 构建xorriso命令（避免数组语法）
+            # 构建xorriso命令
             XORRISO_CMD="xorriso -as mkisofs"
             XORRISO_CMD="$XORRISO_CMD -volid 'OPENWRT_MINI'"
             XORRISO_CMD="$XORRISO_CMD -J -rock"
@@ -586,6 +703,7 @@ create_compressed_iso() {
                     XORRISO_CMD="$XORRISO_CMD -eltorito-alt-boot"
                     XORRISO_CMD="$XORRISO_CMD -e EFI/boot/bootx64.efi"
                     XORRISO_CMD="$XORRISO_CMD -no-emul-boot"
+                    XORRISO_CMD="$XORRISO_CMD -isohybrid-gpt-basdat"
                 fi
                 
                 # 添加混合引导支持
@@ -596,11 +714,13 @@ create_compressed_iso() {
             
             XORRISO_CMD="$XORRISO_CMD -o '${OUTPUT_ISO}' ."
             
-            print_info "执行: $XORRISO_CMD"
+            print_info "执行命令:"
+            echo "  $XORRISO_CMD"
             eval "$XORRISO_CMD"
             ;;
             
         genisoimage|mkisofs)
+            print_info "使用 $ISO_TOOL 创建ISO"
             if [ -f "boot/isolinux.bin" ]; then
                 $ISO_TOOL \
                     -V "OPENWRT_MINI" \
@@ -630,6 +750,13 @@ create_compressed_iso() {
             file "${OUTPUT_ISO}"
         fi
         
+        # 检查引导信息
+        if command -v xorriso >/dev/null 2>&1; then
+            print_info "ISO引导信息:"
+            xorriso -indev "${OUTPUT_ISO}" -report_el_torito as_mkisofs 2>&1 | \
+                grep -E "(Boot|boot|catalog|image|load)" | head -10 || true
+        fi
+        
         return 0
     else
         print_error "ISO创建失败"
@@ -646,40 +773,43 @@ else
     
     print_step "创建可引导tar存档..."
     cd "${WORK_DIR}/iso"
-    tar -czf "${OUTPUT_ISO}.tar.gz" .
     
-    # 创建简易引导脚本
-    cat > "${OUTPUT_DIR}/boot-instructions.txt" << 'BOOT_HELP'
+    if tar -czf "${OUTPUT_ISO}.tar.gz" .; then
+        TAR_SIZE=$(du -h "${OUTPUT_ISO}.tar.gz" 2>/dev/null | cut -f1)
+        print_success "创建tar存档: ${TAR_SIZE}"
+        
+        # 创建简易引导脚本
+        cat > "${OUTPUT_DIR}/boot-instructions.txt" << 'BOOT_HELP'
 # OpenWRT 安装器引导说明
 
 由于ISO创建失败，已生成tar存档。
 
 使用方法:
-1. 解压文件到FAT32格式的U盘:
+1. 准备FAT32格式的U盘
+2. 解压文件到U盘根目录:
    tar -xzf openwrt-minimal-installer.iso.tar.gz -C /mnt/usb/
+3. 安装引导加载器:
 
-2. 使用以下工具之一创建可引导U盘:
+   ## 对于BIOS系统:
+   sudo syslinux -i /dev/sdX1
+   sudo dd if=/usr/lib/syslinux/mbr.bin of=/dev/sdX
    
-   a) 使用GRUB:
-     - 安装GRUB: grub-install --target=x86_64-efi --boot-directory=/mnt/usb/boot
-     - 复制EFI文件到适当位置
+   ## 对于UEFI系统:
+   sudo mkdir -p /mnt/usb/EFI/BOOT
+   sudo cp /usr/share/grub/x86_64-efi/grub.efi /mnt/usb/EFI/BOOT/bootx64.efi
    
-   b) 使用SYSLINUX:
-     - 安装SYSLINUX: syslinux -i /dev/sdX1
-     - 复制ldlinux.sys到U盘根目录
-   
-   c) 手动引导:
-     - 从U盘启动
-     - 在GRUB命令行输入:
-         linux /boot/vmlinuz initrd=/boot/initramfs
-         boot
+4. 从U盘启动并选择"Install OpenWRT"
 
-3. 或者直接使用QEMU测试:
-   qemu-system-x86_64 -hda /dev/sdX -cdrom openwrt-minimal-installer.iso.tar.gz
+备用方案: 使用QEMU直接测试
+  qemu-system-x86_64 -drive file=openwrt.img,format=raw -m 512
 BOOT_HELP
-    
-    print_info "已创建备用存档: ${OUTPUT_ISO}.tar.gz"
-    print_info "请查看: ${OUTPUT_DIR}/boot-instructions.txt"
+        
+        print_info "已创建备用存档: ${OUTPUT_ISO}.tar.gz"
+        print_info "请查看引导说明: ${OUTPUT_DIR}/boot-instructions.txt"
+    else
+        print_error "备用方案也失败"
+        exit 1
+    fi
 fi
 
 # ================= 最终统计 =================
@@ -699,7 +829,7 @@ if [ -f "${OUTPUT_ISO}" ]; then
     echo ""
     
     print_step "📦 内容分析:"
-    print_info "  ┌─ OpenWRT系统镜像: ${IMG_SIZE_FINAL}"
+    print_info "  ├─ OpenWRT系统镜像: ${IMG_SIZE_FINAL}"
     print_info "  ├─ Linux内核: ${KERNEL_SIZE_FINAL}"
     print_info "  ├─ Initramfs安装器: ${INITRAMFS_SIZE_FINAL}"
     print_info "  └─ 引导文件: ~1MB"
@@ -712,12 +842,12 @@ if [ -f "${OUTPUT_ISO}" ]; then
         OVERHEAD_MB=$((OVERHEAD/1024/1024))
         print_info "  📈 系统开销: ${OVERHEAD_MB}MB (安装器+内核+引导)"
         
-        if [ $OVERHEAD_MB -lt 10 ]; then
-            print_success "  🎯 优秀! 额外开销 < 10MB"
-        elif [ $OVERHEAD_MB -lt 50 ]; then
-            print_success "  👍 良好! 额外开销 < 50MB"
+        if [ $OVERHEAD_MB -lt 5 ]; then
+            print_success "  🎯 优秀! 额外开销 < 5MB"
+        elif [ $OVERHEAD_MB -lt 20 ]; then
+            print_success "  👍 良好! 额外开销 < 20MB"
         else
-            print_warning "  ⚠️  开销较大，可进一步优化"
+            print_info "  📝 正常开销，安装器功能完整"
         fi
     fi
     echo ""
@@ -741,13 +871,13 @@ else
     print_step "📦 备用方案结果:"
     print_info "  主要输出: ${OUTPUT_ISO}.tar.gz"
     print_info "  说明文件: ${OUTPUT_DIR}/boot-instructions.txt"
-    print_info "  手动引导指南已生成"
+    print_info "  请按照说明文件手动引导"
 fi
 
 print_divider
-print_success "🎉 构建流程完成! 极致压缩安装器已就绪"
+print_success "🎉 构建流程完成!"
 print_divider
 
-# 最终清理（可选）
+# 清理（可选）
 # print_step "清理工作目录..."
 # rm -rf "${WORK_DIR}" 2>/dev/null || true
