@@ -260,6 +260,15 @@ jobs:
             echo "🔬 验证ISO结构..."
             if command -v xorriso >/dev/null 2>&1; then
                 xorriso -indev output/openwrt-installer-alpine.iso -report_el_torito as_mkisofs 2>&1 | head -20
+
+            # 查看ISO根目录内容
+                xorriso -indev output/openwrt-installer-alpine.iso -ls / 2>&1 | head -20
+
+                # 检查引导文件是否存在
+                xorriso -indev output/openwrt-installer-alpine.iso -find / -name "vmlinuz"2 >&1 | head -20
+                xorriso -indev output/openwrt-installer-alpine.iso -find / -name "initrd.img"2 >&1 | head -20
+                xorriso -indev output/openwrt-installer-alpine.iso -find / -name "*.efi" 2>&1 | head -20
+                xorriso -indev output/openwrt-installer-alpine.iso -find /isolinux -type f 2>&1 | head -20
             fi
         else
             echo "❌ ISO文件未生成"
