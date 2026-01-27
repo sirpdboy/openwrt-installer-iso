@@ -227,13 +227,19 @@ jobs:
                   alpine-sdk \
                   xorriso \
                   syslinux \
+                  syslinux-bios \
+                  squashfs-tools \
                   mtools \
                   dosfstools \
+                  grub \
+                  grub-efi \
                   squashfs-tools \
                   wget \
                   curl \
                   e2fsprogs \
+                  util-linux \
                   parted \
+                  coreutils \
                   bash; then
                   echo '✅ 工具安装成功'
                   break
