@@ -35,7 +35,6 @@ cd "$WORK_DIR"
 cleanup() {
     log_info "Cleaning up..."
     umount "$WORK_DIR/efi_mount" 2>/dev/null || true
-    umount "$WORK_DIR/mnt" 2>/dev/null || true
     rm -rf "$WORK_DIR" 2>/dev/null || true
 }
 
@@ -53,6 +52,22 @@ log_success "Found OpenWRT image: $IMG_SIZE"
 
 # ==================== Step 2: Install build tools ====================
 log_info "[2/9] Installing build tools..."
+
+# Create dummy trigger scripts to avoid errors
+mkdir -p /etc/apk/scripts
+cat > /etc/apk/scripts/grub-2.12-r5.trigger << 'EOF'
+#!/bin/sh
+# Dummy grub trigger to avoid errors in container
+exit 0
+EOF
+
+cat > /etc/apk/scripts/syslinux-6.04_pre1-r15.trigger << 'EOF'
+#!/bin/sh
+# Dummy syslinux trigger
+exit 0
+EOF
+
+chmod +x /etc/apk/scripts/*.trigger
 
 apk update --no-cache
 
@@ -618,7 +633,7 @@ cp "$ROOTFS_DIR/etc/group" "$INITRAMFS_DIR/etc/"
 cp "$ROOTFS_DIR/etc/modules-load.d/openwrt-installer.conf" "$INITRAMFS_DIR/etc/modules-load.d/" 2>/dev/null || true
 
 # Create essential directories
-mkdir -p "$INITRAMFS_DIR"/{dev,proc,sys,tmp}
+mkdir -p $INITRAMFS_DIR/{dev,proc,sys,tmp}
 
 # Create initramfs image
 log_info "Creating initramfs image (this may take a moment)..."
@@ -691,7 +706,7 @@ cat > "$ISO_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=10
 set default=0
 
-menuentry "Install OpenWRT (UEFI)" --class gnu-linux --class gnu --class os {
+menuentry "Install OpenWRT (UEFI)" {
     linux /boot/vmlinuz console=tty0 quiet
     initrd /boot/initrd.img
 }
@@ -700,34 +715,33 @@ GRUB_CFG
 
 # Create bootx64.efi using grub-mkstandalone
 log_info "Creating UEFI boot image..."
-# Create directory for EFI
-mkdir -p "$WORK_DIR/efi_boot/EFI/BOOT"
+EFI_IMG="$WORK_DIR/efiboot.img"
+dd if=/dev/zero of="$EFI_IMG" bs=1M count=128
+mkfs.vfat -F 32 -n "UEFI_BOOT" "$EFI_IMG" >/dev/null 2>&1
+# Create GRUB EFI binary with all modules
+log_info "Building complete GRUB EFI binary..."
+GRUB_TMP="$WORK_DIR/grub_tmp"
+mkdir -p "$GRUB_TMP/EFI/BOOT"
 
 # Create bootx64.efi
 if command -v grub-mkstandalone >/dev/null 2>&1; then
     log_info "Creating GRUB EFI binary..."
     grub-mkstandalone \
         --format=x86_64-efi \
-        --output="$WORK_DIR/efi_boot/EFI/BOOT/bootx64.efi" \
-        --modules="part_gpt part_msdos fat ext2 iso9660 gfxterm gfxmenu" \
-        --locales="" \
+        --output="$GRUB_TMP/EFI/BOOT/bootx64.efi" \
+        --modules="part_gpt part_msdos fat ext2 iso9660 gfxterm gfxmenu png jpeg tga efi_gop efi_uga all_video" \
+        --locales="en@quot" \
         --themes="" \
-        "boot/grub/grub.cfg=$ISO_DIR/boot/grub/grub.cfg"
-	log_info "=====grub-mkstandalone: $WORK_DIR/efi_boot/EFI/BOOT  ========"
-	ls $WORK_DIR/efi_boot/EFI/BOOT
-	log_info "=====grub-mkstandalone: $ISO_DIR/boot/grub  ========"
-	ls $ISO_DIR/boot/grub
-elif command -v grub2-mkstandalone >/dev/null 2>&1; then
-    grub2-mkstandalone \
-        --format=x86_64-efi \
-        --output="$WORK_DIR/efi_boot/EFI/BOOT/bootx64.efi" \
-        --modules="part_gpt part_msdos fat ext2 iso9660" \
-        "boot/grub/grub.cfg=$ISO_DIR/boot/grub/grub.cfg"
-
-	log_info "=====grub2-mkstandalone: $WORK_DIR/efi_boot/EFI/BOOT  ========"
-	ls $WORK_DIR/efi_boot/EFI/BOOT
-	log_info "=====grub2-mkstandalone: $ISO_DIR/boot/grub  ========"
-	ls $ISO_DIR/boot/grub
+        --fonts="" \
+        "boot/grub/grub.cfg=$ISO_DIR/boot/grub/grub.cfg" 2>/dev/null || {
+        log_warning "grub-mkstandalone failed, trying simpler method..."
+        grub-mkimage \
+            -o "$GRUB_TMP/EFI/BOOT/bootx64.efi" \
+            -p /boot/grub \
+            -O x86_64-efi \
+            -c "$ISO_DIR/boot/grub/grub.cfg" \
+            boot linux configfile normal part_gpt part_msdos fat ext2 iso9660 gfxterm gfxmenu
+    }
 fi
 
 # Copy EFI files to ISO
