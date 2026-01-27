@@ -587,7 +587,7 @@ mkdir -p "$ISO_DIR/EFI/BOOT"
 
 # Copy files
 cp "$OPENWRT_IMG" "$ISO_DIR/openwrt.img"
-cp "$WORK_DIR/vmlinuz" "$ISO_DIR/boot/vmlinuz"
+cp "$WORK_DIR/vmlinuz" "$ISO_DIR/vmlinuz"
 
 log_success "Files copied to ISO structure"
 
@@ -636,10 +636,10 @@ mkdir -p $INITRAMFS_DIR/{dev,proc,sys,tmp}
 # Create initramfs image
 log_info "Creating initramfs image (this may take a moment)..."
 cd "$INITRAMFS_DIR"
-find . | cpio -H newc -o 2>/dev/null | gzip -9 > "$ISO_DIR/boot/initrd.img"
+find . | cpio -H newc -o 2>/dev/null | gzip -9 > "$ISO_DIR/initrd.img"
 cd "$WORK_DIR"
 
-INITRD_SIZE=$(ls -lh "$ISO_DIR/boot/initrd.img" | awk '{print $5}')
+INITRD_SIZE=$(ls -lh "$ISO_DIR/initrd.img" | awk '{print $5}')
 log_success "Initramfs created: $INITRD_SIZE (should be > 10M)"
 
 # ==================== Step 7: Create BIOS boot ====================
@@ -667,8 +667,8 @@ MENU COLOR tabmsg       31;40   #30ffffff #00000000 std
 LABEL openwrt
   MENU LABEL ^Install OpenWRT
   MENU DEFAULT
-  KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initrd.img  console=tty0 quiet
+  KERNEL /vmlinuz
+  APPEND initrd=/initrd.img  console=tty0 quiet
 
 
 ISOLINUX_CFG
@@ -706,8 +706,8 @@ set timeout=10
 set default=0
 
 menuentry "Install OpenWRT (UEFI)" {
-    linux /boot/vmlinuz console=tty0 quiet
-    initrd /boot/initrd.img
+    linux /vmlinuz console=tty0 quiet
+    initrd /initrd.img
 }
 
 GRUB_CFG
@@ -715,8 +715,8 @@ GRUB_CFG
 # Create UEFI boot image
 log_info "Creating UEFI boot image..."
 EFI_IMG="$WORK_DIR/efiboot.img"
-# dd if=/dev/zero of="$EFI_IMG" bs=1M count=128
-# mkfs.vfat -F 32 -n "UEFI_BOOT" "$EFI_IMG" >/dev/null 2>&1
+dd if=/dev/zero of="$EFI_IMG" bs=1M count=128
+mkfs.vfat -F 32 -n "UEFI_BOOT" "$EFI_IMG" >/dev/null 2>&1
 
 # Create GRUB EFI binary with all modules
 log_info "Building complete GRUB EFI binary..."
