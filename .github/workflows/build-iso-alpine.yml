@@ -185,7 +185,6 @@ jobs:
             alpine-sdk \
             xorriso \
             syslinux \
-            syslinux-bios \
             mtools \
             dosfstools \
             grub \
