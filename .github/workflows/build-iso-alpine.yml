@@ -218,6 +218,7 @@ jobs:
         echo '安装构建工具...'
         apk update --no-cache
         apk add --no-cache --no-scripts \
+          bash \
           alpine-sdk \
           xorriso \
           syslinux \
@@ -227,15 +228,22 @@ jobs:
           mtools \
           dosfstools \
           squashfs-tools \
+          pv \
+          gzip \
+          cpio \ 
           wget \
           curl \
           e2fsprogs \
           parted \
-          bash \
           linux-lts \
           mkinitfs \
           busybox \
-        coreutils
+          linux-firmware-none \
+          kmod \
+          coreutils \
+          findutils \
+          grep \
+          util-linux
 
         echo '✅ 工具安装完成'
       
