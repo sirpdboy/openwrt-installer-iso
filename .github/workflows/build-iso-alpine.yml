@@ -11,12 +11,13 @@ on:
       alpine_version:
         description: 'Alpine版本'
         required: false
-        default: '3.23'
+        default: '3.20'
 
 jobs:
   build-alpine-iso:
     runs-on: ubuntu-latest
-    
+    env:
+      ALPINE_VERSION: ${{github.event.inputs.alpine_version}}
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -85,8 +86,12 @@ jobs:
         docker pull alpine:${ALPINE_VERSION}
         
         # 验证镜像
-        docker image ls | grep alpine
-        echo "✅ Alpine镜像拉取成功"
+        if docker image ls | grep alpine ;then
+            echo "✅ Alpine镜像拉取成功"
+        else
+            echo "❌ Alpine镜像拉取失败"
+            exit 1
+        fi
     
     - name: Download OpenWRT image
       run: |
@@ -169,7 +174,7 @@ jobs:
         echo "🔄 在Alpine Docker容器中构建ISO..."
         
         # 设置Alpine版本
-        ALPINE_VERSION="${ALPINE_VERSION:-3.23}"
+        ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
         
         # 使用Docker构建
         docker run --privileged --rm \
@@ -217,9 +222,8 @@ jobs:
         # 更新并安装工具（使用--no-scripts双重保障）
         echo '安装构建工具...'
         apk update --no-cache
-        apk add --no-cache --no-scripts \
           for i in 1 2 3; do
-              if apk add --no-cache \
+              apk add --no-cache --no-scripts \
                   alpine-sdk \
                   xorriso \
                   syslinux \
