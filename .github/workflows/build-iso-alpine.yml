@@ -226,7 +226,7 @@ jobs:
           
           # 执行构建脚本
           echo '🏗️  开始构建ISO...'
-          chmod +x /build-iso-alpine.sh
+          # chmod +x /build-iso-alpine.sh
           /build-iso-alpine.sh
           
           echo '🎉 ISO构建完成'
