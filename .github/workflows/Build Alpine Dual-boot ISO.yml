@@ -1,0 +1,48 @@
+name: Build Alpine Dual-boot ISO
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # 允许手动触发
+    inputs:
+      alpine_version:
+        description: 'Alpine版本 (例如: 3.18, 3.19, latest)'
+        required: true
+        default: 'latest'
+
+env:
+  ALPINE_VERSION: ${{ github.event.inputs.alpine_version || 'latest' }}
+  ISO_NAME: 'alpine-dualboot'
+
+jobs:
+  build-iso:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+      
+    - name: 设置执行权限
+      run: |
+        chmod +x scripts/docker-build.sh
+        chmod +x scripts/build-iso-alpine.sh
+      
+    - name: 构建Docker镜像并创建ISO
+      run: |
+        ./scripts/docker-build.sh ${{ env.ALPINE_VERSION }} ${{ env.ISO_NAME }}
+      
+    - name: 上传ISO文件
+      uses: actions/upload-artifact@v4
+      with:
+        name: alpine-dualboot-iso
+        path: output/*.iso
+        retention-days: 7
+        
+    - name: 输出构建信息
+      run: |
+        echo "=== 构建完成 ==="
+        echo "ISO文件已生成在 output/ 目录"
+        echo "Alpine版本: ${{ env.ALPINE_VERSION }}"
+        ls -lh output/*.iso 2>/dev/null || echo "未找到ISO文件"
