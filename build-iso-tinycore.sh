@@ -573,15 +573,22 @@ create_tiny_iso() {
     
     cd "${WORK_DIR}/iso"
     
-    # 显示内容
-    print_info "ISO内容:"
-    du -sh . || true
+    # 显示内容大小
+    print_info "ISO内容大小统计:"
+    du -sh . 2>/dev/null || true
     echo ""
     
-    # 使用xorriso创建ISO
+    # 确保输出目录存在
+    mkdir -p "${OUTPUT_DIR}"
+    
+    # 清理旧的ISO文件
+    rm -f "${OUTPUT_ISO}" 2>/dev/null || true
+    
+    # 使用xorriso创建ISO - 修复输出路径问题
     if command -v xorriso >/dev/null 2>&1; then
         print_info "使用xorriso创建ISO..."
         
+        # 构建ISO命令 - 修复路径引用
         XORRISO_CMD="xorriso -as mkisofs"
         XORRISO_CMD="$XORRISO_CMD -volid 'OPENWRT_TINY'"
         XORRISO_CMD="$XORRISO_CMD -J -rock"
@@ -603,16 +610,35 @@ create_tiny_iso() {
             XORRISO_CMD="$XORRISO_CMD -no-emul-boot"
         fi
         
-        XORRISO_CMD="$XORRISO_CMD -o '${OUTPUT_ISO}' ."
+        # 修复：使用绝对路径，并且确保输出文件路径正确
+        XORRISO_CMD="$XORRISO_CMD -o \"${OUTPUT_ISO}\" ."
         
-        print_info "执行命令..."
-        eval "$XORRISO_CMD"
+        print_info "执行ISO创建命令..."
+        print_info "工作目录: $(pwd)"
+        print_info "输出文件: ${OUTPUT_ISO}"
+        
+        # 执行命令，捕获错误
+        if eval "$XORRISO_CMD" 2>&1; then
+            print_success "xorriso命令执行成功"
+        else
+            XORRISO_ERROR=$?
+            print_warning "xorriso返回错误码: $XORRISO_ERROR"
+            print_info "尝试备用方法..."
+            
+            # 备用方法1：简化命令
+            if xorriso -as mkisofs -V "OPENWRT_TINY" -o "${OUTPUT_ISO}" . 2>/dev/null; then
+                print_success "备用方法成功"
+            else
+                print_error "xorriso创建失败"
+                return 1
+            fi
+        fi
         
     elif command -v genisoimage >/dev/null 2>&1; then
         print_info "使用genisoimage创建ISO..."
         
         if [ -f "boot/isolinux.bin" ]; then
-            genisoimage \
+            if genisoimage \
                 -V "OPENWRT_TINY" \
                 -J -r \
                 -b boot/isolinux.bin \
@@ -620,137 +646,316 @@ create_tiny_iso() {
                 -no-emul-boot \
                 -boot-load-size 4 \
                 -boot-info-table \
-                -o "${OUTPUT_ISO}" .
+                -o "${OUTPUT_ISO}" . 2>/dev/null; then
+                print_success "genisoimage创建成功"
+            else
+                print_error "genisoimage创建失败"
+                return 1
+            fi
         else
-            genisoimage \
+            if genisoimage \
                 -V "OPENWRT_TINY" \
                 -J -r \
-                -o "${OUTPUT_ISO}" .
+                -o "${OUTPUT_ISO}" . 2>/dev/null; then
+                print_success "genisoimage创建成功"
+            else
+                print_error "genisoimage创建失败"
+                return 1
+            fi
         fi
         
     elif command -v mkisofs >/dev/null 2>&1; then
         print_info "使用mkisofs创建ISO..."
-        mkisofs -V "OPENWRT_TINY" -o "${OUTPUT_ISO}" .
+        if mkisofs -V "OPENWRT_TINY" -o "${OUTPUT_ISO}" . 2>/dev/null; then
+            print_success "mkisofs创建成功"
+        else
+            print_error "mkisofs创建失败"
+            return 1
+        fi
     else
         print_error "没有找到ISO创建工具"
         return 1
     fi
     
-    if [ $? -eq 0 ] && [ -f "${OUTPUT_ISO}" ]; then
+    # 检查ISO文件是否创建成功
+    if [ -f "${OUTPUT_ISO}" ] && [ -s "${OUTPUT_ISO}" ]; then
         ISO_SIZE=$(du -h "${OUTPUT_ISO}" 2>/dev/null | cut -f1)
         ISO_BYTES=$(stat -c%s "${OUTPUT_ISO}" 2>/dev/null || echo 0)
         
         print_success "ISO创建成功: ${ISO_SIZE}"
         
-        # 检查大小
-        if [ $ISO_BYTES -lt $((50*1024*1024)) ]; then
-            print_success "🎯 达成目标: < 50MB"
-        else
-            print_info "ISO大小: $((ISO_BYTES/1024/1024))MB"
+        # 验证ISO文件
+        if command -v file >/dev/null 2>&1; then
+            print_info "ISO文件验证:"
+            file "${OUTPUT_ISO}" | head -1
         fi
         
-        # 验证ISO
-        if command -v file >/dev/null 2>&1; then
-            print_info "ISO验证:"
-            file "${OUTPUT_ISO}" | head -1
+        # 检查引导信息
+        if command -v xorriso >/dev/null 2>&1; then
+            print_info "ISO引导信息:"
+            xorriso -indev "${OUTPUT_ISO}" -report_el_torito as_mkisofs 2>&1 | \
+                grep -E "(Boot|boot|image)" | head -5 || true
         fi
         
         return 0
     else
-        print_error "ISO创建失败"
+        print_error "ISO文件未生成或为空"
         return 1
     fi
 }
 
-# 创建ISO
-if create_tiny_iso; then
-    print_success "ISO构建完成"
-else
-    # 创建tar备份
-    print_warning "ISO创建失败，创建tar备份..."
+# 改进的备份创建函数
+create_backup_archive() {
+    print_step "创建备份存档..."
     
-    cd "${WORK_DIR}/iso"
-    if tar -czf "${OUTPUT_ISO}.tar.gz" .; then
-        TAR_SIZE=$(du -h "${OUTPUT_ISO}.tar.gz" 2>/dev/null | cut -f1)
-        print_success "创建tar备份: ${TAR_SIZE}"
-        
-        # 创建说明
-        cat > "${OUTPUT_DIR}/README.txt" << 'README'
-# OpenWRT Tiny Installer
+    cd "${WORK_DIR}"
+    
+    # 创建临时目录用于打包
+    local backup_dir="/tmp/iso-backup"
+    rm -rf "$backup_dir" 2>/dev/null || true
+    mkdir -p "$backup_dir"
+    
+    # 复制所有内容
+    cp -r iso/* "$backup_dir/" 2>/dev/null || true
+    
+    # 创建说明文件
+    cat > "$backup_dir/README.txt" << 'README'
+# OpenWRT Tiny Installer Backup
 
-由于ISO创建失败，已生成tar存档。
+This is a backup of the installer contents since ISO creation failed.
 
-使用方法:
-1. 解压到FAT32 U盘:
-   tar -xzf openwrt-tiny-installer.iso.tar.gz -C /mnt/usb/
-   
-2. 对于BIOS系统:
+Directory structure:
+- /boot/          - Kernel and initramfs
+- /EFI/boot/      - UEFI boot files (if any)
+- /img/           - OpenWRT system image
+- /isolinux.cfg   - BIOS boot configuration
+- /grub.cfg       - UEFI boot configuration
+
+To use this backup:
+
+## Option 1: Create bootable USB manually
+1. Format a USB drive as FAT32
+2. Copy all files to the USB root
+3. For BIOS boot: Install syslinux
    sudo syslinux -i /dev/sdX1
-   
-3. 对于UEFI系统，需要手动配置引导。
+4. For UEFI boot: Ensure EFI files are in EFI/BOOT/
 
-注意: 如果vmlinuz文件很小，需要替换为真实内核。
-可从 https://tinycorelinux.net 下载 vmlinuz64
+## Option 2: Extract and rebuild ISO
+1. Extract this archive
+2. Use any ISO tool to create ISO:
+   mkisofs -V "OPENWRT" -o openwrt.iso .
+
+## Option 3: Direct boot with GRUB
+If you have GRUB installed, add:
+menuentry "OpenWRT Installer" {
+    linux /boot/vmlinuz initrd=/boot/initramfs
+}
+
+Note: If vmlinuz is small (<1MB), replace it with a real Linux kernel.
+Download from: https://tinycorelinux.net (vmlinuz64)
 README
+    
+    # 创建tar.gz备份
+    cd "$backup_dir"
+    local backup_file="${OUTPUT_DIR}/openwrt-installer-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+    
+    if tar -czf "$backup_file" . 2>/dev/null; then
+        BACKUP_SIZE=$(du -h "$backup_file" 2>/dev/null | cut -f1)
+        print_success "备份创建成功: $(basename "$backup_file") (${BACKUP_SIZE})"
         
-        print_info "说明文件: ${OUTPUT_DIR}/README.txt"
+        # 创建简单的恢复脚本
+        cat > "${OUTPUT_DIR}/recover.sh" << 'RECOVER'
+#!/bin/bash
+# OpenWRT Installer Recovery Script
+
+echo "=== OpenWRT Installer Recovery ==="
+echo ""
+echo "This script helps recover from ISO build failure."
+echo ""
+
+BACKUP_FILE=$(ls -t openwrt-installer-backup-*.tar.gz 2>/dev/null | head -1)
+
+if [ -z "$BACKUP_FILE" ] || [ ! -f "$BACKUP_FILE" ]; then
+    echo "Error: No backup file found."
+    exit 1
+fi
+
+echo "Found backup: $BACKUP_FILE"
+echo ""
+echo "Options:"
+echo "1. Extract to current directory"
+echo "2. Extract to USB drive"
+echo "3. Create ISO from backup"
+echo ""
+read -p "Select option [1-3]: " OPTION
+
+case $OPTION in
+    1)
+        echo "Extracting to current directory..."
+        tar -xzf "$BACKUP_FILE"
+        echo "Done. Files extracted to: $(pwd)"
+        ;;
+    2)
+        echo "Available USB drives:"
+        lsblk -d -n -o NAME,SIZE,MODEL | grep -E '^(sd|hd)' || echo "None found"
+        echo ""
+        read -p "Enter USB device (e.g., sdb): " USB_DEV
+        if [ -b "/dev/$USB_DEV" ]; then
+            MOUNT_POINT="/mnt/usb-$(date +%s)"
+            mkdir -p "$MOUNT_POINT"
+            
+            # Find first partition
+            USB_PART=$(ls /dev/${USB_DEV}*1 2>/dev/null || echo "/dev/${USB_DEV}1")
+            
+            echo "Mounting $USB_PART to $MOUNT_POINT..."
+            mount "$USB_PART" "$MOUNT_POINT" 2>/dev/null || {
+                echo "Mount failed, trying FAT format..."
+                mkfs.vfat -F 32 "$USB_PART" 2>/dev/null
+                mount "$USB_PART" "$MOUNT_POINT"
+            }
+            
+            if mountpoint -q "$MOUNT_POINT"; then
+                tar -xzf "$BACKUP_FILE" -C "$MOUNT_POINT"
+                echo "Files copied to USB."
+                umount "$MOUNT_POINT"
+            else
+                echo "Failed to mount USB."
+            fi
+        else
+            echo "Invalid device."
+        fi
+        ;;
+    3)
+        echo "Creating ISO from backup..."
+        mkdir -p /tmp/iso-build
+        tar -xzf "$BACKUP_FILE" -C /tmp/iso-build
+        
+        if command -v xorriso >/dev/null 2>&1; then
+            xorriso -as mkisofs -V "OPENWRT_RECOVER" -o openwrt-recovered.iso /tmp/iso-build
+        elif command -v genisoimage >/dev/null 2>&1; then
+            genisoimage -V "OPENWRT_RECOVER" -o openwrt-recovered.iso /tmp/iso-build
+        else
+            echo "No ISO creation tool found."
+        fi
+        ;;
+    *)
+        echo "Invalid option."
+        ;;
+esac
+
+echo ""
+echo "Recovery complete."
+RECOVER
+        
+        chmod +x "${OUTPUT_DIR}/recover.sh"
+        print_info "恢复脚本: ${OUTPUT_DIR}/recover.sh"
+        
+        return 0
+    else
+        print_error "备份创建失败"
+        return 1
+    fi
+}
+
+# 主要构建流程
+print_step "开始ISO构建流程..."
+
+# 尝试创建ISO
+if create_tiny_iso; then
+    print_success "ISO构建成功完成"
+else
+    print_warning "ISO构建失败，创建备份..."
+    
+    # 创建备份
+    if create_backup_archive; then
+        print_info "备份已创建，请查看输出目录"
+    else
+        print_error "备份创建也失败"
     fi
 fi
 
 # ================= 最终报告 =================
-print_header "7. 构建完成"
+print_header "7. 构建完成报告"
 
+echo ""
+echo "══════════════════════════════════════════"
+echo "         构建流程完成"
+echo "══════════════════════════════════════════"
+echo ""
+
+# 检查输出文件
 if [ -f "${OUTPUT_ISO}" ]; then
     ISO_SIZE=$(du -h "${OUTPUT_ISO}" 2>/dev/null | cut -f1)
+    ISO_BYTES=$(stat -c%s "${OUTPUT_ISO}" 2>/dev/null || echo 0)
     
+    echo "✅ ISO文件生成成功!"
     echo ""
-    echo "══════════════════════════════════════════"
-    echo "  🎉 OpenWRT 微型安装器构建成功!"
-    echo "══════════════════════════════════════════"
-    echo ""
-    echo "📊 构建统计:"
-    echo "  • 输出文件: $(basename ${OUTPUT_ISO})"
-    echo "  • 文件大小: ${ISO_SIZE}"
-    echo "  • OpenWRT镜像: ${IMG_SIZE_FINAL}"
-    echo "  • Linux内核: ${KERNEL_SIZE}"
-    echo "  • Initramfs: ${INITRAMFS_SIZE}"
-    echo ""
-    echo "🚀 使用说明:"
-    echo "  1. 写入U盘:"
-    echo "     dd if=${OUTPUT_ISO_FILENAME} of=/dev/sdX bs=4M status=progress"
-    echo "  2. 从U盘启动计算机"
-    echo "  3. 选择'Install OpenWRT'"
+    echo "📊 文件信息:"
+    echo "  名称: $(basename ${OUTPUT_ISO})"
+    echo "  大小: ${ISO_SIZE}"
+    echo "  路径: ${OUTPUT_ISO}"
     echo ""
     
-    # 重要提示
-    KERNEL_BYTES=$(stat -c%s "${WORK_DIR}/iso/boot/vmlinuz" 2>/dev/null || echo 0)
-    if [ $KERNEL_BYTES -lt 1000000 ]; then
-        echo "⚠️  重要提示:"
-        echo "    检测到内核文件较小 ($((KERNEL_BYTES/1024))KB)"
-        echo "    可能需要手动替换为真实Linux内核"
-        echo ""
-        echo "    替换方法:"
-        echo "    1. 从 https://tinycorelinux.net 下载 vmlinuz64"
-        echo "    2. 替换ISO中的 /boot/vmlinuz 文件"
-        echo "    3. 或使用真实内核重新构建"
+    # 检查是否达到目标
+    if [ $ISO_BYTES -lt $((50*1024*1024)) ]; then
+        echo "🎯 达成目标: 小于 50MB"
+    elif [ $ISO_BYTES -lt $((100*1024*1024)) ]; then
+        echo "📊 大小适中: $((ISO_BYTES/1024/1024))MB"
+    else
+        echo "📈 文件较大: $((ISO_BYTES/1024/1024))MB"
+        echo "  主要因为OpenWRT镜像: ${IMG_SIZE_FINAL}"
     fi
     
-    echo "══════════════════════════════════════════"
+    # 内核检查
+    KERNEL_BYTES=$(stat -c%s "${WORK_DIR}/iso/boot/vmlinuz" 2>/dev/null || echo 0)
+    if [ $KERNEL_BYTES -lt 1000000 ]; then
+        echo ""
+        echo "⚠️  重要提示:"
+        echo "  内核文件较小 ($((KERNEL_BYTES/1024))KB)"
+        echo "  可能需要手动替换为真实Linux内核"
+        echo "  下载地址: https://tinycorelinux.net"
+    fi
     
+elif [ -f "${OUTPUT_DIR}/openwrt-installer-backup-"*.tar.gz ]; then
+    BACKUP_FILE=$(ls -t "${OUTPUT_DIR}/openwrt-installer-backup-"*.tar.gz 2>/dev/null | head -1)
+    if [ -n "$BACKUP_FILE" ]; then
+        BACKUP_SIZE=$(du -h "$BACKUP_FILE" 2>/dev/null | cut -f1)
+        
+        echo "⚠️  ISO创建失败，但已生成备份"
+        echo ""
+        echo "📦 备份文件:"
+        echo "  名称: $(basename "$BACKUP_FILE")"
+        echo "  大小: ${BACKUP_SIZE}"
+        echo "  路径: ${BACKUP_FILE}"
+        echo ""
+        echo "🛠️  恢复选项:"
+        echo "  1. 运行恢复脚本:"
+        echo "     cd output && ./recover.sh"
+        echo "  2. 手动解压备份:"
+        echo "     tar -xzf $(basename "$BACKUP_FILE")"
+        echo "  3. 使用其他工具创建ISO"
+    fi
 else
+    echo "❌ 构建失败，无输出文件"
     echo ""
-    echo "构建完成，但没有生成ISO文件"
-    echo "请检查错误信息"
-    echo "已生成tar备份文件"
+    echo "可能的原因:"
+    echo "  1. ISO创建工具问题"
+    echo "  2. 磁盘空间不足"
+    echo "  3. 权限问题"
+    echo ""
+    echo "检查点:"
+    echo "  - 确保有足够的磁盘空间 (需要 > 2.5GB)"
+    echo "  - 检查xorriso/genisoimage是否安装"
+    echo "  - 查看详细错误日志"
 fi
+
+echo ""
+echo "构建时间: $(date)"
+echo "══════════════════════════════════════════"
 
 # 清理工作目录
+print_step "清理工作目录..."
 rm -rf "${WORK_DIR}" 2>/dev/null || true
-
-# 清理测试镜像
-if [ -f "test-openwrt.img" ]; then
-    rm -f "test-openwrt.img"
-fi
 
 echo ""
 print_success "构建流程结束"
