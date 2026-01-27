@@ -11,7 +11,7 @@ on:
       alpine_version:
         description: 'Alpine版本'
         required: false
-        default: '3.20'
+        default: '3.18'
 
 jobs:
   build-alpine-iso:
