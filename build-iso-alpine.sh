@@ -1,6 +1,6 @@
 #!/bin/bash
-# build-iso-alpine.sh - Build OpenWRT auto-install ISO with Alpine in docker
-# Fixed boot issues with proper kernel parameters
+# build-openwrt-alpine-iso.sh - Build OpenWRT auto-install ISO with Alpine
+# Complete kernel and initramfs with all required modules
 
 set -e
 
@@ -73,7 +73,7 @@ apk update --no-cache
 
 # Install packages with minimal output
 log_info "Installing packages..."
-apk add --no-cache \
+apk add  --no-cache --no-scripts  \
     bash \
     xorriso \
     syslinux \
@@ -84,7 +84,7 @@ apk add --no-cache \
     dosfstools \
     squashfs-tools \
     gzip \
-    cpio \ 
+    cpio \
     wget \
     curl \
     parted \
@@ -118,7 +118,6 @@ fi
 
 log_info "Kernel version: $KERNEL_VERSION"
 
-
 # 1. Copy kernel
 if [ -f "/boot/vmlinuz-lts" ]; then
     cp "/boot/vmlinuz-lts" "$WORK_DIR/vmlinuz"
@@ -138,9 +137,9 @@ else
     fi
 fi
 
+ls -l $WORK_DIR
 KERNEL_SIZE=$(ls -lh "$WORK_DIR/vmlinuz" | awk '{print $5}')
 log_info "Kernel size: $KERNEL_SIZE"
-
 
 # 2. Extract kernel modules for initramfs
 log_info "Extracting kernel modules..."
@@ -169,6 +168,7 @@ if [ -d "/lib/modules/$KERNEL_VERSION" ]; then
 else
     log_warning "Kernel modules directory not found, initramfs will be minimal"
 fi
+
 # ==================== Step 4: Create complete root filesystem ====================
 log_info "[4/9] Creating complete root filesystem..."
 
@@ -176,7 +176,7 @@ ROOTFS_DIR="$WORK_DIR/rootfs"
 mkdir -p "$ROOTFS_DIR"
 
 # Create all directories
-mkdir -p "$ROOTFS_DIR"/{bin,dev,etc,lib,proc,sys,tmp,usr,var,sbin,run,root,mnt,opt,initrd}
+mkdir -p "$ROOTFS_DIR"/{bin,dev,etc,lib,proc,sys,tmp,usr,var,sbin,run,root,mnt,opt}
 mkdir -p "$ROOTFS_DIR"/usr/{bin,sbin,lib,share}
 mkdir -p "$ROOTFS_DIR"/var/{lib,lock,log,tmp,run}
 mkdir -p "$ROOTFS_DIR"/etc/{modules-load.d,modprobe.d}
@@ -193,11 +193,11 @@ if [ -d "$WORK_DIR/modules/lib/firmware" ]; then
     cp -r "$WORK_DIR/modules/lib/firmware"/* "$ROOTFS_DIR/lib/firmware/" 2>/dev/null || true
 fi
 
-# Create init script
+# Create init script with full module support
 cat > "$ROOTFS_DIR/init" << 'INIT_EOF'
 #!/bin/sh
 # OpenWRT installer init script with full hardware support
-export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
 # Mount essential filesystems
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
@@ -222,13 +222,13 @@ mount -t devpts devpts /dev/pts 2>/dev/null || true
 
 # Setup console
 exec 0</dev/console
-exec 1>/dev/console
-exec 2>/dev/console
+exec 1</dev/console
+exec 2</dev/console
 
 # Load essential kernel modules
 echo "Loading kernel modules..."
 for module in loop squashfs ext4 fat vfat ntfs nls_cp437 nls_utf8 nls_iso8859-1 usb-storage uhci-hcd ehci-hcd ohci-hcd xhci-hcd ahci sd_mod sr_mod virtio_blk virtio_pci virtio_mmio nvme; do
-    modprobe $module 2>/dev/null || echo "Failed to load $module"
+    modprobe $module 2>/dev/null || true
 done
 
 # Load block device modules
@@ -239,9 +239,10 @@ done
 # Clear screen
 clear
 cat << "HEADER"
-================================================
-           OpenWRT Installation System                 
-================================================
+╔═══════════════════════════════════════════════════════╗
+║           OpenWRT Installation System                 ║
+║         Alpine Linux based installer                  ║
+╚═══════════════════════════════════════════════════════╝
 
 HEADER
 
@@ -309,7 +310,7 @@ DISK_INDEX=1
 declare -A DISK_MAP
 
 echo "Available disks:"
-echo "================================================"
+echo "══════════════════════════════════════════════════════════"
 for disk in /sys/block/*; do
     DISK_NAME=$(basename "$disk")
     
@@ -363,7 +364,7 @@ if [ $TOTAL_DISKS -eq 0 ]; then
     exec /init  # Restart init
 fi
 
-echo "================================================"
+echo "══════════════════════════════════════════════════════════"
 echo ""
 
 while true; do
@@ -391,16 +392,16 @@ while true; do
 done
 
 echo ""
-echo "================================================"
+echo "══════════════════════════════════════════════════════════"
 echo "           CONFIRM INSTALLATION"
-echo "================================================"
+echo "══════════════════════════════════════════════════════════"
 echo ""
 echo "Target disk: /dev/$TARGET_DISK"
 echo ""
-echo "================================================"
-echo "                   WARNING!                            "
-echo "   This will ERASE ALL DATA on /dev/$TARGET_DISK       "
-echo "================================================"
+echo "╔═══════════════════════════════════════════════════════╗"
+echo "║                   WARNING!                            ║"
+echo "║   This will ERASE ALL DATA on /dev/$TARGET_DISK       ║"
+echo "╚═══════════════════════════════════════════════════════╝"
 echo ""
 echo -n "Type 'YES' (uppercase) to confirm: "
 read CONFIRM
@@ -414,9 +415,9 @@ if [ "$CONFIRM" != "YES" ]; then
 fi
 
 echo ""
-echo "================================================"
+echo "══════════════════════════════════════════════════════════"
 echo "           INSTALLING OPENWRT"
-echo "================================================"
+echo "══════════════════════════════════════════════════════════"
 echo ""
 echo "Target: /dev/$TARGET_DISK"
 echo "Image size: $(ls -lh /openwrt.img | awk '{print $5}')"
@@ -456,9 +457,9 @@ if [ $DD_STATUS -eq 0 ]; then
     # Sync to ensure all data is written
     sync
     echo ""
-    echo "================================================"
+    echo "══════════════════════════════════════════════════════════"
     echo "           INSTALLATION COMPLETE!"
-    echo "================================================"
+    echo "══════════════════════════════════════════════════════════"
     echo ""
     echo "✓ OpenWRT has been successfully installed to /dev/$TARGET_DISK"
     echo ""
@@ -467,10 +468,10 @@ if [ $DD_STATUS -eq 0 ]; then
     echo "2. Boot from the newly installed disk (/dev/$TARGET_DISK)"
     echo "3. OpenWRT will start automatically"
     echo ""
-    echo "Rebooting in 10 seconds..."
+    echo "System will reboot in 10 seconds..."
     
     # Countdown
-    for i in $(seq 10 -1 1); do
+    for i in {10..1}; do
         echo -ne "\rRebooting in $i seconds... "
         sleep 1
     done
@@ -479,9 +480,9 @@ if [ $DD_STATUS -eq 0 ]; then
     reboot -f
 else
     echo ""
-    echo "================================================"
+    echo "══════════════════════════════════════════════════════════"
     echo "           INSTALLATION FAILED!"
-    echo "================================================"
+    echo "══════════════════════════════════════════════════════════"
     echo ""
     echo "✗ Error code: $DD_STATUS"
     echo ""
@@ -587,7 +588,7 @@ mkdir -p "$ISO_DIR/isolinux"
 mkdir -p "$ISO_DIR/boot/grub"
 mkdir -p "$ISO_DIR/EFI/BOOT"
 
-# Copy files to root of ISO
+# Copy files
 cp "$OPENWRT_IMG" "$ISO_DIR/openwrt.img"
 cp "$WORK_DIR/vmlinuz" "$ISO_DIR/boot/vmlinuz"
 
@@ -603,7 +604,7 @@ mkdir -p "$INITRAMFS_DIR"
 cp "$ROOTFS_DIR/init" "$INITRAMFS_DIR/init"
 chmod +x "$INITRAMFS_DIR/init"
 
-# Copy bin directory
+# Copy entire /bin directory
 if [ -d "$ROOTFS_DIR/bin" ]; then
     cp -r "$ROOTFS_DIR/bin" "$INITRAMFS_DIR/"
 fi
@@ -632,8 +633,8 @@ cp "$ROOTFS_DIR/etc/passwd" "$INITRAMFS_DIR/etc/"
 cp "$ROOTFS_DIR/etc/group" "$INITRAMFS_DIR/etc/"
 cp "$ROOTFS_DIR/etc/modules-load.d/openwrt-installer.conf" "$INITRAMFS_DIR/etc/modules-load.d/" 2>/dev/null || true
 
-# Create essential directories
-mkdir -p $INITRAMFS_DIR/{dev,proc,sys,tmp}
+# Create device directory
+mkdir -p "$INITRAMFS_DIR/dev"
 
 # Create initramfs image
 log_info "Creating initramfs image (this may take a moment)..."
@@ -650,11 +651,11 @@ log_info "[7/9] Creating BIOS boot configuration..."
 # Create isolinux.cfg
 cat > "$ISO_DIR/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
 DEFAULT openwrt
-TIMEOUT 10
+TIMEOUT 30
 PROMPT 0
 UI vesamenu.c32
 
-MENU TITLE OpenWRT Installer
+MENU TITLE OpenWRT Auto Installer
 MENU BACKGROUND splash.png
 MENU COLOR border       30;44   #40ffffff #a0000000 std
 MENU COLOR title        1;36;44 #9033ccff #a0000000 std
@@ -670,13 +671,26 @@ LABEL openwrt
   MENU LABEL ^Install OpenWRT
   MENU DEFAULT
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initrd.img console=tty0 quiet
+  APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200 vga=791
 
+LABEL shell
+  MENU LABEL ^Emergency Shell
+  KERNEL /boot/vmlinuz
+  APPEND initrd=/boot/initrd.img console=tty0 single
+
+LABEL memtest
+  MENU LABEL ^Memory Test
+  KERNEL /boot/memtest
+  APPEND -
+
+LABEL local
+  MENU LABEL ^Boot from local drive
+  LOCALBOOT 0x80
 ISOLINUX_CFG
 
 # Copy ALL SYSLINUX files
 log_info "Copying SYSLINUX files..."
-SYSFILES="isolinux.bin ldlinux.c32 libutil.c32 libcom32.c32 vesamenu.c32 menu.c32 chain.c32"
+SYSFILES="isolinux.bin ldlinux.c32 libutil.c32 libcom32.c32 vesamenu.c32 menu.c32 chain.c32 reboot.c32 poweroff.c32"
 
 for file in $SYSFILES; do
     found=false
@@ -703,29 +717,52 @@ log_info "[8/9] Creating UEFI boot configuration..."
 
 # Create GRUB configuration
 cat > "$ISO_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
-set timeout=10
+set timeout=5
 set default=0
 
-menuentry "Install OpenWRT (UEFI)" {
-    linux /boot/vmlinuz console=tty0 quiet
+if loadfont /boot/grub/font.pf2 ; then
+    set gfxmode=auto
+    insmod efi_gop
+    insmod efi_uga
+    insmod gfxterm
+    terminal_output gfxterm
+fi
+
+set menu_color_normal=white/black
+set menu_color_highlight=black/light-gray
+
+menuentry "Install OpenWRT (UEFI)" --class gnu-linux --class gnu --class os {
+    linux /boot/vmlinuz console=tty0 console=ttyS0,115200
     initrd /boot/initrd.img
 }
 
+menuentry "Emergency Shell (UEFI)" --class gnu-linux --class gnu --class os {
+    linux /boot/vmlinuz console=tty0 single
+    initrd /boot/initrd.img
+}
+
+menuentry "Reboot" {
+    reboot
+}
+
+menuentry "Shutdown" {
+    halt
+}
 GRUB_CFG
 
-# Create bootx64.efi using grub-mkstandalone
+# Create UEFI boot image
 log_info "Creating UEFI boot image..."
 EFI_IMG="$WORK_DIR/efiboot.img"
 dd if=/dev/zero of="$EFI_IMG" bs=1M count=128
 mkfs.vfat -F 32 -n "UEFI_BOOT" "$EFI_IMG" >/dev/null 2>&1
+
 # Create GRUB EFI binary with all modules
 log_info "Building complete GRUB EFI binary..."
 GRUB_TMP="$WORK_DIR/grub_tmp"
 mkdir -p "$GRUB_TMP/EFI/BOOT"
 
-# Create bootx64.efi
+# Build GRUB with all necessary modules
 if command -v grub-mkstandalone >/dev/null 2>&1; then
-    log_info "Creating GRUB EFI binary..."
     grub-mkstandalone \
         --format=x86_64-efi \
         --output="$GRUB_TMP/EFI/BOOT/bootx64.efi" \
@@ -744,33 +781,38 @@ if command -v grub-mkstandalone >/dev/null 2>&1; then
     }
 fi
 
-# Copy EFI files to ISO
-if [ -f "$WORK_DIR/efi_boot/EFI/BOOT/bootx64.efi" ]; then
-    cp "$WORK_DIR/efi_boot/EFI/BOOT/bootx64.efi" "$ISO_DIR/EFI/BOOT/bootx64.efi"
-    log_success "UEFI boot image created"
-
-	log_info "===== $WORK_DIR/efi_boot/EFI/BOOT  ========"
-	ls $WORK_DIR/efi_boot/EFI/BOOT
-else
-    log_warning "Could not create bootx64.efi, trying alternative..."
-    # Try to copy existing EFI file
-    if [ -f /usr/share/grub/grubx64.efi ]; then
-        cp /usr/share/grub/grubx64.efi "$ISO_DIR/EFI/BOOT/bootx64.efi"
-    elif [ -f /usr/lib/grub/x86_64-efi/monolithic/grubx64.efi ]; then
-        cp /usr/lib/grub/x86_64-efi/monolithic/grubx64.efi "$ISO_DIR/EFI/BOOT/bootx64.efi"
+if [ -f "$GRUB_TMP/EFI/BOOT/bootx64.efi" ]; then
+    # Mount and populate EFI image
+    EFI_MOUNT="$WORK_DIR/efi_mount"
+    mkdir -p "$EFI_MOUNT"
+    
+    if mount -o loop "$EFI_IMG" "$EFI_MOUNT" 2>/dev/null; then
+        cp -r "$GRUB_TMP/EFI" "$EFI_MOUNT/"
+        
+        # Copy GRUB configuration and modules
+        mkdir -p "$EFI_MOUNT/boot/grub"
+        cp "$ISO_DIR/boot/grub/grub.cfg" "$EFI_MOUNT/boot/grub/"
+        
+        # Copy GRUB modules
+        mkdir -p "$EFI_MOUNT/boot/grub/x86_64-efi"
+        cp -r /usr/lib/grub/x86_64-efi/* "$EFI_MOUNT/boot/grub/x86_64-efi/" 2>/dev/null || true
+        
+        umount "$EFI_MOUNT"
+    else
+        # Use mcopy
+        mmd -i "$EFI_IMG" ::/EFI
+        mmd -i "$EFI_IMG" ::/EFI/BOOT
+        mcopy -i "$EFI_IMG" "$GRUB_TMP/EFI/BOOT/bootx64.efi" ::/EFI/BOOT/
+        mmd -i "$EFI_IMG" ::/boot
+        mmd -i "$EFI_IMG" ::/boot/grub
+        mcopy -i "$EFI_IMG" "$ISO_DIR/boot/grub/grub.cfg" ::/boot/grub/
     fi
-
-	log_info "===== /usr/lib/grub/x86_64-efi/monolithic  ========"
-	ls /usr/lib/grub/x86_64-efi/monolithic
+    
+    cp "$EFI_IMG" "$ISO_DIR/EFI/BOOT/efiboot.img"
+    log_success "UEFI boot image created (128MB)"
+else
+    log_warning "Could not create GRUB EFI binary"
 fi
-
-	log_info "===== $ISO_DIR/EFI/BOOT/  ========"
-	ls $ISO_DIR/EFI/BOOT/
-	
-# Also copy grub.cfg to EFI directory
-cp "$ISO_DIR/boot/grub/grub.cfg" "$ISO_DIR/EFI/BOOT/grub.cfg" 2>/dev/null || true
-
-log_success "UEFI boot configuration created"
 
 # ==================== Step 9: Build final ISO ====================
 log_info "[9/9] Building final ISO..."
@@ -795,83 +837,53 @@ if [ -z "$ISOHDPFX" ]; then
     log_warning "Could not obtain isohdpfx.bin"
 fi
 
-# Create iso.log for debugging
-ISO_LOG="$WORK_DIR/iso.log"
-
-# Build ISO with proper parameters
-log_info "Creating ISO image..."
+# Build ISO with xorriso
+XORRISO_CMD="xorriso -as mkisofs \
+    -volid 'OPENWRT_INSTALL' \
+    -full-iso9660-filenames \
+    -joliet \
+    -rational-rock \
+    -iso-level 3 \
+    -output '$ISO_PATH'"
 
 if [ -n "$ISOHDPFX" ]; then
-    xorriso -as mkisofs \
-        -volid "OPENWRT_INSTALL" \
-        -isohybrid-mbr "$ISOHDPFX" \
-        -c isolinux/boot.cat \
-        -b isolinux/isolinux.bin \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
-        -eltorito-alt-boot \
-        -e EFI/BOOT/bootx64.efi \
-        -no-emul-boot \
-        -isohybrid-gpt-basdat \
-        -o "$ISO_PATH" \
-        "$ISO_DIR" 2>&1 | tee "$ISO_LOG"
-	
-	echo  ========= ISOHDPFX : $ISOHDPFX   ==========
-else
-    # Without isohdpfx.bin
-    xorriso -as mkisofs \
-        -volid "OPENWRT_INSTALL" \
-        -c isolinux/boot.cat \
-        -b isolinux/isolinux.bin \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
-        -eltorito-alt-boot \
-        -e EFI/BOOT/bootx64.efi \
-        -no-emul-boot \
-        -o "$ISO_PATH" \
-        "$ISO_DIR" 2>&1 | tee "$ISO_LOG"
-	
-	echo  =====Without isohdpfx.bin : $ISOHDPFX   ==========
+    XORRISO_CMD="$XORRISO_CMD -isohybrid-mbr '$ISOHDPFX'"
 fi
+
+# Add BIOS boot
+XORRISO_CMD="$XORRISO_CMD \
+    -c 'isolinux/boot.cat' \
+    -b 'isolinux/isolinux.bin' \
+    -no-emul-boot \
+    -boot-load-size 4 \
+    -boot-info-table"
+
+# Add UEFI boot if available
+if [ -f "$ISO_DIR/EFI/BOOT/efiboot.img" ]; then
+    XORRISO_CMD="$XORRISO_CMD \
+        -eltorito-alt-boot \
+        -e 'EFI/BOOT/efiboot.img' \
+        -no-emul-boot \
+        -isohybrid-gpt-basdat"
+fi
+
+XORRISO_CMD="$XORRISO_CMD '$ISO_DIR'"
+
+log_info "Building ISO (this may take a moment)..."
+eval $XORRISO_CMD 2>&1 | tee "$WORK_DIR/iso.log"
 
 if [ -f "$ISO_PATH" ]; then
     ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
     log_success "ISO created successfully: $ISO_SIZE"
     
-    # Verify ISO contents
-    log_info "Verifying ISO contents..."
-    
-    echo "ISO root contents:"
-    xorriso -indev "$ISO_PATH" -ls / 2>/dev/null | grep -E "(vmlinuz|initrd|openwrt)" || true
-    
-    echo ""
-    echo "Boot files:"
-    xorriso -indev "$ISO_PATH" -find /isolinux -type f 2>/dev/null | head -5 || true
-    xorriso -indev "$ISO_PATH" -find /EFI -type f 2>/dev/null | head -5 || true
-    
-    # Create test script
-    cat > "$OUTPUT_DIR/test-boot.sh" << 'TEST_EOF'
-#!/bin/bash
-echo "Testing OpenWRT ISO boot..."
-echo "ISO: $(basename '$ISO_PATH')"
-echo ""
-echo "For BIOS boot test:"
-echo "  qemu-system-x86_64 -cdrom '$ISO_PATH' -m 1024 -serial stdio"
-echo ""
-echo "For UEFI boot test (requires OVMF):"
-echo "  qemu-system-x86_64 -cdrom '$ISO_PATH' -bios /usr/share/OVMF/OVMF_CODE.fd -m 1024 -serial stdio"
-echo ""
-echo "To check ISO contents:"
-echo "  xorriso -indev '$ISO_PATH' -ls /"
-TEST_EOF
-    chmod +x "$OUTPUT_DIR/test-boot.sh"
-    
+    # Verify ISO
+    log_info "Verifying ISO structure..."
+    if command -v isoinfo >/dev/null 2>&1; then
+        echo "ISO contains:"
+        isoinfo -i "$ISO_PATH" -R -l 2>/dev/null | grep -E "(Directory|boot/|isolinux/|EFI/)" | head -20
+    fi
 else
     log_error "ISO creation failed!"
-    echo "Last 20 lines of xorriso output:"
-    tail -20 "$ISO_LOG"
     exit 1
 fi
 
@@ -881,15 +893,15 @@ echo "════════════════════════�
 echo "                BUILD COMPLETED SUCCESSFULLY!"
 echo "══════════════════════════════════════════════════════════"
 echo ""
-echo "Summary:"
+echo "File Sizes:"
 echo "  OpenWRT Image:    $IMG_SIZE"
 echo "  Kernel:           $KERNEL_SIZE"
 echo "  Initramfs:        $INITRD_SIZE  (with modules and firmware)"
 echo "  Final ISO:        $ISO_SIZE"
 echo ""
-echo "Boot Configuration:"
-echo "  BIOS/Legacy:      ✓ SYSLINUX with menu interface"
-echo "  UEFI:             ✓ GRUB2 EFI boot"
+echo "Boot Capabilities:"
+echo "  BIOS/Legacy:      ✓ Full SYSLINUX menu support"
+echo "  UEFI:             ✓ GRUB2 with graphical menu"
 echo ""
 echo "Hardware Support:"
 echo "  Storage:          ✓ SATA, NVMe, USB, VirtIO"
