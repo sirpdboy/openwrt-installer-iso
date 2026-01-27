@@ -1,4 +1,4 @@
-name: build-ultra-minimal-iso
+name: build-iso-alpine
 
 on:
   push:
