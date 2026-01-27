@@ -67,7 +67,7 @@ jobs:
     
     - name: Create output directory
       run: |
-        mkdir -p /output
+        mkdir -p output
         chmod 777 output
     
     - name: build-iso-tinycore
@@ -75,39 +75,18 @@ jobs:
         chmod +x build-iso-tinycore.sh
         ./build-iso-tinycore.sh \
           "assets/ezopwrt.img" \
-          "/output" \
+          "output" \
           "openwrt-tiny-installer.iso"
       
         echo "ISO构建完成:"
         ls -lh output/
     
-    - name: 验证ISO
-      run: |
-        if [ -f "/output/openwrt-tiny-installer.iso" ]; then
-            echo "✅ ISO文件生成成功"
-            ISO_SIZE=$(ls -lh /output/openwrt-tiny-installer.iso | awk '{print $5}')
-            echo "大小: $ISO_SIZE"
-            
-            # 验证文件
-            file /output/openwrt-tiny-installer.iso
-            
-            # 检查大小是否<50MB
-            ISO_BYTES=$(stat -c%s /output/openwrt-tiny-installer.iso 2>/dev/null || echo 0)
-            if [ $ISO_BYTES -lt $((50*1024*1024)) ]; then
-                echo "🎯 达成目标: < 50MB"
-            else
-                echo "ISO大小: $((ISO_BYTES/1024/1024))MB"
-            fi
-        else
-            echo "❌ ISO文件未生成"
-            exit 1
-        fi
     
     - name: 上传制品
       uses: actions/upload-artifact@v4
       with:
         name: openwrt-tiny-installer
-        path: /output/*.iso
+        path: output/*.iso
         retention-days: 30
         if-no-files-found: error
     
@@ -117,7 +96,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        files: /output/*.iso
+        files: output/*.iso
         body: |
           # 🎯 OpenWRT 微型安装器
           
