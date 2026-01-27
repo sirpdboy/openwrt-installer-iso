@@ -10,7 +10,7 @@ on:
       alpine_version:
         description: 'Alpine版本 (例如: 3.18, 3.19, latest)'
         required: true
-        default: 'latest'
+        default: '3.18'
 
 env:
   ALPINE_VERSION: ${{ github.event.inputs.alpine_version || 'latest' }}
