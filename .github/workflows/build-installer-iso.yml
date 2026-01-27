@@ -100,9 +100,9 @@ jobs:
     
     - name: Create output directory
       run: |
-        OUTPUT_DIR=$(dirname "$(readlink -f ${{ env.ISO_NAME }} )")
-        mkdir -p $OUTPUT_DIR
-        chmod 777 $OUTPUT_DIR
+        # OUTPUT_DIR=$(dirname "$(readlink -f ${{ env.ISO_NAME }} )")
+        mkdir -p output
+        chmod 777 output
       
     - name: 构建安装ISO
       run: |
