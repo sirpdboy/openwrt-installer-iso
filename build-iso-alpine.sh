@@ -1,6 +1,6 @@
 #!/bin/bash
-# build-openwrt-alpine-iso.sh - Build OpenWRT auto-install ISO with Alpine
-# Complete kernel and initramfs with all required modules
+# build-iso-alpine.sh - Build OpenWRT auto-install ISO with Alpine in docker
+# Fixed boot issues with proper kernel parameters
 
 set -e
 
@@ -136,8 +136,6 @@ else
         exit 1
     fi
 fi
-
-ls -l $WORK_DIR
 KERNEL_SIZE=$(ls -lh "$WORK_DIR/vmlinuz" | awk '{print $5}')
 log_info "Kernel size: $KERNEL_SIZE"
 
@@ -222,13 +220,13 @@ mount -t devpts devpts /dev/pts 2>/dev/null || true
 
 # Setup console
 exec 0</dev/console
-exec 1</dev/console
-exec 2</dev/console
+exec 1>/dev/console
+exec 2>/dev/console
 
 # Load essential kernel modules
 echo "Loading kernel modules..."
 for module in loop squashfs ext4 fat vfat ntfs nls_cp437 nls_utf8 nls_iso8859-1 usb-storage uhci-hcd ehci-hcd ohci-hcd xhci-hcd ahci sd_mod sr_mod virtio_blk virtio_pci virtio_mmio nvme; do
-    modprobe $module 2>/dev/null || true
+    modprobe $module 2>/dev/null || echo "Failed to load $module"
 done
 
 # Load block device modules
@@ -239,10 +237,9 @@ done
 # Clear screen
 clear
 cat << "HEADER"
-╔═══════════════════════════════════════════════════════╗
-║           OpenWRT Installation System                 ║
-║         Alpine Linux based installer                  ║
-╚═══════════════════════════════════════════════════════╝
+================================================
+           OpenWRT Installation System                 
+================================================
 
 HEADER
 
@@ -310,7 +307,7 @@ DISK_INDEX=1
 declare -A DISK_MAP
 
 echo "Available disks:"
-echo "══════════════════════════════════════════════════════════"
+echo "================================================"
 for disk in /sys/block/*; do
     DISK_NAME=$(basename "$disk")
     
@@ -364,7 +361,7 @@ if [ $TOTAL_DISKS -eq 0 ]; then
     exec /init  # Restart init
 fi
 
-echo "══════════════════════════════════════════════════════════"
+echo "================================================"
 echo ""
 
 while true; do
@@ -392,16 +389,16 @@ while true; do
 done
 
 echo ""
-echo "══════════════════════════════════════════════════════════"
+echo "================================================"
 echo "           CONFIRM INSTALLATION"
-echo "══════════════════════════════════════════════════════════"
+echo "================================================"
 echo ""
 echo "Target disk: /dev/$TARGET_DISK"
 echo ""
-echo "╔═══════════════════════════════════════════════════════╗"
-echo "║                   WARNING!                            ║"
-echo "║   This will ERASE ALL DATA on /dev/$TARGET_DISK       ║"
-echo "╚═══════════════════════════════════════════════════════╝"
+echo "================================================"
+echo "                   WARNING!                            "
+echo "   This will ERASE ALL DATA on /dev/$TARGET_DISK       "
+echo "================================================"
 echo ""
 echo -n "Type 'YES' (uppercase) to confirm: "
 read CONFIRM
@@ -415,9 +412,9 @@ if [ "$CONFIRM" != "YES" ]; then
 fi
 
 echo ""
-echo "══════════════════════════════════════════════════════════"
+echo "================================================"
 echo "           INSTALLING OPENWRT"
-echo "══════════════════════════════════════════════════════════"
+echo "================================================"
 echo ""
 echo "Target: /dev/$TARGET_DISK"
 echo "Image size: $(ls -lh /openwrt.img | awk '{print $5}')"
@@ -457,9 +454,9 @@ if [ $DD_STATUS -eq 0 ]; then
     # Sync to ensure all data is written
     sync
     echo ""
-    echo "══════════════════════════════════════════════════════════"
+    echo "================================================"
     echo "           INSTALLATION COMPLETE!"
-    echo "══════════════════════════════════════════════════════════"
+    echo "================================================"
     echo ""
     echo "✓ OpenWRT has been successfully installed to /dev/$TARGET_DISK"
     echo ""
@@ -480,9 +477,9 @@ if [ $DD_STATUS -eq 0 ]; then
     reboot -f
 else
     echo ""
-    echo "══════════════════════════════════════════════════════════"
+    echo "================================================"
     echo "           INSTALLATION FAILED!"
-    echo "══════════════════════════════════════════════════════════"
+    echo "================================================"
     echo ""
     echo "✗ Error code: $DD_STATUS"
     echo ""
@@ -633,8 +630,8 @@ cp "$ROOTFS_DIR/etc/passwd" "$INITRAMFS_DIR/etc/"
 cp "$ROOTFS_DIR/etc/group" "$INITRAMFS_DIR/etc/"
 cp "$ROOTFS_DIR/etc/modules-load.d/openwrt-installer.conf" "$INITRAMFS_DIR/etc/modules-load.d/" 2>/dev/null || true
 
-# Create device directory
-mkdir -p "$INITRAMFS_DIR/dev"
+# Create essential directories
+mkdir -p $INITRAMFS_DIR/{dev,proc,sys,tmp}
 
 # Create initramfs image
 log_info "Creating initramfs image (this may take a moment)..."
@@ -651,11 +648,11 @@ log_info "[7/9] Creating BIOS boot configuration..."
 # Create isolinux.cfg
 cat > "$ISO_DIR/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
 DEFAULT openwrt
-TIMEOUT 30
+TIMEOUT 10
 PROMPT 0
 UI vesamenu.c32
 
-MENU TITLE OpenWRT Auto Installer
+MENU TITLE OpenWRT Installer
 MENU BACKGROUND splash.png
 MENU COLOR border       30;44   #40ffffff #a0000000 std
 MENU COLOR title        1;36;44 #9033ccff #a0000000 std
@@ -671,21 +668,9 @@ LABEL openwrt
   MENU LABEL ^Install OpenWRT
   MENU DEFAULT
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200 vga=791
+  APPEND initrd=/boot/initrd.img  console=tty0 quiet
 
-LABEL shell
-  MENU LABEL ^Emergency Shell
-  KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initrd.img console=tty0 single
 
-LABEL memtest
-  MENU LABEL ^Memory Test
-  KERNEL /boot/memtest
-  APPEND -
-
-LABEL local
-  MENU LABEL ^Boot from local drive
-  LOCALBOOT 0x80
 ISOLINUX_CFG
 
 # Copy ALL SYSLINUX files
@@ -717,7 +702,7 @@ log_info "[8/9] Creating UEFI boot configuration..."
 
 # Create GRUB configuration
 cat > "$ISO_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
-set timeout=5
+set timeout=10
 set default=0
 
 if loadfont /boot/grub/font.pf2 ; then
@@ -741,13 +726,6 @@ menuentry "Emergency Shell (UEFI)" --class gnu-linux --class gnu --class os {
     initrd /boot/initrd.img
 }
 
-menuentry "Reboot" {
-    reboot
-}
-
-menuentry "Shutdown" {
-    halt
-}
 GRUB_CFG
 
 # Create UEFI boot image
