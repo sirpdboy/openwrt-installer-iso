@@ -203,8 +203,8 @@ ULTRA_INIT
         apk add --no-cache busybox 2>/dev/null || true
     fi
     
-    BUSYBOX_PATH=$(which busybox)
-    if [ -f "$BUSYBOX_PATH" ]; then
+    BUSYBOX_PATH=`command -v busybox`
+    if [ -z "$BUSYBOX_PATH" ]; then
         cp "$BUSYBOX_PATH" "${initrd_dir}/bin/busybox"
         chmod +x "${initrd_dir}/bin/busybox"
         
