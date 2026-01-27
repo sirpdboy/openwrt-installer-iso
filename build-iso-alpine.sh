@@ -351,28 +351,45 @@ print_success "Initramfs created: ${INITRAMFS_SIZE}"
 # ================= Prepare Kernel =================
 print_header "4. Preparing Kernel"
 
-# Use Alpine's built-in kernel or download minimal kernel
-KERNEL_SOURCE="/boot/vmlinuz-linux"
-if [ -f "$KERNEL_SOURCE" ]; then
-    cp "$KERNEL_SOURCE" "${WORK_DIR}/iso/boot/vmlinuz"
-    print_success "Using host kernel"
-else
-    # Download Alpine's minirootfs kernel
-    print_step "Downloading minimal kernel..."
+# Check for kernel in standard locations
+KERNEL_FOUND=0
+for kernel_path in \
+    "/boot/vmlinuz-linux" \
+    "/boot/vmlinuz" \
+    "/boot/kernel" \
+    "/vmlinuz" \
+    "/boot/vmlinuz-$(uname -r)" \
+    "/usr/lib/modules/*/vmlinuz"; do
     
-    ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
-    KERNEL_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/x86_64/alpine-minirootfs-${ALPINE_VERSION}.0-x86_64.tar.gz"
+    for path in $kernel_path; do
+        if [ -f "$path" ]; then
+            cp "$path" "${WORK_DIR}/iso/boot/vmlinuz"
+            print_success "Using kernel from: $path"
+            KERNEL_FOUND=1
+            break 2
+        fi
+    done
+done
+
+# If no kernel found, download or create one
+if [ $KERNEL_FOUND -eq 0 ]; then
+    print_warning "No kernel found in system, downloading minimal kernel..."
     
-    if curl -s -L -o /tmp/alpine-kernel.tar.gz "$KERNEL_URL"; then
-        # Extract vmlinuz from minirootfs (though it might not contain kernel)
-        # For now, create a placeholder
-        print_warning "Creating placeholder kernel"
-        echo "Placeholder kernel for bootloader" > "${WORK_DIR}/iso/boot/vmlinuz"
+    # Try to download a small kernel
+    KERNEL_URL="https://github.com/tinycorelinux/Core-scripts/raw/master/vmlinuz64"
+    
+    if curl -s -L -o "${WORK_DIR}/iso/boot/vmlinuz" "${KERNEL_URL}"; then
+        print_success "Downloaded minimal kernel"
     else
-        # Create minimal stub kernel
-        print_warning "Creating minimal kernel stub"
-        dd if=/dev/zero of="${WORK_DIR}/iso/boot/vmlinuz" bs=1M count=1 2>/dev/null
-        echo "Linux kernel placeholder" >> "${WORK_DIR}/iso/boot/vmlinuz"
+        print_warning "Download failed, creating minimal kernel stub"
+        # Create a minimal kernel stub (just enough for bootloader)
+        cat > "${WORK_DIR}/iso/boot/vmlinuz" << 'EOF'
+# Minimal kernel stub
+# This is not a real kernel, just a placeholder for bootloader
+echo "Kernel placeholder - real kernel should be here"
+exit 1
+EOF
+        chmod +x "${WORK_DIR}/iso/boot/vmlinuz"
     fi
 fi
 
@@ -412,7 +429,6 @@ PROMPT 0
 TIMEOUT 30
 UI vesamenu.c32
 MENU TITLE OpenWRT Installer
-MENU BACKGROUND splash.png
 
 LABEL openwrt
   MENU LABEL ^Install OpenWRT
@@ -440,6 +456,7 @@ for efi_path in \
     /usr/lib/grub/x86_64-efi/grubnetx64.efi; do
     if [ -f "$efi_path" ]; then
         cp "$efi_path" "${WORK_DIR}/iso/EFI/boot/bootx64.efi" 2>/dev/null
+        print_success "Found EFI bootloader: $efi_path"
         break
     fi
 done
@@ -487,70 +504,124 @@ print_step "  • Initramfs: ${INITRAMFS_SIZE_FINAL}"
 print_step "Creating ISO..."
 
 ISO_CREATED=0
+
+# 修复点：这里使用传统的字符串拼接代替数组
 if command -v xorriso >/dev/null 2>&1; then
     print_info "Using xorriso to create ISO..."
     
-    XORRISO_OPTS=(
-        -as mkisofs
-        -volid "OPENWRT_INSTALL"
-        -full-iso9660-filenames
-        -J -joliet-long -rock
-        -eltorito-boot boot/isolinux.bin
-        -eltorito-catalog boot/boot.cat
-        -no-emul-boot
-        -boot-load-size 4
-        -boot-info-table
-        -eltorito-alt-boot
-        -e EFI/boot/bootx64.efi
-        -no-emul-boot
-        -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin 2>/dev/null
-        -output "${OUTPUT_ISO}"
-        .
-    )
+    # 构建xorriso命令字符串
+    XORRISO_CMD="xorriso -as mkisofs \
+        -volid \"OPENWRT_INSTALL\" \
+        -full-iso9660-filenames \
+        -J -joliet-long -rock \
+        -output \"${OUTPUT_ISO}\""
     
-    if xorriso "${XORRISO_OPTS[@]}" 2>/dev/null; then
+    # 如果存在isolinux.bin，添加引导选项
+    if [ -f "boot/isolinux.bin" ]; then
+        XORRISO_CMD="$XORRISO_CMD \
+            -eltorito-boot boot/isolinux.bin \
+            -eltorito-catalog boot/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table"
+        
+        # 如果存在EFI引导文件，添加UEFI引导
+        if [ -f "EFI/boot/bootx64.efi" ]; then
+            XORRISO_CMD="$XORRISO_CMD \
+                -eltorito-alt-boot \
+                -e EFI/boot/bootx64.efi \
+                -no-emul-boot"
+        fi
+        
+        # 如果存在isohdpfx.bin，添加混合引导支持
+        if [ -f "/usr/share/syslinux/isohdpfx.bin" ]; then
+            XORRISO_CMD="$XORRISO_CMD \
+                -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin"
+        fi
+    fi
+    
+    XORRISO_CMD="$XORRISO_CMD ."
+    
+    echo "执行命令: $XORRISO_CMD"
+    eval $XORRISO_CMD
+    
+    if [ $? -eq 0 ] && [ -f "${OUTPUT_ISO}" ]; then
         ISO_CREATED=1
     fi
     
 elif command -v genisoimage >/dev/null 2>&1; then
     print_info "Using genisoimage to create ISO..."
-    if genisoimage \
-        -V "OPENWRT_INSTALL" \
-        -J -r \
-        -b boot/isolinux.bin \
-        -c boot/boot.cat \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
-        -o "${OUTPUT_ISO}" .; then
-        ISO_CREATED=1
+    
+    if [ -f "boot/isolinux.bin" ]; then
+        if genisoimage \
+            -V "OPENWRT_INSTALL" \
+            -J -r \
+            -b boot/isolinux.bin \
+            -c boot/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            -o "${OUTPUT_ISO}" .; then
+            ISO_CREATED=1
+        fi
+    else
+        if genisoimage \
+            -V "OPENWRT_INSTALL" \
+            -J -r \
+            -o "${OUTPUT_ISO}" .; then
+            ISO_CREATED=1
+        fi
     fi
     
 elif command -v mkisofs >/dev/null 2>&1; then
     print_info "Using mkisofs to create ISO..."
-    if mkisofs \
-        -V "OPENWRT_INSTALL" \
-        -b boot/isolinux.bin \
-        -c boot/boot.cat \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
-        -o "${OUTPUT_ISO}" .; then
-        ISO_CREATED=1
+    
+    if [ -f "boot/isolinux.bin" ]; then
+        if mkisofs \
+            -V "OPENWRT_INSTALL" \
+            -b boot/isolinux.bin \
+            -c boot/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            -o "${OUTPUT_ISO}" .; then
+            ISO_CREATED=1
+        fi
+    else
+        if mkisofs \
+            -V "OPENWRT_INSTALL" \
+            -o "${OUTPUT_ISO}" .; then
+            ISO_CREATED=1
+        fi
     fi
+else
+    print_error "No ISO creation tool found (xorriso, genisoimage, mkisofs)"
+    exit 1
 fi
 
 if [ $ISO_CREATED -eq 1 ] && [ -f "${OUTPUT_ISO}" ]; then
     ISO_SIZE_FINAL=$(du -h "${OUTPUT_ISO}" 2>/dev/null | cut -f1)
     print_success "ISO created successfully: ${ISO_SIZE_FINAL}"
+    
+    # 显示ISO详细信息
+    if command -v file >/dev/null 2>&1; then
+        print_info "ISO file type:"
+        file "${OUTPUT_ISO}"
+    fi
+    
+    if command -v xorriso >/dev/null 2>&1; then
+        print_info "ISO boot information:"
+        xorriso -indev "${OUTPUT_ISO}" -report_el_torito as_mkisofs 2>&1 | grep -i "boot" || true
+    fi
 else
     print_error "Failed to create ISO"
     
-    # Try simple tar as fallback
+    # 尝试更简单的tar作为备用
     print_warning "Trying fallback method..."
     cd "${WORK_DIR}/iso"
-    tar -czf "${OUTPUT_ISO}.tar.gz" .
-    print_warning "Created tarball instead: ${OUTPUT_ISO}.tar.gz"
+    if tar -czf "${OUTPUT_ISO}.tar.gz" .; then
+        print_warning "Created tarball instead: ${OUTPUT_ISO}.tar.gz"
+    fi
     exit 1
 fi
 
@@ -578,5 +649,6 @@ print_step "4. Remove USB and reboot when complete"
 echo -e "${BLUE}=================================================${NC}"
 print_success "Ready for distribution!"
 
-# Cleanup (optional)
+# 清理工作目录（可选，调试时可以注释掉）
+# print_step "Cleaning up work directory..."
 # rm -rf "${WORK_DIR}" 2>/dev/null || true
