@@ -165,7 +165,7 @@ jobs:
           -e "OUTPUT_DIR=/output" \
           -e "ISO_NAME=openwrt-ultra-minimal.iso" \
           -v "$(pwd)/output:/output" \
-          -v "$(pwd)/assets/openwrt.img:/mnt/openwrt.img:ro" \
+          -v "$(pwd)/assets/ezopwrt.img:/mnt/openwrt.img:ro" \
           -v "$(pwd)/build-iso-alpine.sh:/build-iso-alpine.sh:ro" \
           alpine:${ALPINE_VERSION} \
           /bin/sh -c "
@@ -206,7 +206,6 @@ jobs:
         
         # 执行构建脚本
         echo '🔨 开始构建...'
-        chmod +x /build-iso-alpine.sh
         /build-iso-alpine.sh
         
         # 清理
