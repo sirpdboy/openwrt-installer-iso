@@ -61,7 +61,7 @@ docker build -t alpine-installer-builder:latest -f - . << EOF
 FROM alpine:${ALPINE_VERSION}
 
 # 安装构建工具
-RUN apk add --no-cache \
+RUN apk add --no-cache  --no-scripts\
     bash \
     curl \
     wget \
