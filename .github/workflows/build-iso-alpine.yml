@@ -223,7 +223,7 @@ jobs:
         echo '安装构建工具...'
         apk update --no-cache
           for i in 1 2 3; do
-              apk add --no-cache --no-scripts \
+              if apk add --no-cache --no-scripts \
                   alpine-sdk \
                   xorriso \
                   syslinux \
