@@ -14,9 +14,9 @@ NC='\033[0m'
 
 # 配置 - 修复路径问题
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INPUT_IMG="${INPUT_IMG:-${SCRIPT_DIR}/../assets/openwrt.img}"
-OUTPUT_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/../output}"
-OUTPUT_ISO_FILENAME="openwrt-tiny-installer.iso"
+INPUT_IMG="${1:-${SCRIPT_DIR}/../assets/openwrt.img}"
+OUTPUT_DIR="${2:-${SCRIPT_DIR}/../output}"
+OUTPUT_ISO_FILENAME="${3:-"openwrt-tiny-installer.iso"}"
 OUTPUT_ISO="${OUTPUT_DIR}/${OUTPUT_ISO_FILENAME}"
 WORK_DIR="/tmp/tiny-iso-work"
 
