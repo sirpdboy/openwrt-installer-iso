@@ -11,7 +11,7 @@ on:
       alpine_version:
         description: 'Alpine版本'
         required: false
-        default: '3.20'
+        default: '3.23'
 
 jobs:
   build-alpine-iso:
@@ -169,7 +169,7 @@ jobs:
         echo "🔄 在Alpine Docker容器中构建ISO..."
         
         # 设置Alpine版本
-        ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
+        ALPINE_VERSION="${ALPINE_VERSION:-3.23}"
         
         # 使用Docker构建
         docker run --privileged --rm \
@@ -218,33 +218,26 @@ jobs:
         echo '安装构建工具...'
         apk update --no-cache
         apk add --no-cache --no-scripts \
-          bash \
-          alpine-sdk \
-          xorriso \
-          syslinux \
-          grub \
-          grub-efi \
-          grub-bios \
-          mtools \
-          dosfstools \
-          squashfs-tools \
-          pv \
-          gzip \
-          cpio \ 
-          wget \
-          curl \
-          e2fsprogs \
-          parted \
-          linux-lts \
-          mkinitfs \
-          busybox \
-          linux-firmware-none \
-          kmod \
-          coreutils \
-          findutils \
-          grep \
-          util-linux
-
+          for i in 1 2 3; do
+              if apk add --no-cache \
+                  alpine-sdk \
+                  xorriso \
+                  syslinux \
+                  mtools \
+                  dosfstools \
+                  squashfs-tools \
+                  wget \
+                  curl \
+                  e2fsprogs \
+                  parted \
+                  bash; then
+                  echo '✅ 工具安装成功'
+                  break
+              else
+                  echo \"⚠️  安装失败，重试 \$i/3...\"
+                  sleep 2
+              fi
+          done
         echo '✅ 工具安装完成'
       
         # 执行构建脚本
