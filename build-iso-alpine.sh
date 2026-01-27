@@ -705,24 +705,8 @@ cat > "$ISO_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=10
 set default=0
 
-if loadfont /boot/grub/font.pf2 ; then
-    set gfxmode=auto
-    insmod efi_gop
-    insmod efi_uga
-    insmod gfxterm
-    terminal_output gfxterm
-fi
-
-set menu_color_normal=white/black
-set menu_color_highlight=black/light-gray
-
-menuentry "Install OpenWRT (UEFI)" --class gnu-linux --class gnu --class os {
-    linux /boot/vmlinuz console=tty0 console=ttyS0,115200
-    initrd /boot/initrd.img
-}
-
-menuentry "Emergency Shell (UEFI)" --class gnu-linux --class gnu --class os {
-    linux /boot/vmlinuz console=tty0 single
+menuentry "Install OpenWRT (UEFI)" {
+    linux /boot/vmlinuz console=tty0 quiet
     initrd /boot/initrd.img
 }
 
@@ -731,8 +715,8 @@ GRUB_CFG
 # Create UEFI boot image
 log_info "Creating UEFI boot image..."
 EFI_IMG="$WORK_DIR/efiboot.img"
-dd if=/dev/zero of="$EFI_IMG" bs=1M count=128
-mkfs.vfat -F 32 -n "UEFI_BOOT" "$EFI_IMG" >/dev/null 2>&1
+# dd if=/dev/zero of="$EFI_IMG" bs=1M count=128
+# mkfs.vfat -F 32 -n "UEFI_BOOT" "$EFI_IMG" >/dev/null 2>&1
 
 # Create GRUB EFI binary with all modules
 log_info "Building complete GRUB EFI binary..."
