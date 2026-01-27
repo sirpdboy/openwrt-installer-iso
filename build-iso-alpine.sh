@@ -196,25 +196,23 @@ fi
 # Create init script with full module support
 cat > "$ROOTFS_DIR/init" << 'INIT_EOF'
 #!/bin/sh
-# OpenWRT installer init script with full hardware support
+exec /bin/sh
+# 设置PATH确保能找到所有命令
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
-# Mount essential filesystems
+# 挂载基本文件系统
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || {
-    # Fallback: create essential devices
+    # 如果devtmpfs失败，创建基本设备节点
     mkdir -p /dev
-    mknod /dev/console c 5 1
-    mknod /dev/null c 1 3
-    mknod /dev/zero c 1 5
-    mknod /dev/random c 1 8
-    mknod /dev/urandom c 1 9
-    mknod /dev/tty c 5 0
-    mknod /dev/tty1 c 4 1
-    mknod /dev/tty2 c 4 2
-    mknod /dev/tty3 c 4 3
-    mknod /dev/tty4 c 4 4
+    mknod -m 622 /dev/console c 5 1 2>/dev/null
+    mknod -m 666 /dev/null c 1 3 2>/dev/null
+    mknod -m 666 /dev/zero c 1 5 2>/dev/null
+    mknod -m 666 /dev/tty c 5 0 2>/dev/null
+    mknod -m 666 /dev/tty1 c 4 1 2>/dev/null
 }
+
 
 # Create /dev/pts for terminals
 mkdir -p /dev/pts
