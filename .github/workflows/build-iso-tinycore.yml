@@ -37,45 +37,6 @@ jobs:
             gdisk \
             jq
     
-    - name: Setup Docker (Fixed)
-      run: |
-        # 清理已有Docker安装
-        sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
-        sudo apt-get autoremove -y
-        
-        # 安装必要依赖
-        sudo apt-get update
-        sudo apt-get install -y \
-            ca-certificates \
-            curl \
-            gnupg \
-            lsb-release
-        
-        # 添加Docker官方GPG密钥
-        sudo mkdir -p /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        
-        # 设置仓库
-        echo \
-          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-          $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-        
-        # 安装Docker
-        sudo apt-get update
-        sudo apt-get install -y \
-            docker-ce \
-            docker-ce-cli \
-            containerd.io \
-            docker-compose-plugin
-        
-        # 启动服务
-        sudo systemctl start docker
-        sudo systemctl enable docker
-        
-        # 验证
-        docker --version
-        echo "✅ Docker安装成功"
-    
     - name: Download OpenWRT image
       run: |
         mkdir -p assets
@@ -112,36 +73,94 @@ jobs:
     - name: build-iso-tinycore
       run: |
         chmod +x build-iso-tinycore.sh
-        ./build-iso-tinycore.sh
-        
+        ./build-iso-tinycore.sh \
+          "assets/ezopwrt.img.gz" \
+          "output" \
+          "openwrt-tiny-installer.iso"
+      
         echo "ISO构建完成:"
         ls -lh output/
     
-    - name: Upload ISO artifact
+    - name: 验证ISO
+      run: |
+        if [ -f "output/openwrt-tiny-installer.iso" ]; then
+            echo "✅ ISO文件生成成功"
+            ISO_SIZE=$(ls -lh output/openwrt-tiny-installer.iso | awk '{print $5}')
+            echo "大小: $ISO_SIZE"
+            
+            # 验证文件
+            file output/openwrt-tiny-installer.iso
+            
+            # 检查大小是否<50MB
+            ISO_BYTES=$(stat -c%s output/openwrt-tiny-installer.iso 2>/dev/null || echo 0)
+            if [ $ISO_BYTES -lt $((50*1024*1024)) ]; then
+                echo "🎯 达成目标: < 50MB"
+            else
+                echo "ISO大小: $((ISO_BYTES/1024/1024))MB"
+            fi
+        else
+            echo "❌ ISO文件未生成"
+            exit 1
+        fi
+    
+    - name: 上传制品
       uses: actions/upload-artifact@v4
       with:
-        name: openwrt-installer-tinycore
+        name: openwrt-tiny-installer
         path: output/*.iso
         retention-days: 30
         if-no-files-found: error
     
-    - name: Create release
+    - name: 创建发布
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         files: output/*.iso
         body: |
-          # 小型OpenWRT安装器 (基于Alpine Linux)
+          # 🎯 OpenWRT 微型安装器
           
-          ## 特点
-          - 🐧 基于Alpine Linux，非常轻量
-          - 📦 ISO大小仅50-80MB
-          - 🚀 自动启动安装程序
-          - 🔧 无需用户名密码
-          - 💾 支持UEFI和传统BIOS
+          ## 📊 特性
+          - **超小体积**: < 50MB
+          - **双引导**: BIOS + UEFI 支持
+          - **极简设计**: 仅包含必要组件
+          - **快速启动**: 秒级启动时间
+          - **自动安装**: 简单易用
           
-          ## 构建信息
-          - 版本: ${{ github.ref_name }}
-          - 时间: $(date -u)
-          - 大小: $(ls -lh output/*.iso | awk '{print $5}')
-          - 提交: ${{ github.sha }}
+          ## 🛠️ 技术规格
+          - **内核**: TinyCore Linux 微内核 (~5MB)
+          - **根文件系统**: BusyBox + 极简initramfs
+          - **引导**: SYSLINUX (BIOS) + GRUB (UEFI)
+          - **总大小**: 通常 < 50MB
+          
+          ## 📖 使用方法
+          ```bash
+          # 写入U盘
+          dd if=openwrt-tiny-installer.iso of=/dev/sdX bs=4M status=progress
+          
+          # 或使用图形工具
+          # - Etcher: https://www.balena.io/etcher/
+          # - Ventoy: https://www.ventoy.net/
+          ```
+          
+          ## ⚠️ 注意事项
+          1. 如果内核文件较小，可能需要手动替换
+          2. 安装会擦除目标磁盘所有数据
+          3. 确保备份重要数据
+          
+          ## 🔧 内核替换方法
+          如果内核无法引导，替换方法:
+          ```bash
+          # 下载TinyCore内核
+          wget https://github.com/tinycorelinux/Core-scripts/raw/master/vmlinuz64
+          
+          # 替换ISO中的内核
+          xorriso -indev openwrt-tiny-installer.iso \
+            -boot_image any keep \
+            -append_partition 2 0xef vmlinuz64 \
+            -outdev new.iso
+          ```
+          
+          ---
+          *由GitHub Actions自动构建*
