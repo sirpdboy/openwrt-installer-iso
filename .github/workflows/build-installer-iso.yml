@@ -1,4 +1,4 @@
-name: Build Alpine Installer ISO
+name: build-installer-iso
 
 on:
   workflow_dispatch:
@@ -10,11 +10,11 @@ on:
       iso_output:
         description: '输出文件目录'
         required: false
-        default: '/output'
+        default: 'output'
       iso_name:
         description: '输出ISO名称'
         required: true
-        default: 'openwrt-installer'
+        default: 'build-installer-iso'
 
 env:
   ALPINE_VERSION: ${{ github.event.inputs.alpine_version }}
@@ -139,6 +139,6 @@ jobs:
       run: |
         echo "=== 构建完成 ==="
         echo "Alpine版本: ${{ env.ALPINE_VERSION }}"
-        echo "ISO名称: ${{ env.ISO_NAME }}.iso"
+        echo "ISO名称: "${{ env.ISO_OUTPUT }}"/${{ env.ISO_NAME }}.iso"
         echo "ISO文件:"
         ls -lh output/*.iso 2>/dev/null || echo "未找到ISO文件"
