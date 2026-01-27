@@ -74,7 +74,7 @@ jobs:
       run: |
         chmod +x build-iso-tinycore.sh
         ./build-iso-tinycore.sh \
-          "assets/ezopwrt.img.gz" \
+          "assets/ezopwrt.img" \
           "output" \
           "openwrt-tiny-installer.iso"
       
