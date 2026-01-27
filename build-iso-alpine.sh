@@ -656,12 +656,23 @@ PROMPT 0
 UI vesamenu.c32
 
 MENU TITLE OpenWRT Auto Installer
+MENU BACKGROUND splash.png
+MENU COLOR border       30;44   #40ffffff #a0000000 std
+MENU COLOR title        1;36;44 #9033ccff #a0000000 std
+MENU COLOR sel          7;37;40 #e0ffffff #20ffffff all
+MENU COLOR unsel        37;44   #50ffffff #a0000000 std
+MENU COLOR help         37;40   #c0ffffff #a0000000 std
+MENU COLOR timeout_msg  37;40   #80ffffff #00000000 std
+MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
+MENU COLOR msg07        37;40   #90ffffff #a0000000 std
+MENU COLOR tabmsg       31;40   #30ffffff #00000000 std
 
 LABEL openwrt
   MENU LABEL ^Install OpenWRT
   MENU DEFAULT
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initrd.img
+  APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200 vga=791
+
 
 
 LABEL local
@@ -700,7 +711,13 @@ log_info "[8/9] Creating UEFI boot configuration..."
 cat > "$ISO_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=5
 set default=0
-
+if [ -f /boot/vmlinuz ]; then
+    set root=hd0,gpt1
+elif [ -f /vmlinuz ]; then
+    linux /vmlinuz
+else
+    search --file /openwrt.img --set=root
+fi
 if loadfont /boot/grub/font.pf2 ; then
     set gfxmode=auto
     insmod efi_gop
@@ -713,8 +730,17 @@ set menu_color_normal=white/black
 set menu_color_highlight=black/light-gray
 
 menuentry "Install OpenWRT (UEFI)" --class gnu-linux --class gnu --class os {
-    linux /boot/vmlinuz
-    initrd /boot/initrd.img
+    if [ -f /boot/vmlinuz ]; then
+        linux /boot/vmlinuz
+        initrd /boot/initrd.img
+    elif [ -f /vmlinuz ]; then
+        linux /vmlinuz
+        initrd /initrd.img
+    else
+        linux (cd)/boot/vmlinuz
+        initrd (cd)/boot/initrd.img
+    fi
+
 }
 
 GRUB_CFG
