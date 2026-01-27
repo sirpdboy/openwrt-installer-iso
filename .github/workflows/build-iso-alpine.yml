@@ -75,90 +75,73 @@ jobs:
             exit 1
         fi
     
-    - name: Prepare OpenWRT image
+
+    - name: Download OpenWRT image
       run: |
         mkdir -p assets
-        echo "准备OpenWRT镜像..."
         
-        # 如果有自定义URL，使用它
-        if [ -n "${OPENWRT_IMG_URL}" ] && [ "${OPENWRT_IMG_URL}" != "" ]; then
-            echo "使用自定义镜像URL: ${OPENWRT_IMG_URL}"
-            DOWNLOAD_URL="${OPENWRT_IMG_URL}"
-        else
-            # 默认使用Sirpdboy的最新版本
-            REPO="sirpdboy/openwrt"
-            echo "获取最新OpenWRT版本..."
-            
-            # 尝试获取最新版本
-            LATEST_RELEASE=$(curl -sL -H "Accept: application/vnd.github.v3+json" \
-                "https://api.github.com/repos/$REPO/releases/latest" | \
-                jq -r '.tag_name // empty' 2>/dev/null || echo "")
-            
-            if [ -z "$LATEST_RELEASE" ]; then
-                echo "无法获取最新版本，使用默认版本"
-                LATEST_RELEASE="v2024.09.01"
-            fi
-            
-            echo "最新版本: $LATEST_RELEASE"
-            
-            # 获取下载URL
-            RELEASE_DATA=$(curl -sL -H "Accept: application/vnd.github.v3+json" \
-                "https://api.github.com/repos/$REPO/releases/tags/$LATEST_RELEASE" 2>/dev/null || echo '{}')
-            
-            DOWNLOAD_URLS=$(echo "$RELEASE_DATA" | \
-                jq -r '.assets[] | select(.name | test(".*x86-64.*generic.*combined\\.img\\.gz$")) | .browser_download_url' 2>/dev/null || echo "")
-            
-            if [ -z "$DOWNLOAD_URLS" ]; then
-                # 备用URL
-                DOWNLOAD_URL="https://github.com/sirpdboy/openwrt/releases/download/v2024.09.01/2024.09.01-x86-64-generic-squashfs-combined.img.gz"
-            else
-                DOWNLOAD_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
-            fi
+        # 下载OpenWRT镜像
+        echo "下载OpenWRT镜像..."
+        
+        # 方法1: 尝试下载最新版本
+        REPO="sirpdboy/openwrt"
+        echo "获取最新版本..."
+        
+        # 获取最新版本
+        LATEST_RELEASE=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.tag_name // empty')
+        
+        if [ -z "$LATEST_RELEASE" ]; then
+            echo "无法获取最新版本，使用硬编码版本"
+            LATEST_RELEASE="v2024.09.01"
         fi
         
-        echo "下载URL: $DOWNLOAD_URL"
+        echo "最新版本: $LATEST_RELEASE"
+        
+        # 获取下载URL
+        DOWNLOAD_URLS=$(curl -sL "https://api.github.com/repos/$REPO/releases/tags/$LATEST_RELEASE" | \
+              jq -r '.assets[] | select(.name | endswith("img.gz")) | .browser_download_url' 2>/dev/null || echo "")
+        
+        if [ -z "$DOWNLOAD_URLS" ]; then
+            echo "无法获取下载URL，使用备用方法"
+            # 备用URL
+            DOWNLOAD_URLS="https://github.com/sirpdboy/openwrt/releases/download/v2024.09.01/2024.09.01-x86-64-generic-squashfs-combined.img.gz"
+        fi
+        
+        FIRST_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
+        echo "下载URL: $FIRST_URL"
         
         # 下载镜像
-        echo "开始下载..."
-        if wget --tries=3 --timeout=60 --show-progress -q "$DOWNLOAD_URL" -O assets/ezopwrt.img.gz; then
-            echo "✅ 下载成功"
-        else
-            echo "wget失败，尝试curl..."
-            if curl -L --connect-timeout 30 --retry 3 --progress-bar "$DOWNLOAD_URL" -o assets/ezopwrt.img.gz; then
-                echo "✅ curl下载成功"
-            else
-                echo "❌ 下载失败，创建测试镜像"
-                echo "创建10MB测试镜像..."
-                dd if=/dev/zero of=assets/ezopwrt.img bs=1M count=10 status=none
-                echo -e "o\nn\np\n1\n\n\nw" | fdisk assets/ezopwrt.img >/dev/null 2>&1
-                echo "⚠️  使用测试镜像继续"
-                exit 0
-            fi
+        wget --tries=3 --timeout=60 -q "$FIRST_URL" -O assets/ezopwrt.img.gz
+        
+        # 如果wget失败，尝试curl
+        if [ ! -f "assets/ezopwrt.img.gz" ] || [ ! -s "assets/ezopwrt.img.gz" ]; then
+            echo "wget下载失败，尝试curl..."
+            curl -L -o "assets/ezopwrt.img.gz" --connect-timeout 30 --retry 3 "$FIRST_URL"
         fi
         
-        # 检查文件
         if [ -f "assets/ezopwrt.img.gz" ] && [ -s "assets/ezopwrt.img.gz" ]; then
+            echo "✅ 下载完成"
             echo "压缩文件大小: $(ls -lh assets/ezopwrt.img.gz | awk '{print $5}')"
             
             # 解压
             echo "解压镜像..."
-            if gzip -d -f assets/ezopwrt.img.gz; then
+            gzip -d assets/ezopwrt.img.gz
+            
+            if [ -f "assets/ezopwrt.img" ]; then
                 echo "✅ 解压成功"
                 echo "镜像大小: $(ls -lh assets/ezopwrt.img | awk '{print $5}')"
-                
-                # 验证镜像
-                if file assets/ezopwrt.img | grep -q "DOS/MBR boot sector"; then
-                    echo "✅ 镜像验证通过"
-                else
-                    echo "⚠️  镜像格式可能不正确"
-                fi
             else
                 echo "❌ 解压失败"
                 exit 1
             fi
         else
-            echo "❌ 下载文件为空或不存在"
-            exit 1
+            echo "❌ 下载失败"
+            
+            # 创建测试镜像作为备用
+            echo "创建测试镜像..."
+            dd if=/dev/zero of=assets/ezopwrt.img bs=1M count=10
+            echo -e "o\nn\np\n1\n\n\nw" | fdisk assets/ezopwrt.img
+            echo "⚠️  使用测试镜像继续"
         fi
     
     - name: Create output directory
@@ -186,7 +169,7 @@ jobs:
           -e "ISO_NAME=openwrt-installer-alpine.iso" \
           -v "$(pwd)/output:/output" \
           -v "$(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro" \
-          -v "$(pwd)/build-iso-alpine.sh:/build/build-iso-alpine.sh:ro" \
+          -v "$(pwd)/build-iso-alpine.sh:/build-iso-alpine.sh:ro" \
           alpine:${ALPINE_VERSION} \
           /bin/sh -c "
         # 配置基础环境
@@ -194,19 +177,6 @@ jobs:
         echo '当前目录: $(pwd)'
         echo '文件列表:'
         ls -la /build/ 2>/dev/null || echo '无文件'
-        
-        # 设置工作目录
-        cd /build || mkdir /build && cd /build
-        
-        # 复制构建脚本
-        if [ -f /build/build-iso-alpine.sh ]; then
-            cp /build/build-iso-alpine.sh ./
-            chmod +x build-iso-alpine.sh
-            echo '✅ 脚本复制成功'
-        else
-            echo '❌ 找不到构建脚本'
-            exit 1
-        fi
         
         # 设置DNS
         echo 'nameserver 8.8.8.8' > /etc/resolv.conf
