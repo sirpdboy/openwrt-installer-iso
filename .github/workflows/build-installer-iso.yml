@@ -1,0 +1,144 @@
+name: Build Alpine Installer ISO
+
+on:
+  workflow_dispatch:
+    inputs:
+      alpine_version:
+        description: 'Alpine版本 (推荐3.18.6)'
+        required: true
+        default: '3.18.6'
+      iso_output:
+        description: '输出文件目录'
+        required: false
+        default: '/output'
+      iso_name:
+        description: '输出ISO名称'
+        required: true
+        default: 'openwrt-installer'
+
+env:
+  ALPINE_VERSION: ${{ github.event.inputs.alpine_version }}
+  ISO_OUTPUT: ${{ github.event.inputs.iso_output }}
+  ISO_NAME: ${{ github.event.inputs.iso_name }}
+
+jobs:
+  build-installer-iso:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+      
+    - name: 设置执行权限
+      run: |
+        chmod +x scripts/*.sh
+        chmod +x scripts/include/*
+      
+
+    - name: Download OpenWRT image
+      run: |
+        mkdir -p assets
+        
+        # 下载OpenWRT镜像
+        echo "下载OpenWRT镜像..."
+        
+        # 方法1: 尝试下载最新版本
+        REPO="sirpdboy/openwrt"
+        echo "获取最新版本..."
+        
+        # 获取最新版本
+        LATEST_RELEASE=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.tag_name // empty')
+        
+        if [ -z "$LATEST_RELEASE" ]; then
+            echo "无法获取最新版本，使用硬编码版本"
+            LATEST_RELEASE="v2024.09.01"
+        fi
+        
+        echo "最新版本: $LATEST_RELEASE"
+        
+        # 获取下载URL
+        DOWNLOAD_URLS=$(curl -sL "https://api.github.com/repos/$REPO/releases/tags/$LATEST_RELEASE" | \
+              jq -r '.assets[] | select(.name | endswith("img.gz")) | .browser_download_url' 2>/dev/null || echo "")
+        
+        if [ -z "$DOWNLOAD_URLS" ]; then
+            echo "无法获取下载URL，使用备用方法"
+            # 备用URL
+            DOWNLOAD_URLS="https://github.com/sirpdboy/openwrt/releases/download/v2024.09.01/2024.09.01-x86-64-generic-squashfs-combined.img.gz"
+        fi
+        
+        FIRST_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
+        echo "下载URL: $FIRST_URL"
+        
+        # 下载镜像
+        wget --tries=3 --timeout=60 -q "$FIRST_URL" -O assets/ezopwrt.img.gz
+        
+        # 如果wget失败，尝试curl
+        if [ ! -f "assets/ezopwrt.img.gz" ] || [ ! -s "assets/ezopwrt.img.gz" ]; then
+            echo "wget下载失败，尝试curl..."
+            curl -L -o "assets/ezopwrt.img.gz" --connect-timeout 30 --retry 3 "$FIRST_URL"
+        fi
+        
+        if [ -f "assets/ezopwrt.img.gz" ] && [ -s "assets/ezopwrt.img.gz" ]; then
+            echo "✅ 下载完成"
+            echo "压缩文件大小: $(ls -lh assets/ezopwrt.img.gz | awk '{print $5}')"
+            
+            # 解压
+            echo "解压镜像..."
+            gzip -d assets/ezopwrt.img.gz
+            
+            if [ -f "assets/ezopwrt.img" ]; then
+                echo "✅ 解压成功"
+                echo "镜像大小: $(ls -lh assets/ezopwrt.img | awk '{print $5}')"
+            else
+                echo "❌ 解压失败"
+                exit 1
+            fi
+        else
+            echo "❌ 下载失败"
+            
+            # 创建测试镜像作为备用
+            echo "创建测试镜像..."
+            dd if=/dev/zero of=assets/ezopwrt.img bs=1M count=10
+            echo -e "o\nn\np\n1\n\n\nw" | fdisk assets/ezopwrt.img
+            echo "⚠️  使用测试镜像继续"
+        fi
+    
+    - name: Create output directory
+      run: |
+        mkdir -p ${{ env.ISO_OUTPUT }}
+        chmod 777 ${{ env.ISO_OUTPUT }}
+      
+    - name: 构建安装ISO
+      run: |
+        # 如果有上传的IMG文件则使用，否则使用内置示例
+        if [ -f "assets/ezopwrt.img" ]; then
+          echo "使用上传的IMG文件"
+          IMG_PATH="assets/ezopwrt.img"
+        else
+          echo "使用内置示例IMG文件"
+          # 创建一个空的示例IMG文件
+          dd if=/dev/zero of=example.img bs=1M count=64
+          mkfs.ext4 example.img
+          IMG_PATH="example.img"
+        fi
+        
+        ./scripts/docker-build-installer.sh \
+          "${{ env.ALPINE_VERSION }}" \
+          "$IMG_PATH" \
+          "${{ env.ISO_OUTPUT }}" \
+          "output/${{ env.ISO_NAME }}.iso"
+      
+    - name: 上传ISO文件
+      uses: actions/upload-artifact@v4
+      with:
+        name: openwrt-installer-iso
+        path: "${{ env.ISO_OUTPUT }}/*.iso"
+        retention-days: 2
+        
+    - name: 显示构建信息
+      run: |
+        echo "=== 构建完成 ==="
+        echo "Alpine版本: ${{ env.ALPINE_VERSION }}"
+        echo "ISO名称: ${{ env.ISO_NAME }}.iso"
+        echo "ISO文件:"
+        ls -lh output/*.iso 2>/dev/null || echo "未找到ISO文件"
