@@ -66,8 +66,8 @@ ARG ALPINE_VERSION=3.20
 FROM alpine:${ALPINE_VERSION}
 
 # 设置稳定的镜像源
-RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/" > /etc/apk/repositories && \\
-    echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community/x86_64/" >> /etc/apk/repositories
+RUN echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > /etc/apk/repositories && \
+    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> /etc/apk/repositories
 
 # 安装所有必要的ISO构建工具（确保包名正确）
 RUN apk update && apk add --no-cache \
@@ -98,6 +98,9 @@ RUN chmod +x /build-iso.sh
 ENTRYPOINT ["/build-iso.sh"]
 DOCKERFILE_EOF
 
+# 修复版本号
+sed -i "s/v3.20/v$(echo $ALPINE_VERSION | cut -d. -f1-2)/g" "$DOCKERFILE_PATH"
+sed -i "s/ARG ALPINE_VERSION=3.20/ARG ALPINE_VERSION=$ALPINE_VERSION/" "$DOCKERFILE_PATH"
 
 # 创建简单但有效的构建脚本
 mkdir -p scripts
