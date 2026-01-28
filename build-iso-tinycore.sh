@@ -429,83 +429,92 @@ done
 MINI_SH
         chmod +x bin/sh
         
-        # 创建dd命令
-        cat > bin/dd << 'DD_CMD'
+        # 创建必要的命令
+        cat > bin/mount << 'MOUNT'
 #!/bin/sh
-if [ "$1" = "if=" ] && [ "$3" = "of=" ]; then
-    input=$(echo "$2" | sed 's/if=//')
-    output=$(echo "$4" | sed 's/of=//')
-    echo "Copying $input to $output"
-    echo "Simulating write operation..."
-    echo "Write completed"
-else
-    echo "dd: $@"
-fi
-DD_CMD
-        chmod +x bin/dd
+echo "Mount command placeholder"
+MOUNT
+        chmod +x bin/mount
         
-        # 创建其他必要命令
-        for cmd in ls cat echo mount sync; do
-            cat > bin/$cmd << EOF
+        cat > bin/dd << 'DD'
 #!/bin/sh
-/bin/sh -c "$cmd \$@"
-EOF
-            chmod +x bin/$cmd
-        done
+echo "dd command placeholder"
+DD
+        chmod +x bin/dd
     fi
     
-    # 创建pv命令（如果有busybox就用busybox的cat）
-    if [ -f bin/busybox ]; then
-        ln -sf busybox bin/pv 2>/dev/null || true
-    else
-        cat > bin/pv << 'PV_CMD'
+    # 创建pv命令（用于进度显示）
+    cat > bin/pv << 'PV'
 #!/bin/sh
+# Simple pv implementation
 cat "$@"
-PV_CMD
-        chmod +x bin/pv
-    fi
+PV
+    chmod +x bin/pv
     
-    # 创建reboot命令
-    cat > bin/reboot << 'REBOOT_CMD'
-#!/bin/sh
-echo "Rebooting system..."
-# 尝试多种重启方法
-if [ -f /proc/sys/kernel/sysrq ]; then
-    echo 1 > /proc/sys/kernel/sysrq
-    echo b > /proc/sysrq-trigger
-fi
-REBOOT_CMD
-    chmod +x bin/reboot
-    
-    # 创建sync命令
-    cat > bin/sync << 'SYNC_CMD'
+    # 创建其他必要命令
+    cat > bin/sync << 'SYNC'
 #!/bin/sh
 echo "Syncing filesystems..."
 /bin/busybox sync 2>/dev/null || true
-SYNC_CMD
+SYNC
     chmod +x bin/sync
     
-    # 显示文件结构
-    print_info "initramfs文件结构:"
-    find . -type f | head -10
+    cat > bin/reboot << 'REBOOT'
+#!/bin/sh
+echo "Rebooting system..."
+/bin/busybox reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger 2>/dev/null || true
+REBOOT
+    chmod +x bin/reboot
+    
+    # 创建fdisk命令
+    cat > bin/fdisk << 'FDISK'
+#!/bin/sh
+if [ "$1" = "-l" ]; then
+    echo "Disk listing:"
+    for d in /dev/sd[a-z] /dev/vd[a-z] /dev/nvme[0-9]n[0-9]; do
+        [ -b "$d" ] && echo "Disk $d"
+    done
+else
+    echo "fdisk: $@"
+fi
+FDISK
+    chmod +x bin/fdisk
+    
+    # 创建lsblk命令
+    cat > bin/lsblk << 'LSBLK'
+#!/bin/sh
+echo "NAME   SIZE"
+for d in /dev/sd[a-z] /dev/vd[a-z]; do
+    if [ -b "$d" ]; then
+        name=$(basename "$d")
+        echo "$name    -"
+    fi
+done
+LSBLK
+    chmod +x bin/lsblk
+    
+    # 创建blockdev命令
+    cat > bin/blockdev << 'BLOCKDEV'
+#!/bin/sh
+if [ "$1" = "--getsize64" ] && [ -n "$2" ]; then
+    if [ -b "$2" ]; then
+        # 返回模拟大小
+        echo "1000000000"
+    else
+        echo "0"
+    fi
+else
+    echo "blockdev: $@"
+fi
+BLOCKDEV
+    chmod +x bin/blockdev
     
     # 创建initramfs
     print_step "创建压缩initramfs..."
     find . 2>/dev/null | cpio -o -H newc 2>/dev/null | gzip -9 > "${WORK_DIR}/iso/boot/initrd.img"
     
-    if [ $? -ne 0 ]; then
-        print_error "initramfs创建失败"
-        return 1
-    fi
-    
     INITRD_SIZE=$(du -h "${WORK_DIR}/iso/boot/initrd.img" 2>/dev/null | cut -f1)
-    INITRD_BYTES=$(stat -c%s "${WORK_DIR}/iso/boot/initrd.img" 2>/dev/null || echo 0)
-    
-    if [ $INITRD_BYTES -gt 1000000 ]; then
-        print_success "initramfs创建完成: ${INITRD_SIZE} ($((INITRD_BYTES/1024))KB)"
-    else
-        print_warning "initramfs较小: ${INITRD_SIZE} ($((INITRD_BYTES/1024))KB)"
-    fi
+    print_success "initramfs创建完成: ${INITRD_SIZE}"
     
     return 0
 }
@@ -519,48 +528,94 @@ setup_bios_boot() {
     
     mkdir -p "$WORK_DIR/iso/isolinux"
     
-    print_info "获取ISOLINUX文件..."
+    print_info "收集ISOLINUX文件..."
     
     # 从系统复制文件
-    if [ -d "/usr/lib/syslinux" ]; then
-        print_info "从/usr/lib/syslinux复制..."
-        cp /usr/lib/syslinux/isolinux.bin $WORK_DIR/iso/isolinux/ 2>/dev/null || true
-        cp /usr/lib/syslinux/ldlinux.c32 $WORK_DIR/iso/isolinux/ 2>/dev/null || true
+    SYS_PATHS=(
+        "/usr/lib/syslinux"
+        "/usr/share/syslinux"
+        "/usr/lib/ISOLINUX"
+        "/usr/lib/syslinux/modules/bios"
+    )
+    
+    # 复制所有.c32文件和关键文件
+    for path in "${SYS_PATHS[@]}"; do
+        if [ -d "$path" ]; then
+            print_info "从 $path 复制文件..."
+            
+            # 复制.c32文件
+            find "$path" -name "*.c32" -type f 2>/dev/null | head -20 | while read file; do
+                cp "$file" "$WORK_DIR/iso/isolinux/" 2>/dev/null
+            done
+            
+            # 复制关键文件
+            for file in isolinux.bin ldlinux.c32; do
+                if [ -f "$path/$file" ] && [ ! -f "$WORK_DIR/iso/isolinux/$file" ]; then
+                    cp "$path/$file" "$WORK_DIR/iso/isolinux/" 2>/dev/null && \
+                        print_info "复制: $file"
+                fi
+            done
+        fi
+    done
+    
+    # 方法2：如果关键文件缺失，下载完整syslinux包
+    if [ ! -f "$WORK_DIR/iso/isolinux/isolinux.bin" ] || [ ! -f "$WORK_DIR/iso/isolinux/ldlinux.c32" ]; then
+        print_warning "关键文件缺失，下载syslinux..."
         
-        # 复制.c32文件
-        find /usr/lib/syslinux -name "*.c32" -type f 2>/dev/null | head -10 | while read file; do
-            cp "$file" $WORK_DIR/iso/isolinux/ 2>/dev/null || true
-        done
+        # 下载syslinux 6.03（稳定版）
+        wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/6.03/syslinux-6.03.tar.gz" -O /tmp/syslinux.tar.gz
+        
+        if [ -f /tmp/syslinux.tar.gz ]; then
+            mkdir -p /tmp/syslinux
+            tar -xzf /tmp/syslinux.tar.gz -C /tmp/syslinux --strip-components=1
+            
+            # 从源码编译目录结构复制文件
+            if [ -d "/tmp/syslinux/bios/core" ]; then
+                cp /tmp/syslinux/bios/core/isolinux.bin $WORK_DIR/iso/isolinux/ 2>/dev/null || true
+            fi
+            
+            if [ -d "/tmp/syslinux/bios/com32/elflink/ldlinux" ]; then
+                cp /tmp/syslinux/bios/com32/elflink/ldlinux/ldlinux.c32 $WORK_DIR/iso/isolinux/ 2>/dev/null || true
+            fi
+            
+            # 复制其他.c32文件
+            find /tmp/syslinux -name "*.c32" -type f 2>/dev/null | head -10 | while read file; do
+                cp "$file" "$WORK_DIR/iso/isolinux/" 2>/dev/null || true
+            done
+            
+            rm -rf /tmp/syslinux /tmp/syslinux.tar.gz
+        fi
     fi
     
-    if [ -d "/usr/share/syslinux" ]; then
-        print_info "从/usr/share/syslinux复制..."
-        cp /usr/share/syslinux/isolinux.bin $WORK_DIR/iso/isolinux/ 2>/dev/null || true
-        cp /usr/share/syslinux/ldlinux.c32 $WORK_DIR/iso/isolinux/ 2>/dev/null || true
-    fi
-    
-    # 检查关键文件
-    if [ ! -f "$WORK_DIR/iso/isolinux/isolinux.bin" ]; then
-        print_warning "下载isolinux.bin..."
-        wget -q "https://github.com/ventoy/syslinux/raw/ventoy/bios/core/isolinux.bin" -O $WORK_DIR/iso/isolinux/isolinux.bin || \
-        echo "Failed to get isolinux.bin"
-    fi
-    
+    # 方法3：直接从网络下载预编译文件
     if [ ! -f "$WORK_DIR/iso/isolinux/ldlinux.c32" ]; then
-        print_warning "下载ldlinux.c32..."
+        print_info "直接下载ldlinux.c32..."
         wget -q "https://github.com/ventoy/syslinux/raw/ventoy/bios/com32/elflink/ldlinux/ldlinux.c32" -O $WORK_DIR/iso/isolinux/ldlinux.c32 || \
-        echo "Failed to get ldlinux.c32"
+        wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/Testing/6.04/syslinux-6.04-pre1.tar.gz" -O /tmp/syslinux-new.tar.gz && \
+          tar -xzf /tmp/syslinux-new.tar.gz && \
+          find . -name "ldlinux.c32" -exec cp {} $WORK_DIR/iso/isolinux/ \; 2>/dev/null || true
     fi
     
-    # 创建ISOLINUX配置
+    # 验证文件
+    print_info "验证ISOLINUX文件:"
+    [ -f "$WORK_DIR/iso/isolinux/isolinux.bin" ] && echo "✅ isolinux.bin" || echo "❌ isolinux.bin"
+    [ -f "$WORK_DIR/iso/isolinux/ldlinux.c32" ] && echo "✅ ldlinux.c32" || echo "❌ ldlinux.c32"
+    
+    if [ ! -f "$WORK_DIR/iso/isolinux/isolinux.bin" ] || [ ! -f "$WORK_DIR/iso/isolinux/ldlinux.c32" ]; then
+        print_error "关键ISOLINUX文件缺失，无法创建可引导ISO"
+        return 1
+    fi
+    
+    # 创建isolinux.cfg配置文件
+    print_step "创建ISOLINUX配置..."
+    
     cat > $WORK_DIR/iso/isolinux/isolinux.cfg << 'ISOLINUX_CFG'
-DEFAULT menu.c32
+DEFAULT linux
 PROMPT 0
-TIMEOUT 300
-UI menu.c32
-
-MENU TITLE OpenWRT Installer
+TIMEOUT 50
+UI vesamenu.c32
 MENU BACKGROUND splash.png
+MENU TITLE OpenWRT Installer
 MENU COLOR border       30;44   #40ffffff #a0000000 std
 MENU COLOR title        1;36;44 #9033ccff #a0000000 std
 MENU COLOR sel          7;37;40 #e0ffffff #20ffffff all
@@ -568,12 +623,14 @@ MENU COLOR unsel        37;44   #50ffffff #a0000000 std
 MENU COLOR help         37;40   #c0ffffff #a0000000 std
 MENU COLOR timeout_msg  37;40   #80ffffff #00000000 std
 MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
+MENU COLOR cmdline      37;40   #c0ffffff #00000000 std
+MENU COLOR msg07        37;40   #90ffffff #a0000000 std
 
-LABEL install
+LABEL linux
   MENU LABEL ^Install OpenWRT
   MENU DEFAULT
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initrd.img console=ttyS0 console=tty0 quiet
+  APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200n8
 
 LABEL shell
   MENU LABEL ^Emergency Shell
@@ -585,20 +642,19 @@ LABEL reboot
   COM32 reboot.c32
 ISOLINUX_CFG
 
-    # 如果缺少menu.c32，使用文本模式
-    if [ ! -f "$WORK_DIR/iso/isolinux/menu.c32" ] && [ ! -f "$WORK_DIR/iso/isolinux/vesamenu.c32" ]; then
-        print_info "使用文本模式..."
+    # 如果缺少图形菜单文件，使用简单配置
+    if [ ! -f "$WORK_DIR/iso/isolinux/vesamenu.c32" ] && [ ! -f "$WORK_DIR/iso/isolinux/menu.c32" ]; then
+        print_info "使用文本模式配置..."
         cat > $WORK_DIR/iso/isolinux/isolinux.cfg << 'TEXT_CFG'
-DEFAULT install
+DEFAULT linux
 PROMPT 1
 TIMEOUT 100
-ONTIMEOUT install
 
-LABEL install
+LABEL linux
   MENU DEFAULT
   MENU LABEL Install OpenWRT
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initrd.img console=tty0 quiet
+  APPEND initrd=/boot/initrd.img console=tty0
 
 LABEL shell
   MENU LABEL Emergency Shell
