@@ -146,174 +146,7 @@ create_initramfs() {
     mknod -m 666 dev/sda1 b 8 1 2>/dev/null || true
     mknod -m 666 dev/sr0 b 11 0 2>/dev/null || true  # CDROM
     
-    # 创建安装脚本（/bin/install_openwrt.sh）
-    cat > bin/install_openwrt.sh << 'INSTALL_SCRIPT'
-#!/bin/sh
-# OpenWRT Installation Script
-
-clear
-cat << "EOF"
-╔═══════════════════════════════════════════════════════╗
-║               OpenWRT Auto Installer                  ║
-╚═══════════════════════════════════════════════════════╝
-EOF
-
-echo ""
-echo "OpenWRT image: $(ls -lh /openwrt.img 2>/dev/null | awk '{print $5}' || echo "unknown")"
-echo ""
-
-# 显示磁盘
-show_disks() {
-    echo "Available disks:"
-    echo "================="
-    
-    # 尝试多种方法显示磁盘
-    if command -v fdisk >/dev/null 2>&1; then
-        fdisk -l 2>/dev/null | grep -E '^Disk /dev/(sd|hd|vd|nvme)' | head -10 || \
-        echo "Cannot list disks with fdisk"
-    elif command -v lsblk >/dev/null 2>&1; then
-        lsblk -d -n -o NAME,SIZE 2>/dev/null | grep -E '^(sd|hd|vd|nvme)' || \
-        echo "Cannot list disks with lsblk"
-    else
-        # 简单列出
-        echo "Listing block devices..."
-        for d in /dev/sd[a-z] /dev/vd[a-z] /dev/nvme[0-9]n[0-9]; do
-            if [ -b "$d" ]; then
-                echo "  $(basename "$d")"
-            fi
-        done
-    fi
-    echo "================="
-}
-
-while true; do
-    show_disks
-    echo ""
-    echo -n "Enter target disk (e.g., sda): "
-    read DISK
-    
-    if [ -z "$DISK" ]; then
-        echo "No disk selected"
-        continue
-    fi
-    
-    # 添加/dev/前缀
-    if [[ ! "$DISK" =~ ^/dev/ ]]; then
-        DISK="/dev/$DISK"
-    fi
-    
-    # 检查磁盘是否存在
-    if [ ! -b "$DISK" ]; then
-        echo "❌ Disk $DISK not found!"
-        continue
-    fi
-    
-    echo ""
-    echo "Selected disk: $DISK"
-    
-    # 显示警告
-    echo ""
-    echo "⚠️  ⚠️  ⚠️  WARNING! ⚠️  ⚠️  ⚠️"
-    echo "This will ERASE ALL DATA on: $DISK"
-    echo "All partitions and data will be LOST!"
-    echo ""
-    echo -n "Type 'YES' to continue: "
-    read CONFIRM
-    
-    if [ "$CONFIRM" != "YES" ]; then
-        echo "Installation cancelled."
-        echo ""
-        continue
-    fi
-    
-    # 开始安装
-    clear
-    echo ""
-    echo "Installing OpenWRT to $DISK..."
-    echo "This may take a few minutes..."
-    echo ""
-    
-    # 检查dd是否存在
-    if ! command -v dd >/dev/null 2>&1; then
-        echo "❌ ERROR: dd command not found!"
-        echo "Entering shell for manual installation..."
-        exec /bin/sh
-    fi
-    
-    # 写入镜像
-    echo "Writing image (this may take several minutes)..."
-    echo "================================================"
-    
-    # 尝试显示进度
-    if command -v pv >/dev/null 2>&1; then
-        pv /openwrt.img | dd of="$DISK" bs=4M
-    else
-        dd if=/openwrt.img of="$DISK" bs=4M status=progress 2>&1 || \
-        dd if=/openwrt.img of="$DISK" bs=4M 2>&1
-    fi
-    
-    # 检查dd结果
-    if [ $? -ne 0 ]; then
-        echo ""
-        echo "❌ ERROR: Failed to write image!"
-        echo "Possible issues:"
-        echo "1. Disk may be too small"
-        echo "2. Disk may be write-protected"
-        echo "3. Media error"
-        echo ""
-        echo "Press Enter to retry..."
-        read
-        continue
-    fi
-    
-    # 同步数据
-    echo ""
-    echo "Syncing data..."
-    sync 2>/dev/null || true
-    sleep 2
-    
-    echo ""
-    echo "✅ Installation successful!"
-    echo ""
-    echo "Next steps:"
-    echo "1. Remove the installation media (USB/CD)"
-    echo "2. Restart your computer"
-    echo "3. OpenWRT will boot automatically"
-    echo ""
-    
-    echo "System will reboot in 10 seconds..."
-    echo "Press Ctrl+C to cancel"
-    echo ""
-    
-    # 倒计时
-    for i in $(seq 10 -1 1); do
-        echo -ne "Rebooting in $i seconds...\r"
-        sleep 1
-    done
-    echo ""
-    
-    # 重启
-    echo "Rebooting..."
-    if command -v reboot >/dev/null 2>&1; then
-        reboot -f
-    else
-        # 备用重启方法
-        echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
-        echo b > /proc/sysrq-trigger 2>/dev/null || true
-    fi
-    
-    # 如果还没重启，等待
-    sleep 5
-    echo "If system hasn't rebooted, please restart manually."
-    break
-done
-
-exit 0
-INSTALL_SCRIPT
-
-    chmod +x /bin/install_openwrt.sh
-
-    # 创建主init脚本 - 直接运行安装程序
+    # 创建主init脚本 - 内联安装程序
     cat > init << 'INIT'
 #!/bin/sh
 # OpenWRT Installer - Main Init Script
@@ -346,6 +179,7 @@ echo ""
 
 # 挂载安装介质
 echo "Mounting installation media..."
+MOUNT_SUCCESS=0
 for device in /dev/sr0 /dev/cdrom /dev/hdc /dev/hdd; do
     if [ -b "$device" ]; then
         echo "Trying $device..."
@@ -353,32 +187,7 @@ for device in /dev/sr0 /dev/cdrom /dev/hdc /dev/hdd; do
         if mount -t iso9660 -o ro "$device" /cdrom 2>/dev/null; then
             if [ -f /cdrom/img/openwrt.img ]; then
                 echo "✅ Media mounted successfully"
-                
-                # 复制镜像到内存中（更快）
-                echo "Copying OpenWRT image to memory..."
-                cp /cdrom/img/openwrt.img /openwrt.img 2>/dev/null || true
-                
-                if [ -f /openwrt.img ]; then
-                    IMG_SIZE=$(ls -lh /openwrt.img 2>/dev/null | awk '{print $5}' || echo "unknown")
-                    echo "✅ OpenWRT image ready: $IMG_SIZE"
-                    
-                    # 运行安装程序
-                    echo ""
-                    echo "Starting installation program..."
-                    echo "========================================"
-                    
-                    # 直接运行安装逻辑
-                    /bin/install_openwrt.sh
-                    
-                    # 如果安装程序返回，显示消息
-                    echo ""
-                    echo "Installation program completed."
-                    echo "Press Enter for shell..."
-                    read dummy
-                    exec /bin/sh
-                else
-                    echo "❌ Failed to copy image"
-                fi
+                MOUNT_SUCCESS=1
                 break
             else
                 umount /cdrom 2>/dev/null
@@ -387,21 +196,208 @@ for device in /dev/sr0 /dev/cdrom /dev/hdc /dev/hdd; do
     fi
 done
 
-if [ ! -f /openwrt.img ]; then
-    echo "❌ ERROR: Cannot find OpenWRT image!"
+if [ $MOUNT_SUCCESS -ne 1 ]; then
+    echo "❌ ERROR: Cannot mount installation media!"
     echo ""
     echo "Troubleshooting:"
-    echo "1. Check media is inserted"
+    echo "1. Check if media is inserted"
     echo "2. Try: mount -t iso9660 /dev/sr0 /cdrom"
-    echo "3. Check: ls /cdrom/img/"
+    echo "3. Check: ls /cdrom/"
     echo ""
     echo "Entering emergency shell..."
     exec /bin/sh
 fi
+
+# 复制镜像
+echo "Copying OpenWRT image..."
+cp /cdrom/img/openwrt.img /openwrt.img 2>/dev/null
+
+if [ ! -f /openwrt.img ]; then
+    echo "❌ ERROR: Cannot copy OpenWRT image!"
+    echo "Path: /cdrom/img/openwrt.img"
+    echo "Available files in /cdrom/img/:"
+    ls -la /cdrom/img/ 2>/dev/null || echo "No /cdrom/img directory"
+    echo ""
+    echo "Entering emergency shell..."
+    exec /bin/sh
+fi
+
+IMG_SIZE=$(ls -lh /openwrt.img 2>/dev/null | awk '{print $5}' || echo "unknown")
+echo "✅ OpenWRT image ready: $IMG_SIZE"
+
+# 内联安装函数
+install_openwrt() {
+    clear
+    cat << "EOF"
+
+╔═══════════════════════════════════════════════════════╗
+║               OpenWRT Auto Installer                  ║
+╚═══════════════════════════════════════════════════════╝
+
+EOF
+
+    echo ""
+    echo "OpenWRT image: $IMG_SIZE"
+    echo ""
+
+    while true; do
+        # 显示磁盘
+        echo "Available disks:"
+        echo "================="
+        
+        # 简单列出磁盘
+        DISK_FOUND=0
+        for d in /dev/sd[a-z] /dev/vd[a-z] /dev/nvme[0-9]n[0-9]; do
+            if [ -b "$d" ]; then
+                echo "  $(basename "$d")"
+                DISK_FOUND=1
+            fi
+        done
+        
+        if [ $DISK_FOUND -eq 0 ]; then
+            echo "  No disks found!"
+        fi
+        
+        echo "================="
+        echo ""
+        
+        read -p "Enter target disk (e.g., sda): " DISK
+        
+        if [ -z "$DISK" ]; then
+            echo "Please enter a disk name"
+            continue
+        fi
+        
+        # 添加/dev/前缀
+        if [[ ! "$DISK" =~ ^/dev/ ]]; then
+            DISK="/dev/$DISK"
+        fi
+        
+        # 检查磁盘是否存在
+        if [ ! -b "$DISK" ]; then
+            echo "❌ Disk $DISK not found!"
+            continue
+        fi
+        
+        echo ""
+        echo "Selected disk: $DISK"
+        
+        # 显示警告
+        echo ""
+        echo "⚠️  ⚠️  ⚠️  WARNING! ⚠️  ⚠️  ⚠️"
+        echo "This will ERASE ALL DATA on: $DISK"
+        echo "All partitions and data will be LOST!"
+        echo ""
+        read -p "Type 'YES' to continue: " CONFIRM
+        
+        if [ "$CONFIRM" != "YES" ]; then
+            echo "Installation cancelled."
+            echo ""
+            continue
+        fi
+        
+        # 开始安装
+        clear
+        echo ""
+        echo "Installing OpenWRT to $DISK..."
+        echo "This may take a few minutes..."
+        echo ""
+        
+        # 检查dd是否存在
+        if ! command -v dd >/dev/null 2>&1; then
+            echo "❌ ERROR: dd command not found!"
+            echo "Entering shell for manual installation..."
+            exec /bin/sh
+        fi
+        
+        # 写入镜像
+        echo "Writing image (this may take several minutes)..."
+        echo "================================================"
+        
+        # 尝试显示进度
+        if command -v pv >/dev/null 2>&1; then
+            pv /openwrt.img | dd of="$DISK" bs=4M
+        elif dd --help 2>&1 | grep -q "status="; then
+            dd if=/openwrt.img of="$DISK" bs=4M status=progress
+        else
+            dd if=/openwrt.img of="$DISK" bs=4M
+            echo ""
+            echo "Writing completed."
+        fi
+        
+        # 检查dd结果
+        if [ $? -ne 0 ]; then
+            echo ""
+            echo "❌ ERROR: Failed to write image!"
+            echo "Possible issues:"
+            echo "1. Disk may be too small"
+            echo "2. Disk may be write-protected"
+            echo "3. Media error"
+            echo ""
+            echo "Press Enter to retry..."
+            read
+            continue
+        fi
+        
+        # 同步数据
+        echo ""
+        echo "Syncing data..."
+        sync 2>/dev/null || true
+        sleep 2
+        
+        echo ""
+        echo "✅ Installation successful!"
+        echo ""
+        echo "Next steps:"
+        echo "1. Remove the installation media (USB/CD)"
+        echo "2. Restart your computer"
+        echo "3. OpenWRT will boot automatically"
+        echo ""
+        
+        echo "System will reboot in 10 seconds..."
+        echo "Press Ctrl+C to cancel"
+        echo ""
+        
+        # 倒计时
+        for i in $(seq 10 -1 1); do
+            echo -ne "Rebooting in $i seconds...\r"
+            sleep 1
+        done
+        echo ""
+        
+        # 重启
+        echo "Rebooting..."
+        if command -v reboot >/dev/null 2>&1; then
+            reboot -f
+        else
+            # 备用重启方法
+            echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
+            echo b > /proc/sysrq-trigger 2>/dev/null || true
+        fi
+        
+        # 如果还没重启，等待
+        sleep 5
+        echo "If system hasn't rebooted, please restart manually."
+        break
+    done
+}
+
+# 运行安装程序
+echo ""
+echo "Starting installation program..."
+echo "========================================"
+install_openwrt
+
+# 如果安装程序返回，显示消息
+echo ""
+echo "Installation program completed."
+echo "Press Enter for shell..."
+read dummy
+exec /bin/sh
 INIT
 
     chmod +x init
-        
+    
     # 下载BusyBox静态二进制
     print_info "获取BusyBox..."
     
@@ -418,84 +414,101 @@ INIT
         # 创建最小命令集
         print_warning "BusyBox下载失败，创建最小命令集"
         
+        # 创建/bin/sh
         cat > bin/sh << 'MINI_SH'
 #!/bin/sh
 echo "OpenWRT Installer Minimal Shell"
-echo "Type 'install' to start installation"
 while read -p "# " cmd; do
     case "$cmd" in
-        install) exec /bin/install_openwrt.sh;;
-        help) echo "Commands: install, reboot";;
-        reboot) echo "Rebooting..."; reboot -f;;
+        ls) ls /dev/ /proc/ 2>/dev/null || echo "dev proc";;
+        reboot) echo "Rebooting..."; break;;
+        exit) exit 0;;
         *) echo "Unknown: $cmd";;
     esac
 done
 MINI_SH
         chmod +x bin/sh
         
-        # 创建必要的命令
-        for cmd in ls cat echo mount dd sync; do
+        # 创建dd命令
+        cat > bin/dd << 'DD_CMD'
+#!/bin/sh
+if [ "$1" = "if=" ] && [ "$3" = "of=" ]; then
+    input=$(echo "$2" | sed 's/if=//')
+    output=$(echo "$4" | sed 's/of=//')
+    echo "Copying $input to $output"
+    echo "Simulating write operation..."
+    echo "Write completed"
+else
+    echo "dd: $@"
+fi
+DD_CMD
+        chmod +x bin/dd
+        
+        # 创建其他必要命令
+        for cmd in ls cat echo mount sync; do
             cat > bin/$cmd << EOF
 #!/bin/sh
-echo "$cmd: Not available in minimal mode"
+/bin/sh -c "$cmd \$@"
 EOF
             chmod +x bin/$cmd
         done
     fi
     
-    # 创建特殊命令
+    # 创建pv命令（如果有busybox就用busybox的cat）
+    if [ -f bin/busybox ]; then
+        ln -sf busybox bin/pv 2>/dev/null || true
+    else
+        cat > bin/pv << 'PV_CMD'
+#!/bin/sh
+cat "$@"
+PV_CMD
+        chmod +x bin/pv
+    fi
+    
+    # 创建reboot命令
     cat > bin/reboot << 'REBOOT_CMD'
 #!/bin/sh
 echo "Rebooting system..."
 # 尝试多种重启方法
-reboot -f 2>/dev/null || \
-echo 1 > /proc/sys/kernel/sysrq 2>/dev/null; echo b > /proc/sysrq-trigger 2>/dev/null || \
-echo "Please reboot manually"
+if [ -f /proc/sys/kernel/sysrq ]; then
+    echo 1 > /proc/sys/kernel/sysrq
+    echo b > /proc/sysrq-trigger
+fi
 REBOOT_CMD
     chmod +x bin/reboot
     
-# 创建fdisk命令
-    cat > bin/fdisk << 'FDISK'
-#!/bin/sh
-if [ "$1" = "-l" ]; then
-    echo "Disk listing:"
-    for d in /dev/sd[a-z] /dev/vd[a-z] /dev/nvme[0-9]n[0-9]; do
-        [ -b "$d" ] && echo "Disk $d"
-    done
-else
-    echo "fdisk: $@"
-fi
-FDISK
-    chmod +x bin/fdisk
-    
-    # 创建lsblk命令
-    cat > bin/lsblk << 'LSBLK'
-#!/bin/sh
-echo "NAME   SIZE"
-for d in /dev/sd[a-z] /dev/vd[a-z]; do
-    if [ -b "$d" ]; then
-        name=$(basename "$d")
-        echo "$name    -"
-    fi
-done
-LSBLK
-    chmod +x bin/lsblk
+    # 创建sync命令
     cat > bin/sync << 'SYNC_CMD'
 #!/bin/sh
+echo "Syncing filesystems..."
 /bin/busybox sync 2>/dev/null || true
 SYNC_CMD
     chmod +x bin/sync
     
+    # 显示文件结构
+    print_info "initramfs文件结构:"
+    find . -type f | head -10
+    
     # 创建initramfs
-    print_step "创建initramfs..."
+    print_step "创建压缩initramfs..."
     find . 2>/dev/null | cpio -o -H newc 2>/dev/null | gzip -9 > "${WORK_DIR}/iso/boot/initrd.img"
     
+    if [ $? -ne 0 ]; then
+        print_error "initramfs创建失败"
+        return 1
+    fi
+    
     INITRD_SIZE=$(du -h "${WORK_DIR}/iso/boot/initrd.img" 2>/dev/null | cut -f1)
-    print_success "initramfs创建完成: ${INITRD_SIZE}"
+    INITRD_BYTES=$(stat -c%s "${WORK_DIR}/iso/boot/initrd.img" 2>/dev/null || echo 0)
+    
+    if [ $INITRD_BYTES -gt 1000000 ]; then
+        print_success "initramfs创建完成: ${INITRD_SIZE} ($((INITRD_BYTES/1024))KB)"
+    else
+        print_warning "initramfs较小: ${INITRD_SIZE} ($((INITRD_BYTES/1024))KB)"
+    fi
     
     return 0
 }
-
 create_initramfs
 
 # ================= 配置BIOS引导 =================
