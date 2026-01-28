@@ -29,8 +29,8 @@ jobs:
         curl \
         xorriso \
         syslinux \
-        isolinux \
         syslinux-common \
+        isolinux \
         mtools \
         dosfstools \
         squashfs-tools \
@@ -45,8 +45,12 @@ jobs:
         file \
         cpio \
         gzip \
-        genisoimage
-        
+        genisoimage \
+        fakeroot \
+        p7zip-full
+    
+        # 确保所有必要的syslinux文件都存在
+        sudo apt-get install --reinstall -y syslinux isolinux
         mkdir -p assets
         cd assets
         echo "ROOTDIR=$PWD" >> $GITHUB_ENV
