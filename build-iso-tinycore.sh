@@ -88,8 +88,8 @@ get_kernel() {
     # 使用可靠的内核源
     KERNEL_URLS=(
         "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/boot/vmlinuz-lts"
-        "https://github.com/ventoy/linux/raw/master/vmlinuz"
-        "https://tinycorelinux.net/15.x/x86_64/release/distribution_files/vmlinuz64"
+        "https://distro.ibiblio.org/tinycorelinux/15.x/x86_64/release/distribution_files/vmlinuz64"
+        "https://repo.tinycorelinux.net/15.x/x86_64/release/distribution_files/vmlinuz64"
     )
     
     for url in "${KERNEL_URLS[@]}"; do
@@ -492,7 +492,7 @@ setup_bios_boot() {
         print_warning "isolinux.bin不存在，下载..."
         
         # 方法1：从kernel.org下载
-        wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/Testing/6.04/syslinux-6.04-pre1.tar.gz" -O /tmp/syslinux.tar.gz
+        wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/6.03/syslinux-6.03.tar.gz" -O /tmp/syslinux.tar.gz
         if [ -f /tmp/syslinux.tar.gz ]; then
             tar -xzf /tmp/syslinux.tar.gz -C /tmp
             find /tmp -name "isolinux.bin" -type f | head -1 | while read file; do
@@ -507,6 +507,19 @@ setup_bios_boot() {
         fi
     fi
     
+    # 如果还是不存在，从GitHub下载
+    if [ ! -f "iso/isolinux/isolinux.bin" ]; then
+        print_info "从GitHub下载isolinux.bin..."
+        wget -q "https://github.com/ventoy/syslinux/raw/ventoy/bios/core/isolinux.bin" -O iso/isolinux/isolinux.bin || \
+        wget -q "https://raw.githubusercontent.com/tinycorelinux/build-scripts/master/bootloader/isolinux.bin" -O iso/isolinux/isolinux.bin || \
+        echo "无法下载isolinux.bin"
+    fi
+    
+    if [ ! -f "iso/isolinux/ldlinux.c32" ]; then
+        print_info "下载ldlinux.c32..."
+        wget -q "https://github.com/ventoy/syslinux/raw/ventoy/bios/com32/elflink/ldlinux/ldlinux.c32" -O iso/isolinux/ldlinux.c32 || \
+        echo "无法下载ldlinux.c32"
+    fi
     
     # 验证文件
     print_info "验证ISOLINUX文件:"
