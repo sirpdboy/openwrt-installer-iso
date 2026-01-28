@@ -88,7 +88,6 @@ get_kernel() {
     KERNEL_URLS=(
         "https://distro.ibiblio.org/tinycorelinux/15.x/x86_64/release/distribution_files/vmlinuz64"
         "https://distro.ibiblio.org/tinycorelinux/10.x/x86_64/release/distribution_files/vmlinuz64"
-        "https://tinycorelinux.net/15.x/x86_64/release/distribution_files/vmlinuz64"
         "https://github.com/tinycorelinux/Core-scripts/raw/master/vmlinuz64"
         "https://repo.tinycorelinux.net/15.x/x86_64/release/distribution_files/vmlinuz64"
     )
@@ -423,7 +422,7 @@ INIT
     # 下载静态busybox (从可靠源)
     BUSYBOX_DOWNLOADED=0
     if curl -L -s -o bin/busybox \
-        "https://busybox.net/downloads/binaries/1.36.1/busybox-x86_64" \
+        "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox" \
         2>/dev/null && [ -f bin/busybox ]; then
         chmod +x bin/busybox
         BUSYBOX_DOWNLOADED=1
@@ -611,7 +610,7 @@ setup_bios_boot() {
         print_warning "缺少ISOLINUX文件，尝试下载..."
         
         # 下载syslinux
-        SYSLINUX_URL="https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/6.03/syslinux-6.03.tar.gz"
+        SYSLINUX_URL="https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/6.xx/syslinux-6.03.tar.gz"
         if curl -L --connect-timeout 30 -s -o /tmp/syslinux.tar.gz "$SYSLINUX_URL"; then
             mkdir -p /tmp/syslinux-extract
             tar -xzf /tmp/syslinux.tar.gz -C /tmp/syslinux-extract --strip-components=1
