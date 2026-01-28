@@ -16,7 +16,7 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INPUT_IMG="${1:-${SCRIPT_DIR}/assets/openwrt.img}"
 OUTPUT_DIR="${2:-${SCRIPT_DIR}/output}"
-OUTPUT_ISO_FILENAME=${3:-"openwrt-installer.iso"}"
+OUTPUT_ISO_FILENAME="${3:-openwrt-installer.iso}"
 OUTPUT_ISO="${OUTPUT_DIR}/${OUTPUT_ISO_FILENAME}"
 WORK_DIR="/tmp/iso-work"
 
