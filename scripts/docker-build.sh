@@ -191,15 +191,8 @@ LABEL install
   MENU DEFAULT
   KERNEL /boot/vmlinuz
   APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200n8 rw
+  APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200n8 rw init=/init
 
-LABEL shell
-  MENU LABEL Rescue Shell
-  KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200n8 rw init=/bin/sh
-
-LABEL bootlocal
-  MENU LABEL Boot from local disk
-  LOCALBOOT 0x80
 ISOLINUX_CFG_EOF
 
 echo "✅ BIOS引导配置完成"
@@ -214,16 +207,12 @@ set default=0
 
 menuentry "Install OpenWRT" {
     echo "Loading kernel..."
-    linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 rw
+    linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 rw init=/init
     echo "Loading initial ramdisk..."
     initrd /boot/initrd.img
     echo "Booting OpenWRT installer..."
 }
 
-menuentry "Boot from local disk" {
-    echo "Attempting to boot from local disk..."
-    exit
-}
 GRUB_CFG_EOF
 
 echo "✅ GRUB配置创建完成"
