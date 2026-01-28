@@ -247,141 +247,15 @@ echo ""
 echo "🔧 处理内核文件..."
 
 # 方法1：检查Alpine安装的内核
-KERNEL_FOUND=false
 echo "在系统中查找内核文件..."
 find /boot -name "vmlinuz*" 2>/dev/null | while read kernel; do
     echo "找到内核: $kernel"
     cp $kernel $ISO_DIR/boot/vmlinuz || cp /boot/vmlinuz-lts $ISO_DIR/boot/vmlinuz
-    KERNEL_FOUND=true
     echo "✅ 使用内核: "$kernel""
     break
 done
 ls -l $ISO_DIR/boot
-# 方法2：如果没找到，使用busybox作为最小内核
-if [ "$KERNEL_FOUND" = false ]; then
-    echo "⚠ 未找到标准Linux内核，创建脚本内核..."
-    
-    # 创建一个能工作的"内核"脚本
-    cat > "$ISO_DIR/boot/vmlinuz" << 'KERNEL_SCRIPT_EOF'
-#!/bin/sh
-# OpenWRT Installer Kernel Script
 
-echo ""
-echo "========================================"
-echo "   OpenWRT Installation Kernel          "
-echo "========================================"
-echo ""
-echo "This is a minimal boot environment for OpenWRT installation."
-echo ""
-echo "The actual OpenWRT image is at: /images/openwrt.img"
-echo ""
-echo "To install OpenWRT, you need to:"
-echo "1. Boot from a real Linux system"
-echo "2. Write the image: dd if=/images/openwrt.img of=/dev/sdX bs=4M"
-echo ""
-echo "Or use this script-based installer:"
-echo ""
-echo "Available commands:"
-echo "  install <device> - Install OpenWRT to device (e.g., install sda)"
-echo "  list             - List available disks"
-echo "  shell            - Enter shell"
-echo ""
-
-# 安装函数
-install_openwrt() {
-    local device="$1"
-    if [ -z "$device" ]; then
-        echo "Usage: install <device> (e.g., install sda)"
-        return 1
-    fi
-    
-    if [ ! -e "/dev/$device" ]; then
-        echo "Error: Device /dev/$device not found"
-        return 1
-    fi
-    
-    echo "Installing OpenWRT to /dev/$device..."
-    echo "This will overwrite all data on /dev/$device!"
-    echo ""
-    read -p "Are you sure? (type YES to continue): " confirm
-    if [ "$confirm" != "YES" ]; then
-        echo "Installation cancelled."
-        return 1
-    fi
-    
-    # 查找OpenWRT镜像
-    if [ -f "/mnt/images/openwrt.img" ]; then
-        IMG_PATH="/mnt/images/openwrt.img"
-    elif [ -f "/images/openwrt.img" ]; then
-        IMG_PATH="/images/openwrt.img"
-    elif [ -f "images/openwrt.img" ]; then
-        IMG_PATH="images/openwrt.img"
-    else
-        echo "Error: OpenWRT image not found"
-        return 1
-    fi
-    
-    echo "Using image: $IMG_PATH"
-    echo "Writing to: /dev/$device"
-    
-    # 模拟写入过程
-    echo "Starting installation (simulated)..."
-    echo "dd if=$IMG_PATH of=/dev/$device bs=4M status=progress"
-    echo "Installation complete!"
-    echo "Please reboot and remove installation media."
-}
-
-# 列出磁盘
-list_disks() {
-    echo "Available storage devices:"
-    echo "----------------------------"
-    if command -v lsblk >/dev/null 2>&1; then
-        lsblk -d -n -o NAME,SIZE,MODEL | head -10
-    elif command -v fdisk >/dev/null 2>&1; then
-        fdisk -l 2>/dev/null | grep "^Disk /dev/" | head -10
-    else
-        echo "No disk listing tools available"
-    fi
-}
-
-# 主循环
-while true; do
-    echo ""
-    printf "openwrt> "
-    read -r command args
-    
-    case $command in
-        install)
-            install_openwrt $args
-            ;;
-        list)
-            list_disks
-            ;;
-        shell)
-            echo "Starting shell..."
-            exec /bin/sh
-            ;;
-        help)
-            echo "Commands: install <device>, list, shell, help, exit"
-            ;;
-        exit)
-            echo "Exiting..."
-            exit 0
-            ;;
-        "")
-            # 空命令，继续
-            ;;
-        *)
-            echo "Unknown command: $command"
-            echo "Type 'help' for available commands"
-            ;;
-    esac
-done
-KERNEL_SCRIPT_EOF
-    
-    chmod +x "$ISO_DIR/boot/vmlinuz"
-    echo "✅ 创建脚本内核"
-fi
 
 echo "✅ 内核处理完成"
 
