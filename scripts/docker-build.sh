@@ -269,7 +269,7 @@ find /boot -name "vmlinuz*" 2>/dev/null | while read kernel; do
     echo "✅ 使用内核: "$kernel""
     break
 done
-
+ls -l $ISO_DIR/boot
 # 方法2：如果没找到，使用busybox作为最小内核
 if [ "$KERNEL_FOUND" = false ]; then
     echo "⚠ 未找到标准Linux内核，创建脚本内核..."
