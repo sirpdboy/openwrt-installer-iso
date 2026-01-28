@@ -236,7 +236,7 @@ INIT
     chmod +x init
     
     # 创建安装脚本（/bin/install_openwrt.sh）
-    cat > /bin/install_openwrt.sh << 'INSTALL_SCRIPT'
+    cat > bin/install_openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/sh
 # OpenWRT Installation Script
 
