@@ -116,7 +116,7 @@ RUN echo "🔧 验证安装:" && \
     find /boot -name "vmlinuz*" 2>/dev/null | head -5 || echo "未找到内核" && \
     echo "" && \
     echo "xorriso: $(which xorriso)" && \
-    echo "mkfs.fat: $(which mkfs.fat 2>/dev/null || which mkfs.vfat 2>/dev/null || echo '未找到')"
+    echo "mkfs.fat: $(which mkfs.fat 2>/dev/null || which mkfs.vfat 2>/dev/null || echo '未找到')"&& \
     echo "syslinux: $(ls -la /usr/share/syslinux/isolinux.bin 2>/dev/null || echo '未找到')" 
 
 WORKDIR /work
