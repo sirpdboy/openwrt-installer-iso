@@ -622,7 +622,7 @@ TEMP_GRUB
             ls -l  /tmp/grub_tmp
 	    
             if [ -f /tmp/grub_tmp/BOOTX64.EFI ]; then
-                cp /tmp/grub_tmp/BOOTX64.EFI "iso/EFI/BOOT/BOOTX64.EFI"
+                cp /tmp/grub_tmp/BOOTX64.EFI "$WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI"
                 print_success "GRUB EFI构建成功"
             fi
         fi
@@ -630,7 +630,7 @@ TEMP_GRUB
     fi
     
     # 方法2：从系统复制
-    if [ ! -f "iso/EFI/BOOT/BOOTX64.EFI" ]; then
+    if [ ! -f "$WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI" ]; then
         print_info "从系统复制GRUB..."
         
         GRUB_PATHS=(
@@ -641,7 +641,7 @@ TEMP_GRUB
         
         for path in "${GRUB_PATHS[@]}"; do
             if [ -f "$path" ]; then
-                cp "$path" "iso/EFI/BOOT/BOOTX64.EFI" 2>/dev/null && \
+                cp "$path" "$WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI" 2>/dev/null && \
                 print_info "复制: $(basename "$path")" && \
                 break
             fi
@@ -649,15 +649,15 @@ TEMP_GRUB
     fi
     
     # 方法3：直接下载
-    if [ ! -f "iso/EFI/BOOT/BOOTX64.EFI" ]; then
+    if [ ! -f "$WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI" ]; then
         print_info "下载GRUB EFI..."
-        wget -q "https://github.com/ventoy/grub2/raw/ventoy/grub2/grubx64.efi" -O iso/EFI/BOOT/BOOTX64.EFI || \
+        wget -q "https://github.com/ventoy/grub2/raw/ventoy/grub2/grubx64.efi" -O $WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI || \
         echo "无法下载GRUB EFI"
     fi
     
     # 验证文件
-    if [ -f "iso/EFI/BOOT/BOOTX64.EFI" ]; then
-        EFI_SIZE=$(du -h "iso/EFI/BOOT/BOOTX64.EFI" 2>/dev/null | cut -f1)
+    if [ -f "$WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI" ]; then
+        EFI_SIZE=$(du -h "$WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI" 2>/dev/null | cut -f1)
         print_success "✅ BOOTX64.EFI: ${EFI_SIZE}"
     else
         print_warning "❌ BOOTX64.EFI不存在"
