@@ -36,16 +36,10 @@ jobs:
             parted \
             gdisk \
             jq
-    
-    - name: Mount LV
-      run: |
-        sudo mkdir -p /builder
-        #sudo mount /dev/github/runner /builder
-        sudo chown -R runner.runner /builder
-        sudo chown $USER:$GROUPS /builder
     - name: Download OpenWRT image
       run: |
-
+        mkdir -p assets
+        
         # 使用你的下载脚本或直接下载
         if [ -f scripts/download-image.sh ]; then
           chmod +x scripts/download-image.sh
@@ -55,43 +49,44 @@ jobs:
           REPO="sirpdboy/openwrt"
           TAG=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.tag_name // empty')
           DOWNLOAD_URLS=$(curl -sL "https://api.github.com/repos/$REPO/releases/tags/$TAG" | \
-                jq -r './builder[] | select(.name | endswith("img.gz")) | .browser_download_url')
+                jq -r '.assets[] | select(.name | endswith("img.gz")) | .browser_download_url')
           FIRST_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
           echo "下载: $FIRST_URL"
-          wget -q $FIRST_URL  -O /builder/ezopwrt.img.gz
-           if [ ! -f "/builder/ezopwrt.img.gz" ]; then
+          wget -q $FIRST_URL  -O assets/ezopwrt.img.gz
+           if [ ! -f "assets/ezopwrt.img.gz" ]; then
              curl -L -o "$OUTPUT_FILE"  --progress-bar --retry 3 "$FIRST_URL" 
            fi
         
            if [ $? -eq 0 ]; then
                echo "✅ 下载完成"
-               gzip -d /builder/ezopwrt.img.gz
+               gzip -d assets/ezopwrt.img.gz
             fi
+            
         fi
-        echo "✅ 镜像大小: $(stat -c%s /builder/ezopwrt.img | numfmt --to=iec)"
+        echo "✅ 镜像大小: $(stat -c%s assets/ezopwrt.img | numfmt --to=iec)"
     
     - name: Create output directory
       run: |
-        mkdir -p /builder/output
-        chmod 777 /builder/output
+        mkdir -p output
+        chmod 777 output
     
     - name: build-iso-tinycore
       run: |
         chmod +x build-iso-tinycore.sh
         ./build-iso-tinycore.sh \
-          "/builder/ezopwrt.img" \
-          "/builder/output" \
+          "$pwd/ezopwrt.img" \
+          "$pwd/output" \
           "openwrt-tiny-installer.iso"
       
         echo "ISO构建完成:"
-        ls -lh /builder/output
+        ls -lh output
     
     
     - name: 上传制品
       uses: actions/upload-artifact@v4
       with:
         name: openwrt-tiny-installer
-        path: /builder/output/*.iso
+        path: output/*.iso
         retention-days: 30
         if-no-files-found: error
     
@@ -101,7 +96,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        files: /builder/output/*.iso
+        files: output/*.iso
         body: |
           # 🎯 OpenWRT 微型安装器
           
