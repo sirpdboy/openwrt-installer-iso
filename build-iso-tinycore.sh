@@ -20,18 +20,6 @@ OUTPUT_ISO_FILENAME="${3:-"openwrt-tiny-installer.iso"}"
 OUTPUT_ISO="${OUTPUT_DIR}/${OUTPUT_ISO_FILENAME}"
 WORK_DIR="/tmp/tiny-iso-work"
 
-# 如果默认路径不存在，尝试其他路径
-if [ ! -f "${INPUT_IMG}" ]; then
-    # 尝试当前目录
-    if [ -f "assets/openwrt.img" ]; then
-        INPUT_IMG="assets/openwrt.img"
-    elif [ -f "openwrt.img" ]; then
-        INPUT_IMG="openwrt.img"
-    elif [ -f "${SCRIPT_DIR}/openwrt.img" ]; then
-        INPUT_IMG="${SCRIPT_DIR}/openwrt.img"
-    fi
-fi
-
 # 日志函数
 print_header() { echo -e "${CYAN}\n=== $1 ===${NC}"; }
 print_step() { echo -e "${GREEN}▶${NC} $1"; }
@@ -41,34 +29,23 @@ print_success() { echo -e "${GREEN}✓${NC} $1"; }
 print_error() { echo -e "${RED}✗${NC} $1" >&2; }
 
 # ================= 初始化 =================
-print_header "OpenWRT 极简安装器构建系统"
-echo "目标: < 50MB 微型安装器"
-echo ""
+print_header "OpenWRT 微型安装器构建系统"
 
 # 验证输入
 if [ ! -f "${INPUT_IMG}" ]; then
     print_error "输入IMG文件未找到: ${INPUT_IMG}"
-    print_info "搜索可用镜像..."
     
-    # 列出可能的文件
-    echo "当前目录: $(pwd)"
-    echo "文件列表:"
-    find . -name "*.img" -o -name "*.IMG" 2>/dev/null | head -10 || echo "无img文件"
+    # 尝试查找
+    for test_img in "assets/openwrt.img" "openwrt.img" "./openwrt.img"; do
+        if [ -f "$test_img" ]; then
+            INPUT_IMG="$test_img"
+            print_info "找到镜像: ${INPUT_IMG}"
+            break
+        fi
+    done
     
-    print_info "请执行以下操作之一:"
-    echo "1. 将OpenWRT镜像重命名为 openwrt.img 放在当前目录"
-    echo "2. 设置 INPUT_IMG 环境变量指定镜像路径"
-    echo "3. 使用 --img 参数指定镜像路径"
-    
-    # 尝试创建一个测试镜像（仅用于测试）
-    print_warning "创建测试镜像继续构建..."
-    dd if=/dev/zero of=test-openwrt.img bs=1M count=10 2>/dev/null
-    echo -e "o\nn\np\n1\n\n\nw" | fdisk test-openwrt.img >/dev/null 2>&1
-    INPUT_IMG="test-openwrt.img"
-    
-    if [ -f "${INPUT_IMG}" ]; then
-        print_info "使用测试镜像: ${INPUT_IMG}"
-    else
+    if [ ! -f "${INPUT_IMG}" ]; then
+        print_error "请提供OpenWRT镜像文件"
         exit 1
     fi
 fi
@@ -79,196 +56,120 @@ print_step "输出ISO: ${OUTPUT_ISO}"
 print_step "工作目录: ${WORK_DIR}"
 
 # ================= 准备目录 =================
-print_header "1. 准备目录"
+print_header "1. 准备目录结构"
 
-# 创建输出目录
-mkdir -p "${OUTPUT_DIR}"
 rm -rf "${WORK_DIR}" 2>/dev/null || true
-mkdir -p "${WORK_DIR}/iso"
-mkdir -p "${WORK_DIR}/iso/boot"
-mkdir -p "${WORK_DIR}/iso/EFI/boot"
-mkdir -p "${WORK_DIR}/iso/img"
-mkdir -p "${WORK_DIR}/initrd"
+mkdir -p "${WORK_DIR}"
+cd "${WORK_DIR}"
+
+# 正确的ISO目录结构
+mkdir -p "iso"
+mkdir -p "iso/boot"
+mkdir -p "iso/boot/grub"           # 重要：GRUB需要这个目录
+mkdir -p "iso/EFI/BOOT"            # 重要：UEFI标准路径
+mkdir -p "iso/img"
+mkdir -p "${OUTPUT_DIR}"
 
 print_success "目录结构创建完成"
 
 # ================= 复制OpenWRT镜像 =================
 print_header "2. 复制OpenWRT镜像"
 
-cp "${INPUT_IMG}" "${WORK_DIR}/iso/img/openwrt.img"
-IMG_SIZE_FINAL=$(du -h "${WORK_DIR}/iso/img/openwrt.img" 2>/dev/null | cut -f1)
+cp "${INPUT_IMG}" "iso/img/openwrt.img"
+IMG_SIZE_FINAL=$(du -h "iso/img/openwrt.img" 2>/dev/null | cut -f1)
 print_success "IMG文件复制完成: ${IMG_SIZE_FINAL}"
 
-# ================= 创建微型内核 =================
-print_header "3. 获取微型内核"
+# ================= 获取内核 =================
+print_header "3. 获取Linux内核"
 
-download_tiny_kernel() {
-    print_step "下载微型Linux内核..."
+get_kernel() {
+    print_step "下载Linux内核..."
     
-    # 使用TinyCore Linux的极小内核 (约4.8MB)
-    TINYCORE_KERNEL_URL="https://github.com/tinycorelinux/Core-scripts/raw/master/vmlinuz64"
-    
-    # 备用URL
-    BACKUP_URLS=(
+    # 尝试从多个源下载TinyCore内核
+    KERNEL_URLS=(
+        "https://github.com/tinycorelinux/Core-scripts/raw/master/vmlinuz64"
         "https://tinycorelinux.net/10.x/x86_64/release/distribution_files/vmlinuz64"
         "https://mirrors.aliyun.com/tinycorelinux/10.x/x86_64/release/distribution_files/vmlinuz64"
-        "http://ftp.nluug.nl/os/Linux/distr/tinycorelinux/10.x/x86_64/release/distribution_files/vmlinuz64"
     )
     
-    local downloaded=0
-    
-    # 尝试下载主URL
-    print_info "尝试下载主内核..."
-    
-    if command -v wget >/dev/null 2>&1; then
-        if wget --tries=2 --timeout=30 -q -O "${WORK_DIR}/iso/boot/vmlinuz" "$TINYCORE_KERNEL_URL"; then
-            downloaded=1
-        fi
-    elif command -v curl >/dev/null 2>&1; then
-        if curl -L --connect-timeout 20 --retry 2 -s -o "${WORK_DIR}/iso/boot/vmlinuz" "$TINYCORE_KERNEL_URL"; then
-            downloaded=1
-        fi
-    fi
-    
-    # 如果主URL失败，尝试备用URL
-    if [ $downloaded -eq 0 ]; then
-        for url in "${BACKUP_URLS[@]}"; do
-            print_info "尝试备用URL: $(basename "$url")"
-            
-            if command -v wget >/dev/null 2>&1; then
-                if wget --tries=1 --timeout=15 -q -O "${WORK_DIR}/iso/boot/vmlinuz" "$url"; then
-                    downloaded=1
-                    break
-                fi
-            elif command -v curl >/dev/null 2>&1; then
-                if curl -L --connect-timeout 10 --retry 1 -s -o "${WORK_DIR}/iso/boot/vmlinuz" "$url"; then
-                    downloaded=1
-                    break
+    for url in "${KERNEL_URLS[@]}"; do
+        print_info "尝试: $(basename "$url")"
+        
+        if command -v wget >/dev/null 2>&1; then
+            if wget --tries=1 --timeout=20 -q -O "iso/boot/vmlinuz" "$url"; then
+                if [ -s "iso/boot/vmlinuz" ]; then
+                    print_success "内核下载成功"
+                    return 0
                 fi
             fi
-        done
-    fi
-    
-    if [ $downloaded -eq 1 ] && [ -f "${WORK_DIR}/iso/boot/vmlinuz" ]; then
-        KERNEL_SIZE=$(stat -c%s "${WORK_DIR}/iso/boot/vmlinuz" 2>/dev/null || echo 0)
-        if [ $KERNEL_SIZE -gt 1000000 ]; then
-            print_success "内核下载成功: $((KERNEL_SIZE/1024/1024))MB"
-            
-            # 验证内核文件
-            if file "${WORK_DIR}/iso/boot/vmlinuz" | grep -q "Linux kernel"; then
-                print_info "内核验证: Linux内核"
-            elif file "${WORK_DIR}/iso/boot/vmlinuz" | grep -q "ELF"; then
-                print_info "内核验证: ELF可执行文件"
-            else
-                print_warning "内核文件类型未知"
+        elif command -v curl >/dev/null 2>&1; then
+            if curl -L --connect-timeout 15 --retry 1 -s -o "iso/boot/vmlinuz" "$url"; then
+                if [ -s "iso/boot/vmlinuz" ]; then
+                    print_success "内核下载成功"
+                    return 0
+                fi
             fi
-            
+        fi
+    done
+    
+    # 如果下载失败，检查系统内核
+    print_warning "内核下载失败，检查系统内核..."
+    
+    for kernel in /boot/vmlinuz-* /boot/vmlinuz /vmlinuz; do
+        if [ -f "$kernel" ] && [ -s "$kernel" ]; then
+            cp "$kernel" "iso/boot/vmlinuz"
+            print_success "使用系统内核: $kernel"
             return 0
-        else
-            print_warning "下载的文件太小 ($KERNEL_SIZE 字节)"
-            downloaded=0
         fi
-    fi
+    done
     
-    # 如果下载失败，使用备用方案
-    if [ $downloaded -eq 0 ]; then
-        print_warning "内核下载失败，使用备用方案"
-        
-        # 方案1: 检查是否有现有内核
-        print_info "检查系统内核..."
-        for kernel in /boot/vmlinuz /vmlinuz /boot/vmlinuz-*; do
-            if [ -f "$kernel" ] && [ $(stat -c%s "$kernel" 2>/dev/null || echo 0) -gt 1000000 ]; then
-                cp "$kernel" "${WORK_DIR}/iso/boot/vmlinuz"
-                print_success "使用现有内核: $kernel"
-                return 0
-            fi
-        done
-        
-        # 方案2: 创建最小但能工作的内核
-        print_info "创建最小内核..."
-        
-        # 创建一个ELF格式的最小"内核"
-        cat > /tmp/mini_kernel.c << 'EOF'
-// 最小内核占位程序
-const char message[] = 
-    "========================================\n"
-    "  OpenWRT Tiny Installer\n"
-    "========================================\n"
-    "\n"
-    "This is a minimal kernel placeholder.\n"
-    "To use this installer, replace this file\n"
-    "with a real Linux kernel (vmlinuz).\n"
-    "\n";
-
-void _start() {
-    // 简单输出信息
-    asm volatile (
-        "mov $1, %%rax\n"      // sys_write
-        "mov $1, %%rdi\n"      // fd = stdout
-        "lea message(%%rip), %%rsi\n" // buf
-        "mov $200, %%rdx\n"    // count
-        "syscall\n"
-        "mov $60, %%rax\n"     // sys_exit
-        "mov $0, %%rdi\n"      // exit code
-        "syscall\n"
-        ::: "rax", "rdi", "rsi", "rdx"
-    );
-}
-EOF
-        
-        # 编译为最小ELF文件
-        if command -v gcc >/dev/null 2>&1; then
-            gcc -nostdlib -static -o "${WORK_DIR}/iso/boot/vmlinuz" /tmp/mini_kernel.c 2>/dev/null || true
-        fi
-        
-        if [ -f "${WORK_DIR}/iso/boot/vmlinuz" ] && [ $(stat -c%s "${WORK_DIR}/iso/boot/vmlinuz" 2>/dev/null || echo 0) -gt 1000 ]; then
-            print_info "创建了最小ELF内核"
-        else
-            # 最后的手段：创建一个包含内核标识的文件
-            echo "LINUX_KERNEL_PLACEHOLDER_DO_NOT_BOOT" > "${WORK_DIR}/iso/boot/vmlinuz"
-            # 添加一些数据使其看起来像内核
-            dd if=/dev/urandom bs=1024 count=2 >> "${WORK_DIR}/iso/boot/vmlinuz" 2>/dev/null
-            print_warning "创建了最小内核占位文件"
-        fi
-        
-        print_info "注意: 实际使用时需要替换为真实内核"
-        print_info "可从 https://tinycorelinux.net 下载 vmlinuz64"
-        return 1
-    fi
+    # 最后的手段：创建占位文件
+    print_warning "创建内核占位文件"
+    dd if=/dev/zero of="iso/boot/vmlinuz" bs=1M count=1 2>/dev/null
+    echo "LINUX_KERNEL_PLACEHOLDER" >> "iso/boot/vmlinuz"
+    
+    print_info "注意：需要手动替换为真实内核"
+    return 1
 }
 
-# 执行内核下载
-if ! download_tiny_kernel; then
-    print_warning "内核准备有警告，继续构建..."
-fi
+get_kernel
 
-KERNEL_SIZE=$(du -h "${WORK_DIR}/iso/boot/vmlinuz" 2>/dev/null | cut -f1)
+KERNEL_SIZE=$(du -h "iso/boot/vmlinuz" 2>/dev/null | cut -f1)
+KERNEL_BYTES=$(stat -c%s "iso/boot/vmlinuz" 2>/dev/null || echo 0)
 print_success "内核准备完成: ${KERNEL_SIZE}"
 
-# ================= 创建极简initramfs =================
-print_header "4. 创建极简initramfs"
+if [ $KERNEL_BYTES -lt 1000000 ]; then
+    print_warning "⚠️  内核文件较小 ($((KERNEL_BYTES/1024))KB)"
+    print_info "建议替换为完整Linux内核 (>5MB)"
+fi
 
-create_tiny_initramfs() {
+# ================= 创建initramfs =================
+print_header "4. 创建initramfs"
+
+create_initramfs() {
     local initrd_dir="${WORK_DIR}/initrd"
-    local output_file="${WORK_DIR}/iso/boot/initramfs"
     
-    print_step "创建微型initramfs (< 5MB)..."
+    print_step "创建initramfs..."
     
-    # 清空目录
+    # 创建initramfs目录
     rm -rf "${initrd_dir}"
-    mkdir -p "${initrd_dir}"/{bin,dev,etc,proc,sys,tmp,mnt,img}
+    mkdir -p "${initrd_dir}"
+    cd "${initrd_dir}"
     
-    # 创建超小init脚本
-    cat > "${initrd_dir}/init" << 'TINY_INIT'
+    # 创建目录结构
+    mkdir -p bin dev etc proc sys tmp mnt
+    
+    # 创建init脚本
+    cat > init << 'INIT'
 #!/bin/sh
-# 微型init脚本
+# 简单init脚本
 
-# 基本挂载
+# 挂载文件系统
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 
-# 必要设备
+# 创建设备
 mknod /dev/console c 5 1 2>/dev/null || true
 mknod /dev/null c 1 3 2>/dev/null || true
 mknod /dev/zero c 1 5 2>/dev/null || true
@@ -279,525 +180,484 @@ exec 1>/dev/console
 exec 2>/dev/console
 
 echo "========================================"
-echo "     OpenWRT Micro Installer"
+echo "     OpenWRT Installer"
 echo "========================================"
 
 # 查找OpenWRT镜像
-if [ -f /img/openwrt.img ]; then
-    IMG="/img/openwrt.img"
-    echo "使用内置镜像"
-else
-    # 尝试挂载CDROM
-    if [ -b /dev/sr0 ]; then
-        mount -t iso9660 /dev/sr0 /mnt 2>/dev/null
-        if [ -f /mnt/img/openwrt.img ]; then
-            cp /mnt/img/openwrt.img /tmp/
-            IMG="/tmp/openwrt.img"
-            echo "使用光盘镜像"
-            umount /mnt 2>/dev/null
-        else
-            echo "错误: 未找到OpenWRT镜像"
-            echo "进入应急shell..."
-            exec /bin/sh
-        fi
-    else
-        echo "错误: 未找到安装介质"
-        exec /bin/sh
+if [ -b /dev/sr0 ]; then
+    mount -t iso9660 /dev/sr0 /mnt 2>/dev/null
+    if [ -f /mnt/img/openwrt.img ]; then
+        IMG="/mnt/img/openwrt.img"
+        echo "找到镜像: $IMG"
     fi
 fi
 
+if [ -z "$IMG" ] || [ ! -f "$IMG" ]; then
+    echo "错误: 未找到OpenWRT镜像"
+    echo "进入shell..."
+    exec /bin/sh
+fi
+
 # 简单安装界面
-clear
-echo "=== OpenWRT 安装 ==="
-echo ""
-echo "镜像: $(basename $IMG)"
 echo ""
 echo "可用磁盘:"
-echo "---------"
-
-# 列出块设备
 for d in /dev/sd[a-z] /dev/vd[a-z]; do
     [ -b "$d" ] && echo "  $d"
 done
 
 echo ""
-echo -n "输入目标磁盘 (如: sda): "
-read DISK
+echo -n "输入磁盘 (如 sda): "
+read disk
+[ -z "$disk" ] && exec /bin/sh
 
-[ -z "$DISK" ] && { echo "取消"; exec /bin/sh; }
-[[ "$DISK" =~ ^/dev/ ]] || DISK="/dev/$DISK"
-[ -b "$DISK" ] || { echo "设备不存在"; exec /bin/sh; }
+[[ "$disk" =~ ^/dev/ ]] || disk="/dev/$disk"
+[ -b "$disk" ] || { echo "设备不存在"; exec /bin/sh; }
 
 echo ""
-echo "警告: 将完全擦除 $DISK !"
+echo "警告: 将擦除 $disk !"
 echo -n "输入 YES 确认: "
-read CONFIRM
-
-[ "$CONFIRM" != "YES" ] && { echo "取消"; exec /bin/sh; }
+read confirm
+[ "$confirm" != "YES" ] && exec /bin/sh
 
 echo ""
-echo "正在写入磁盘..."
-dd if="$IMG" of="$DISK" bs=4M 2>&1 | grep -E 'records|bytes|copied' || true
+echo "正在安装..."
+dd if="$IMG" of="$disk" bs=4M 2>&1 | grep -E 'records|bytes|copied' || true
 sync
 
 echo ""
 echo "✅ 安装完成!"
-echo "系统将在5秒后重启..."
+echo "5秒后重启..."
 sleep 5
-echo "重启..."
 reboot -f
 
-# 如果到这里，执行shell
 exec /bin/sh
-TINY_INIT
+INIT
 
-    chmod +x "${initrd_dir}/init"
+    chmod +x init
     
-    # 获取或创建busybox
-    print_step "准备BusyBox..."
-    
-    # 先尝试下载静态busybox
-    print_info "下载静态BusyBox..."
-    STATIC_BUSYBOX_URL="https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
-    
-    if command -v wget >/dev/null 2>&1; then
-        wget -q -O "${initrd_dir}/bin/busybox" "$STATIC_BUSYBOX_URL" 2>/dev/null || true
-    elif command -v curl >/dev/null 2>&1; then
-        curl -L -s -o "${initrd_dir}/bin/busybox" "$STATIC_BUSYBOX_URL" 2>/dev/null || true
-    fi
-    
-    # 检查是否下载成功
-    if [ ! -f "${initrd_dir}/bin/busybox" ] || [ ! -s "${initrd_dir}/bin/busybox" ]; then
-        print_info "使用系统busybox..."
-        if command -v busybox >/dev/null 2>&1; then
-            cp $(which busybox) "${initrd_dir}/bin/busybox" 2>/dev/null || true
-        fi
-    fi
-    
-    # 如果还没有busybox，创建最小shell
-    if [ ! -f "${initrd_dir}/bin/busybox" ] || [ ! -s "${initrd_dir}/bin/busybox" ]; then
-        print_warning "无法获取busybox，创建最小shell..."
-        cat > "${initrd_dir}/bin/sh" << 'MINI_SH'
+    # 获取busybox
+    if command -v busybox >/dev/null 2>&1; then
+        cp $(which busybox) bin/busybox
+        chmod +x bin/busybox
+        cd bin
+        ln -s busybox sh 2>/dev/null || true
+        ln -s busybox mount 2>/dev/null || true
+        ln -s busybox umount 2>/dev/null || true
+        ln -s busybox dd 2>/dev/null || true
+        ln -s busybox reboot 2>/dev/null || true
+        cd ..
+    else
+        # 创建最小shell
+        cat > bin/sh << 'SHELL'
 #!/bin/sh
-echo "Micro Shell - Limited functionality"
-echo "Available commands: ls, echo, reboot"
+echo "Minimal shell"
 while read -p "# " cmd; do
     case "$cmd" in
-        ls) ls /dev/ 2>/dev/null || echo "dev proc sys";;
-        echo*) echo "$cmd" | cut -d' ' -f2-;;
-        reboot) echo "Rebooting..."; exit 0;;
+        ls) echo "dev proc sys";;
+        reboot) exit 0;;
         *) echo "Unknown: $cmd";;
     esac
 done
-MINI_SH
-        chmod +x "${initrd_dir}/bin/sh"
-    else
-        chmod +x "${initrd_dir}/bin/busybox"
-        # 创建必要符号链接
-        cd "${initrd_dir}"
-        ln -sf busybox bin/sh 2>/dev/null || true
-        ln -sf busybox bin/dd 2>/dev/null || true
-        ln -sf busybox bin/mount 2>/dev/null || true
-        ln -sf busybox bin/umount 2>/dev/null || true
-        ln -sf busybox bin/reboot 2>/dev/null || true
-        ln -sf busybox bin/cat 2>/dev/null || true
-        ln -sf busybox bin/echo 2>/dev/null || true
-        ln -sf busybox bin/ls 2>/dev/null || true
-    fi
-    
-    # 如果镜像较小，复制到initramfs
-    IMG_SIZE=$(stat -c%s "${WORK_DIR}/iso/img/openwrt.img" 2>/dev/null || echo 0)
-    if [ $IMG_SIZE -lt $((20*1024*1024)) ]; then  # 小于20MB
-        cp "${WORK_DIR}/iso/img/openwrt.img" "${initrd_dir}/img/"
-        print_info "镜像内置到initramfs ($((IMG_SIZE/1024/1024))MB)"
-    else
-        print_info "镜像保留在ISO中 ($((IMG_SIZE/1024/1024))MB)"
+SHELL
+        chmod +x bin/sh
     fi
     
     # 创建initramfs
-    print_step "创建压缩initramfs..."
-    cd "${initrd_dir}"
+    print_step "压缩initramfs..."
+    find . | cpio -o -H newc 2>/dev/null | gzip -9 > "${WORK_DIR}/iso/boot/initrd.img"
     
-    # 计算原始大小
-    ORIG_SIZE=$(du -sb . 2>/dev/null | cut -f1 || echo 0)
-    print_info "原始大小: $((ORIG_SIZE/1024))KB"
-    
-    # 使用gzip压缩
-    find . | cpio -o -H newc 2>/dev/null | gzip -9 > "${output_file}"
-    
-    FINAL_SIZE=$(stat -c%s "${output_file}" 2>/dev/null || echo 0)
-    if [ $ORIG_SIZE -gt 0 ]; then
-        RATIO=$((FINAL_SIZE * 100 / ORIG_SIZE))
-        print_info "压缩后: $((FINAL_SIZE/1024))KB (压缩率: ${RATIO}%)"
-    fi
-    
-    # 确保不超过5MB
-    if [ $FINAL_SIZE -gt $((5*1024*1024)) ]; then
-        print_warning "initramfs较大 ($((FINAL_SIZE/1024/1024))MB)"
-        
-        # 尝试使用xz重新压缩
-        if command -v xz >/dev/null 2>&1; then
-            print_info "尝试xz压缩..."
-            find . | cpio -o -H newc 2>/dev/null | xz -9 --check=crc32 > "${output_file}.xz"
-            XZ_SIZE=$(stat -c%s "${output_file}.xz" 2>/dev/null || echo $FINAL_SIZE)
-            
-            if [ $XZ_SIZE -lt $FINAL_SIZE ]; then
-                mv "${output_file}.xz" "${output_file}"
-                print_info "改用xz: $((XZ_SIZE/1024))KB"
-                FINAL_SIZE=$XZ_SIZE
-            fi
-        fi
-    fi
-    
-    if [ $FINAL_SIZE -lt $((5*1024*1024)) ]; then
-        print_success "initramfs大小合适: $((FINAL_SIZE/1024))KB"
-    else
-        print_warning "initramfs偏大: $((FINAL_SIZE/1024/1024))MB"
-    fi
+    INITRD_SIZE=$(du -h "${WORK_DIR}/iso/boot/initrd.img" 2>/dev/null | cut -f1)
+    print_success "initramfs创建完成: ${INITRD_SIZE}"
     
     return 0
 }
 
-create_tiny_initramfs
+create_initramfs
 
-INITRAMFS_SIZE=$(du -h "${WORK_DIR}/iso/boot/initramfs" 2>/dev/null | cut -f1)
-print_success "Initramfs最终大小: ${INITRAMFS_SIZE}"
+# ================= 配置BIOS引导 (ISOLINUX) =================
+print_header "5. 配置BIOS引导 (ISOLINUX)"
 
-# ================= 配置引导 =================
-print_header "5. 配置双引导"
-
-# BIOS引导 (SYSLINUX)
-print_step "配置BIOS引导..."
-
-# 检查并安装syslinux
-if ! command -v syslinux >/dev/null 2>&1; then
-    print_info "syslinux未安装，跳过BIOS引导配置"
-else
-    # 复制引导文件
-    for file in isolinux.bin ldlinux.c32 libcom32.c32 libutil.c32; do
-        for path in /usr/share/syslinux /usr/lib/syslinux /lib/syslinux; do
+setup_bios_boot() {
+    print_step "设置ISOLINUX引导..."
+    
+    # 检查syslinux
+    if ! command -v syslinux >/dev/null 2>&1; then
+        print_warning "syslinux未安装，跳过BIOS引导"
+        return 1
+    fi
+    
+    # 复制引导文件到正确位置
+    SYSLINUX_FILES=(
+        "isolinux.bin"
+        "ldlinux.c32"
+        "libcom32.c32"
+        "libutil.c32"
+    )
+    
+    local files_found=0
+    for file in "${SYSLINUX_FILES[@]}"; do
+        for path in /usr/share/syslinux /usr/lib/syslinux; do
             if [ -f "$path/$file" ]; then
-                cp "$path/$file" "${WORK_DIR}/iso/boot/" 2>/dev/null || true
+                cp "$path/$file" "iso/boot/"
+                files_found=1
                 break
             fi
         done
     done
     
-    # 创建配置
-    cat > "${WORK_DIR}/iso/boot/isolinux.cfg" << 'CFG'
-DEFAULT install
-TIMEOUT 30
+    if [ $files_found -eq 0 ]; then
+        print_warning "未找到ISOLINUX文件"
+        return 1
+    fi
+    
+    # 创建ISOLINUX配置文件
+    cat > "iso/boot/isolinux.cfg" << 'ISOLINUX_CFG'
+DEFAULT linux
 PROMPT 0
-MENU TITLE OpenWRT Tiny Installer
+TIMEOUT 30
+UI menu.c32
 
-LABEL install
+MENU TITLE OpenWRT Installer
+MENU BACKGROUND splash.png
+
+LABEL linux
   MENU LABEL ^Install OpenWRT
-  MENU DEFAULT
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initramfs console=ttyS0 console=tty0 quiet
+  APPEND initrd=/boot/initrd.img console=ttyS0 console=tty0 quiet
 
 LABEL shell
   MENU LABEL ^Emergency Shell
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initramfs init=/bin/sh
-CFG
-    
-    print_success "BIOS引导配置完成"
-fi
+  APPEND initrd=/boot/initrd.img init=/bin/sh
 
-# UEFI引导 (GRUB)
-print_step "配置UEFI引导..."
+LABEL reboot
+  MENU LABEL ^Reboot
+  COM32 reboot.c32
+ISOLINUX_CFG
 
-# 尝试获取GRUB EFI
-if command -v grub-mkimage >/dev/null 2>&1; then
-    print_info "构建GRUB EFI..."
+    print_success "ISOLINUX配置完成"
+    return 0
+}
+
+setup_bios_boot
+
+# ================= 配置UEFI引导 (GRUB) =================
+print_header "6. 配置UEFI引导 (GRUB)"
+
+setup_uefi_boot() {
+    print_step "设置GRUB UEFI引导..."
     
-    mkdir -p /tmp/grub-efi-build
-    if grub-mkimage \
-        -O x86_64-efi \
-        -o /tmp/grub-efi-build/bootx64.efi \
-        -p /EFI/boot \
-        linux echo cat configfile normal terminal \
-        2>/dev/null; then
+    # 创建GRUB EFI文件
+    if command -v grub-mkimage >/dev/null 2>&1; then
+        print_info "构建GRUB EFI映像..."
         
-        cp /tmp/grub-efi-build/bootx64.efi "${WORK_DIR}/iso/EFI/boot/"
-        print_success "GRUB EFI构建成功"
-    else
-        print_warning "GRUB EFI构建失败"
-    fi
-    rm -rf /tmp/grub-efi-build
-fi
-
-# 如果还没有EFI文件，尝试复制现有文件
-if [ ! -f "${WORK_DIR}/iso/EFI/boot/bootx64.efi" ]; then
-    for path in /usr/lib/grub/x86_64-efi/grub.efi \
-                /usr/share/grub/x86_64-efi/grub.efi \
-                /usr/lib/grub/x86_64-efi-core/grub.efi; do
-        if [ -f "$path" ]; then
-            cp "$path" "${WORK_DIR}/iso/EFI/boot/bootx64.efi"
-            print_success "找到GRUB EFI: $path"
-            break
+        # 创建临时目录
+        local grub_temp="/tmp/grub-efi"
+        rm -rf "$grub_temp"
+        mkdir -p "$grub_temp"
+        
+        # 构建EFI映像
+        if grub-mkimage \
+            -O x86_64-efi \
+            -o "$grub_temp/grubx64.efi" \
+            -p /boot/grub \
+            linux part_gpt part_msdos fat iso9660 \
+            configfile echo normal terminal \
+            2>/dev/null; then
+            
+            cp "$grub_temp/grubx64.efi" "iso/EFI/BOOT/BOOTX64.EFI"
+            print_success "GRUB EFI构建成功"
+        else
+            print_warning "GRUB EFI构建失败"
         fi
-    done
-fi
-
-# 创建GRUB配置（无论是否有EFI文件）
-cat > "${WORK_DIR}/iso/EFI/boot/grub.cfg" << 'GRUB_CFG'
-set timeout=3
+        
+        rm -rf "$grub_temp"
+    fi
+    
+    # 如果构建失败，尝试复制现有文件
+    if [ ! -f "iso/EFI/BOOT/BOOTX64.EFI" ]; then
+        for path in \
+            /usr/lib/grub/x86_64-efi/grub.efi \
+            /usr/share/grub/x86_64-efi/grub.efi \
+            /usr/lib/grub/x86_64-efi-core/grub.efi; do
+            
+            if [ -f "$path" ]; then
+                cp "$path" "iso/EFI/BOOT/BOOTX64.EFI"
+                print_success "复制GRUB EFI: $path"
+                break
+            fi
+        done
+    fi
+    
+    # 创建GRUB配置文件
+    mkdir -p "iso/boot/grub"
+    cat > "iso/boot/grub/grub.cfg" << 'GRUB_CFG'
+set timeout=5
 set default=0
 
 menuentry "Install OpenWRT" {
-    linux /boot/vmlinuz initrd=/boot/initramfs console=ttyS0 console=tty0 quiet
-    boot
+    linux /boot/vmlinuz initrd=/boot/initrd.img console=ttyS0 console=tty0 quiet
 }
 
 menuentry "Emergency Shell" {
-    linux /boot/vmlinuz initrd=/boot/initramfs console=ttyS0 console=tty0 init=/bin/sh
-    boot
+    linux /boot/vmlinuz initrd=/boot/initrd.img console=ttyS0 console=tty0 init=/bin/sh
+}
+
+menuentry "Reboot" {
+    reboot
 }
 GRUB_CFG
+    
+    # 也在EFI目录创建简化配置
+    cat > "iso/EFI/BOOT/grub.cfg" << 'EFI_GRUB_CFG'
+configfile /boot/grub/grub.cfg
+EFI_GRUB_CFG
+    
+    if [ -f "iso/EFI/BOOT/BOOTX64.EFI" ]; then
+        print_success "UEFI引导配置完成"
+        return 0
+    else
+        print_warning "UEFI引导文件缺失"
+        return 1
+    fi
+}
 
-if [ -f "${WORK_DIR}/iso/EFI/boot/bootx64.efi" ]; then
-    print_success "UEFI引导配置完成"
-else
-    print_warning "UEFI引导文件缺失，仅支持BIOS引导"
-fi
+setup_uefi_boot
 
-print_success "引导配置完成"
+# ================= 创建ISO =================
+print_header "7. 创建ISO镜像"
 
-# ================= 创建微型ISO =================
-print_header "6. 创建微型ISO"
-
-create_tiny_iso() {
-    print_step "构建ISO..."
+create_iso() {
+    print_step "创建可引导ISO..."
     
     cd "${WORK_DIR}/iso"
     
-    # 显示内容大小
-    print_info "ISO内容大小统计:"
-    du -sh . 2>/dev/null || true
-    echo ""
+    # 显示内容
+    print_info "ISO目录结构:"
+    find . -type f | sort
     
-    # 确保输出目录存在
-    mkdir -p "${OUTPUT_DIR}"
+    # 确保有引导文件
+    if [ ! -f "boot/isolinux.bin" ] && [ ! -f "EFI/BOOT/BOOTX64.EFI" ]; then
+        print_error "没有找到引导文件"
+        return 1
+    fi
     
-    # 清理旧的ISO文件
-    rm -f "${OUTPUT_ISO}" 2>/dev/null || true
-    
-    # 使用xorriso创建ISO - 修复输出路径问题
+    # 使用xorriso创建混合ISO
     if command -v xorriso >/dev/null 2>&1; then
-        print_info "使用xorriso创建ISO..."
+        print_info "使用xorriso创建混合引导ISO..."
         
-        # 构建ISO命令 - 修复路径引用
         XORRISO_CMD="xorriso -as mkisofs"
-        XORRISO_CMD="$XORRISO_CMD -volid 'OPENWRT_TINY'"
-        XORRISO_CMD="$XORRISO_CMD -J -rock"
+        XORRISO_CMD="$XORRISO_CMD -volid 'OPENWRT_INSTALL'"
+        XORRISO_CMD="$XORRISO_CMD -J -r -rock"
         XORRISO_CMD="$XORRISO_CMD -full-iso9660-filenames"
         
-        # 如果有BIOS引导文件
+        # BIOS引导
         if [ -f "boot/isolinux.bin" ]; then
             XORRISO_CMD="$XORRISO_CMD -b boot/isolinux.bin"
             XORRISO_CMD="$XORRISO_CMD -c boot/boot.cat"
             XORRISO_CMD="$XORRISO_CMD -no-emul-boot"
             XORRISO_CMD="$XORRISO_CMD -boot-load-size 4"
             XORRISO_CMD="$XORRISO_CMD -boot-info-table"
+            XORRISO_CMD="$XORRISO_CMD -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin 2>/dev/null"
         fi
         
-        # 如果有UEFI引导文件
-        if [ -f "EFI/boot/bootx64.efi" ]; then
+        # UEFI引导
+        if [ -f "EFI/BOOT/BOOTX64.EFI" ]; then
             XORRISO_CMD="$XORRISO_CMD -eltorito-alt-boot"
-            XORRISO_CMD="$XORRISO_CMD -e EFI/boot/bootx64.efi"
+            XORRISO_CMD="$XORRISO_CMD -e EFI/BOOT/BOOTX64.EFI"
             XORRISO_CMD="$XORRISO_CMD -no-emul-boot"
+            XORRISO_CMD="$XORRISO_CMD -isohybrid-gpt-basdat"
         fi
         
-        # 修复：使用绝对路径，并且确保输出文件路径正确
-        XORRISO_CMD="$XORRISO_CMD -o \"${OUTPUT_ISO}\" ."
+        XORRISO_CMD="$XORRISO_CMD -o '${OUTPUT_ISO}' ."
         
-        print_info "执行ISO创建命令..."
-        print_info "工作目录: $(pwd)"
-        print_info "输出文件: ${OUTPUT_ISO}"
-        
-        # 执行命令，捕获错误
-        if eval "$XORRISO_CMD" 2>&1; then
-            print_success "xorriso命令执行成功"
+        print_info "执行命令..."
+        if eval "$XORRISO_CMD" 2>/dev/null; then
+            print_success "xorriso执行成功"
         else
-            XORRISO_ERROR=$?
-            print_warning "xorriso返回错误码: $XORRISO_ERROR"
-            print_info "尝试备用方法..."
-            
-            # 备用方法1：简化命令
-            if xorriso -as mkisofs -V "OPENWRT_TINY" -o "${OUTPUT_ISO}" . 2>/dev/null; then
-                print_success "备用方法成功"
-            else
-                print_error "xorriso创建失败"
-                return 1
-            fi
+            print_warning "xorriso执行有误，尝试简单模式..."
+            # 简单模式
+            xorriso -as mkisofs -V "OPENWRT" -o "${OUTPUT_ISO}" . 2>/dev/null || return 1
         fi
         
     elif command -v genisoimage >/dev/null 2>&1; then
         print_info "使用genisoimage创建ISO..."
         
+        # 检查引导文件
         if [ -f "boot/isolinux.bin" ]; then
-            if genisoimage \
-                -V "OPENWRT_TINY" \
+            genisoimage \
+                -V "OPENWRT_INSTALL" \
                 -J -r \
                 -b boot/isolinux.bin \
                 -c boot/boot.cat \
                 -no-emul-boot \
                 -boot-load-size 4 \
                 -boot-info-table \
-                -o "${OUTPUT_ISO}" . 2>/dev/null; then
-                print_success "genisoimage创建成功"
-            else
-                print_error "genisoimage创建失败"
-                return 1
-            fi
+                -o "${OUTPUT_ISO}" . 2>/dev/null || return 1
         else
-            if genisoimage \
-                -V "OPENWRT_TINY" \
+            genisoimage \
+                -V "OPENWRT_INSTALL" \
                 -J -r \
-                -o "${OUTPUT_ISO}" . 2>/dev/null; then
-                print_success "genisoimage创建成功"
-            else
-                print_error "genisoimage创建失败"
-                return 1
-            fi
+                -o "${OUTPUT_ISO}" . 2>/dev/null || return 1
         fi
         
-    elif command -v mkisofs >/dev/null 2>&1; then
-        print_info "使用mkisofs创建ISO..."
-        if mkisofs -V "OPENWRT_TINY" -o "${OUTPUT_ISO}" . 2>/dev/null; then
-            print_success "mkisofs创建成功"
-        else
-            print_error "mkisofs创建失败"
-            return 1
-        fi
     else
-        print_error "没有找到ISO创建工具"
+        print_error "没有ISO创建工具"
         return 1
     fi
     
-    # 检查ISO文件是否创建成功
+    # 验证ISO
     if [ -f "${OUTPUT_ISO}" ] && [ -s "${OUTPUT_ISO}" ]; then
         ISO_SIZE=$(du -h "${OUTPUT_ISO}" 2>/dev/null | cut -f1)
-        ISO_BYTES=$(stat -c%s "${OUTPUT_ISO}" 2>/dev/null || echo 0)
-        
         print_success "ISO创建成功: ${ISO_SIZE}"
         
-        # 验证ISO文件
+        # 验证文件
         if command -v file >/dev/null 2>&1; then
-            print_info "ISO文件验证:"
-            file "${OUTPUT_ISO}" | head -1
-        fi
-        
-        # 检查引导信息
-        if command -v xorriso >/dev/null 2>&1; then
-            print_info "ISO引导信息:"
-            xorriso -indev "${OUTPUT_ISO}" -report_el_torito as_mkisofs 2>&1 | \
-                grep -E "(Boot|boot|image)" | head -5 || true
+            print_info "文件类型:"
+            file "${OUTPUT_ISO}"
         fi
         
         return 0
     else
-        print_error "ISO文件未生成或为空"
+        print_error "ISO文件未生成"
         return 1
     fi
 }
 
-# 主要构建流程
-print_step "开始ISO构建流程..."
-
-# 尝试创建ISO
-if create_tiny_iso; then
-    print_success "ISO构建成功完成"
+# 创建ISO
+if create_iso; then
+    print_success "ISO构建完成"
 else
-    print_warning "ISO构建失败，创建备份..."
-    
-
+    print_error "ISO创建失败"
+    exit 1
 fi
+
+# ================= 验证ISO =================
+print_header "8. 验证ISO文件"
+
+verify_iso() {
+    print_step "验证ISO内容..."
+    
+    if [ ! -f "${OUTPUT_ISO}" ]; then
+        print_error "ISO文件不存在"
+        return 1
+    fi
+    
+    # 检查ISO大小
+    ISO_SIZE=$(du -h "${OUTPUT_ISO}" 2>/dev/null | cut -f1)
+    print_info "ISO大小: ${ISO_SIZE}"
+    
+    # 检查引导信息
+    if command -v xorriso >/dev/null 2>&1; then
+        print_info "ISO引导信息:"
+        xorriso -indev "${OUTPUT_ISO}" -toc 2>&1 | grep -E "(Boot|boot)" || true
+        
+        echo ""
+        print_info "检查关键文件:"
+        
+        # 检查内核
+        if xorriso -indev "${OUTPUT_ISO}" -find /boot -name "vmlinuz" 2>&1 | grep -q "vmlinuz"; then
+            print_success "✓ 内核文件存在"
+        else
+            print_error "✗ 内核文件缺失"
+        fi
+        
+        # 检查initramfs
+        if xorriso -indev "${OUTPUT_ISO}" -find /boot -name "initrd.img" 2>&1 | grep -q "initrd.img"; then
+            print_success "✓ initramfs文件存在"
+        else
+            print_error "✗ initramfs文件缺失"
+        fi
+        
+        # 检查BIOS引导
+        if xorriso -indev "${OUTPUT_ISO}" -find /boot -name "isolinux.bin" 2>&1 | grep -q "isolinux.bin"; then
+            print_success "✓ BIOS引导文件存在"
+        else
+            print_warning "⚠ BIOS引导文件缺失"
+        fi
+        
+        # 检查UEFI引导
+        if xorriso -indev "${OUTPUT_ISO}" -find /EFI -name "BOOTX64.EFI" 2>&1 | grep -q "BOOTX64.EFI"; then
+            print_success "✓ UEFI引导文件存在"
+        else
+            print_warning "⚠ UEFI引导文件缺失"
+        fi
+        
+        # 检查OpenWRT镜像
+        if xorriso -indev "${OUTPUT_ISO}" -find /img -name "openwrt.img" 2>&1 | grep -q "openwrt.img"; then
+            print_success "✓ OpenWRT镜像存在"
+        else
+            print_error "✗ OpenWRT镜像缺失"
+        fi
+    fi
+    
+    return 0
+}
+
+verify_iso
 
 # ================= 最终报告 =================
-print_header "7. 构建完成报告"
+print_header "9. 构建完成"
 
 echo ""
 echo "══════════════════════════════════════════"
-echo "         构建流程完成"
+echo "        🎉 OpenWRT安装器构建完成!"
 echo "══════════════════════════════════════════"
 echo ""
 
-# 检查输出文件
-if [ -f "${OUTPUT_ISO}" ]; then
-    ISO_SIZE=$(du -h "${OUTPUT_ISO}" 2>/dev/null | cut -f1)
-    ISO_BYTES=$(stat -c%s "${OUTPUT_ISO}" 2>/dev/null || echo 0)
-    
-    echo "✅ ISO文件生成成功!"
-    echo ""
-    echo "📊 文件信息:"
-    echo "  名称: $(basename ${OUTPUT_ISO})"
-    echo "  大小: ${ISO_SIZE}"
-    echo "  路径: ${OUTPUT_ISO}"
-    echo ""
-    
-    # 检查是否达到目标
-    if [ $ISO_BYTES -lt $((50*1024*1024)) ]; then
-        echo "🎯 达成目标: 小于 50MB"
-    elif [ $ISO_BYTES -lt $((100*1024*1024)) ]; then
-        echo "📊 大小适中: $((ISO_BYTES/1024/1024))MB"
-    else
-        echo "📈 文件较大: $((ISO_BYTES/1024/1024))MB"
-        echo "  主要因为OpenWRT镜像: ${IMG_SIZE_FINAL}"
-    fi
-    
-    # 内核检查
-    KERNEL_BYTES=$(stat -c%s "${WORK_DIR}/iso/boot/vmlinuz" 2>/dev/null || echo 0)
-    if [ $KERNEL_BYTES -lt 1000000 ]; then
-        echo ""
-        echo "⚠️  重要提示:"
-        echo "  内核文件较小 ($((KERNEL_BYTES/1024))KB)"
-        echo "  可能需要手动替换为真实Linux内核"
-        echo "  下载地址: https://tinycorelinux.net"
-    fi
-    
-elif [ -f "${OUTPUT_DIR}/openwrt-installer-backup-"*.tar.gz ]; then
-    BACKUP_FILE=$(ls -t "${OUTPUT_DIR}/openwrt-installer-backup-"*.tar.gz 2>/dev/null | head -1)
-    if [ -n "$BACKUP_FILE" ]; then
-        BACKUP_SIZE=$(du -h "$BACKUP_FILE" 2>/dev/null | cut -f1)
-        
-        echo "⚠️  ISO创建失败，但已生成备份"
-        echo ""
-        echo "📦 备份文件:"
-        echo "  名称: $(basename "$BACKUP_FILE")"
-        echo "  大小: ${BACKUP_SIZE}"
-        echo "  路径: ${BACKUP_FILE}"
-        echo ""
-        echo "🛠️  恢复选项:"
-        echo "  1. 运行恢复脚本:"
-        echo "     cd output && ./recover.sh"
-        echo "  2. 手动解压备份:"
-        echo "     tar -xzf $(basename "$BACKUP_FILE")"
-        echo "  3. 使用其他工具创建ISO"
-    fi
+# 总结信息
+ISO_SIZE=$(du -h "${OUTPUT_ISO}" 2>/dev/null | cut -f1)
+
+echo "📊 构建统计:"
+echo "  • 输出文件: ${OUTPUT_ISO_FILENAME}"
+echo "  • 文件大小: ${ISO_SIZE}"
+echo "  • OpenWRT镜像: ${IMG_SIZE_FINAL}"
+echo "  • Linux内核: ${KERNEL_SIZE}"
+echo ""
+
+# 引导支持检查
+echo "🔧 引导支持:"
+if [ -f "${WORK_DIR}/iso/boot/isolinux.bin" ]; then
+    echo "  ✅ BIOS引导: 已配置"
 else
-    echo "❌ 构建失败，无输出文件"
-    echo ""
-    echo "可能的原因:"
-    echo "  1. ISO创建工具问题"
-    echo "  2. 磁盘空间不足"
-    echo "  3. 权限问题"
-    echo ""
-    echo "检查点:"
-    echo "  - 确保有足够的磁盘空间 (需要 > 2.5GB)"
-    echo "  - 检查xorriso/genisoimage是否安装"
-    echo "  - 查看详细错误日志"
+    echo "  ❌ BIOS引导: 未配置"
 fi
 
+if [ -f "${WORK_DIR}/iso/EFI/BOOT/BOOTX64.EFI" ]; then
+    echo "  ✅ UEFI引导: 已配置"
+else
+    echo "  ❌ UEFI引导: 未配置"
+fi
 echo ""
-echo "构建时间: $(date)"
+
+# 使用说明
+echo "🚀 使用方法:"
+echo "  1. 写入U盘:"
+echo "     sudo dd if=${OUTPUT_ISO_FILENAME} of=/dev/sdX bs=4M status=progress"
+echo "  2. 设置BIOS/UEFI从U盘启动"
+echo "  3. 选择'Install OpenWRT'"
+echo "  4. 按照提示完成安装"
+echo ""
+
+# 注意事项
+if [ $KERNEL_BYTES -lt 1000000 ]; then
+    echo "⚠️  重要提示:"
+    echo "    检测到内核文件较小 ($((KERNEL_BYTES/1024))KB)"
+    echo "    可能需要手动替换为完整Linux内核"
+    echo ""
+    echo "    替换方法:"
+    echo "    1. 从TinyCore Linux下载: https://tinycorelinux.net"
+    echo "    2. 文件: vmlinuz64 (约4.8MB)"
+    echo "    3. 替换ISO中的 /boot/vmlinuz 文件"
+    echo ""
+fi
+
+echo "📅 构建时间: $(date)"
 echo "══════════════════════════════════════════"
 
-# 清理工作目录
-print_step "清理工作目录..."
+# 清理
 rm -rf "${WORK_DIR}" 2>/dev/null || true
 
 echo ""
 print_success "构建流程结束"
+exit 0
