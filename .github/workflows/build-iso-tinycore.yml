@@ -25,7 +25,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-              wget \
+         wget \
         curl \
         xorriso \
         syslinux \
@@ -52,25 +52,11 @@ jobs:
         grub-efi-amd64-signed \
         grub-efi-amd64
     
-        # 检查重要文件
-        echo "检查关键文件:"
-        ls -la /usr/lib/syslinux/isolinux.bin 2>/dev/null || echo "isolinux.bin not found"
-        ls -la /usr/lib/grub/x86_64-efi/grub.efi 2>/dev/null || echo "grub.efi not found"
+        ls -la /usr/lib/syslinux/isolinux.bin 2>/dev/null || \
+        sudo apt-get install --reinstall -y syslinux-common
     
-        # 确保isohdpfx.bin存在
-        echo "检查系统文件..."
-        ls -la /usr/lib/syslinux/ /usr/share/syslinux/ 2>/dev/null | grep -E "isohdpfx|isolinux" || true
-    
-        # 如果isohdpfx.bin不存在，创建它
-        if [ ! -f /usr/lib/syslinux/isohdpfx.bin ] && [ ! -f /usr/share/syslinux/isohdpfx.bin ]; then
-        echo "创建isohdpfx.bin..."
-        sudo dd if=/dev/zero of=/usr/lib/syslinux/isohdpfx.bin bs=440 count=1 2>/dev/null
-        sudo chmod 644 /usr/lib/syslinux/isohdpfx.bin
-        fi
-  
-    
-        # 确保所有必要的syslinux文件都存在
-        sudo apt-get install --reinstall -y syslinux isolinux
+        ls -la /usr/lib/grub/x86_64-efi/ 2>/dev/null || \
+        sudo apt-get install --reinstall -y grub-efi-amd64-bin
         mkdir -p assets
         mkdir -p output
         cd assets
@@ -91,7 +77,7 @@ jobs:
           echo "下载: $FIRST_URL"
           wget -q $FIRST_URL  -O assets/ezopwrt.img.gz
            if [ ! -f "assets/ezopwrt.img.gz" ]; then
-             curl -L -o "$OUTPUT_FILE"  --progress-bar --retry 3 "$FIRST_URL" 
+             curl -L -o "$OUTPUT_FILE"   --retry 3 "$FIRST_URL" 
            fi
         
            if [ $? -eq 0 ]; then
