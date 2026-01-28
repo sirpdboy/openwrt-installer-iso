@@ -25,7 +25,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-        wget \
+              wget \
         curl \
         xorriso \
         syslinux \
@@ -44,8 +44,18 @@ jobs:
         file \
         cpio \
         gzip \
-        genisoimage \
-        pv  # 用于安装进度显示
+        genisoimage
+    
+        # 确保有必要的工具
+        sudo apt-get install -y \
+        grub-pc-bin \
+        grub-efi-amd64-signed \
+        grub-efi-amd64
+    
+        # 检查重要文件
+        echo "检查关键文件:"
+        ls -la /usr/lib/syslinux/isolinux.bin 2>/dev/null || echo "isolinux.bin not found"
+        ls -la /usr/lib/grub/x86_64-efi/grub.efi 2>/dev/null || echo "grub.efi not found"
     
         # 确保isohdpfx.bin存在
         echo "检查系统文件..."
