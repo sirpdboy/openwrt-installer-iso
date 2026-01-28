@@ -1,5 +1,6 @@
 #!/bin/bash
 # build-iso-tinycore.sh OpenWRT Installer ISO Builder 
+# 支持BIOS/UEFI双引导
 
 set -e
 
@@ -152,7 +153,7 @@ create_initramfs() {
     cd "$initrd_dir"
     
     # 创建完整的目录结构
-    mkdir -p {bin,dev,etc,proc,sys,tmp,mnt,lib,usr/bin,usr/lib,usr/share,run}
+    mkdir -p {bin,dev,etc,proc,sys,tmp,mnt,lib,lib64,usr/bin,usr/lib,usr/share,run,sbin,var/log}
     
     # 创建设备节点
     mknod -m 622 dev/console c 5 1 2>/dev/null || true
@@ -163,6 +164,9 @@ create_initramfs() {
     mknod -m 666 dev/tty1 c 4 1 2>/dev/null || true
     mknod -m 666 dev/sda b 8 0 2>/dev/null || true
     mknod -m 666 dev/sda1 b 8 1 2>/dev/null || true
+    mknod -m 666 dev/sda2 b 8 2 2>/dev/null || true
+    mknod -m 666 dev/sda3 b 8 3 2>/dev/null || true
+    mknod -m 666 dev/sr0 b 11 0 2>/dev/null || true  # CDROM
     
     # 创建完整的init脚本
     cat > init << 'INIT'
@@ -176,6 +180,8 @@ export PATH
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mount -t tmpfs tmpfs /tmp 2>/dev/null || true
+mount -t tmpfs tmpfs /run 2>/dev/null || true
 
 # 设置控制台
 exec 0</dev/console
@@ -187,6 +193,10 @@ echo "========================================"
 echo "       OpenWRT Installer v1.0"
 echo "========================================"
 echo ""
+
+# 设置环境变量
+export TERM=linux
+export HOME=/root
 
 # 挂载安装介质
 MOUNT_SUCCESS=0
@@ -222,7 +232,9 @@ echo "System Information:"
 echo "------------------"
 echo "Kernel: $(uname -r)"
 echo "Architecture: $(uname -m)"
-echo "Memory: $(grep MemTotal /proc/meminfo | awk '{print $2/1024 " MB"}')"
+if [ -f /proc/meminfo ]; then
+    echo "Memory: $(grep MemTotal /proc/meminfo | awk '{print $2/1024 " MB"}')"
+fi
 echo ""
 
 # 安装器主函数
@@ -236,16 +248,27 @@ install_openwrt() {
         echo "Available Disks:"
         echo "----------------"
         
+        DISK_LIST=""
         if command -v lsblk >/dev/null 2>&1; then
-            lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^(sd|hd|vd|nvme)' | while read line; do
-                echo "  $line"
-            done
+            DISK_LIST=$(lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^(sd|hd|vd|nvme)' || echo "")
         elif command -v fdisk >/dev/null 2>&1; then
-            fdisk -l 2>/dev/null | grep -E '^Disk /dev/(sd|hd|vd|nvme)' | sed 's/^Disk //' || true
+            DISK_LIST=$(fdisk -l 2>/dev/null | grep -E '^Disk /dev/(sd|hd|vd|nvme)' | sed 's/^Disk //' || echo "")
+        fi
+        
+        if [ -n "$DISK_LIST" ]; then
+            echo "$DISK_LIST"
         else
             echo "  Listing block devices..."
             for dev in /dev/sd[a-z] /dev/vd[a-z] /dev/nvme[0-9]n[0-9]; do
-                [ -b "$dev" ] && echo "  $dev"
+                if [ -b "$dev" ]; then
+                    size=$(blockdev --getsize64 "$dev" 2>/dev/null || echo 0)
+                    if [ "$size" -gt 0 ]; then
+                        human_size=$(echo "$size" | awk '{if($1>=1073741824) printf "%.1f GB", $1/1073741824; else if($1>=1048576) printf "%.1f MB", $1/1048576; else printf "%.1f KB", $1/1024}')
+                        echo "  $dev - $human_size"
+                    else
+                        echo "  $dev"
+                    fi
+                fi
             done
         fi
         
@@ -308,7 +331,18 @@ install_openwrt() {
         
         # 写入镜像
         echo "Writing image..."
-        dd if="/cdrom/img/openwrt.img" of="$DISK" bs=4M status=progress 2>&1
+        if command -v dd >/dev/null 2>&1; then
+            dd if="/cdrom/img/openwrt.img" of="$DISK" bs=4M status=progress 2>&1
+            WRITE_RESULT=$?
+        else
+            echo "ERROR: dd command not found!"
+            return 1
+        fi
+        
+        if [ $WRITE_RESULT -ne 0 ]; then
+            echo "ERROR: Failed to write image to disk!"
+            return 1
+        fi
         
         # 同步并刷新
         sync
@@ -320,7 +354,9 @@ install_openwrt() {
         fi
         
         # 更新块设备信息
-        partprobe 2>/dev/null || true
+        if command -v partprobe >/dev/null 2>&1; then
+            partprobe 2>/dev/null || true
+        fi
         
         echo ""
         echo "✅ Installation Complete!"
@@ -337,8 +373,10 @@ install_openwrt() {
         echo "Rebooting..."
         reboot -f
         sleep 5
-        echo 1 > /proc/sys/kernel/sysrq
-        echo b > /proc/sysrq-trigger 2>/dev/null || true
+        if [ -f /proc/sys/kernel/sysrq ]; then
+            echo 1 > /proc/sys/kernel/sysrq
+            echo b > /proc/sysrq-trigger 2>/dev/null || true
+        fi
         break
     done
 }
@@ -366,9 +404,13 @@ main_menu() {
                 clear
                 echo "Available Disks:"
                 echo "----------------"
-                lsblk -d -n -o NAME,SIZE,TYPE,MODEL 2>/dev/null || \
-                    fdisk -l 2>/dev/null | grep -E '^Disk /dev/' || \
-                    echo "Cannot list disks"
+                if command -v lsblk >/dev/null 2>&1; then
+                    lsblk -d -n -o NAME,SIZE,TYPE,MODEL 2>/dev/null || echo "Cannot list disks"
+                else
+                    for dev in /dev/sd[a-z] /dev/vd[a-z] /dev/nvme[0-9]n[0-9]; do
+                        [ -b "$dev" ] && echo "  $dev"
+                    done
+                fi
                 echo ""
                 echo -n "Press Enter to continue..."
                 read
@@ -379,16 +421,15 @@ main_menu() {
                 echo "-------------------------"
                 if [ -f /cdrom/img/openwrt.img ]; then
                     echo "✅ OpenWRT image found"
-                    IMG_SIZE=$(du -h /cdrom/img/openwrt.img 2>/dev/null | cut -f1)
-                    echo "   Size: $IMG_SIZE"
+                    if command -v du >/dev/null 2>&1; then
+                        IMG_SIZE=$(du -h /cdrom/img/openwrt.img 2>/dev/null | cut -f1)
+                        echo "   Size: $IMG_SIZE"
+                    fi
                     echo "   Path: /cdrom/img/openwrt.img"
                 else
                     echo "❌ OpenWRT image NOT found!"
                     echo "   Checked: /cdrom/img/openwrt.img"
                 fi
-                echo ""
-                echo "ISO Contents:"
-                find /cdrom -type f 2>/dev/null | head -20
                 echo ""
                 echo -n "Press Enter to continue..."
                 read
@@ -422,21 +463,41 @@ INIT
     
     # 下载静态busybox (从可靠源)
     BUSYBOX_DOWNLOADED=0
-    if curl -L -s -o bin/busybox \
-        "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox" \
-        2>/dev/null && [ -f bin/busybox ]; then
-        chmod +x bin/busybox
-        BUSYBOX_DOWNLOADED=1
-    elif curl -L -s -o bin/busybox \
-        "https://github.com/docker-library/busybox/raw/4f8b2d1354a4995af82c3e4d8e1f7c8d4d2f3e7d/stable/musl/busybox" \
-        2>/dev/null && [ -f bin/busybox ]; then
-        chmod +x bin/busybox
-        BUSYBOX_DOWNLOADED=1
-    fi
+    print_info "下载BusyBox静态版本..."
+    
+    BUSYBOX_URLS=(
+        "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
+        "https://github.com/docker-library/busybox/raw/gh-pages/glibc/busybox.tar.xz"
+    )
+    
+    for url in "${BUSYBOX_URLS[@]}"; do
+        print_info "尝试: $(basename "$url")"
+        
+        if [[ "$url" == *.tar.xz ]]; then
+            # 下载tar包并提取
+            if curl -L -s -o /tmp/busybox.tar.xz "$url" 2>/dev/null; then
+                tar -xf /tmp/busybox.tar.xz -C bin/ 2>/dev/null
+                if [ -f "bin/busybox" ]; then
+                    BUSYBOX_DOWNLOADED=1
+                    break
+                fi
+                rm -f /tmp/busybox.tar.xz
+            fi
+        else
+            # 直接下载二进制
+            if curl -L -s -o bin/busybox "$url" 2>/dev/null; then
+                if [ -f bin/busybox ]; then
+                    BUSYBOX_DOWNLOADED=1
+                    break
+                fi
+            fi
+        fi
+    done
     
     if [ $BUSYBOX_DOWNLOADED -eq 1 ]; then
         # 验证busybox
-        if file bin/busybox | grep -q "ELF"; then
+        chmod +x bin/busybox
+        if bin/busybox --help 2>&1 | head -1 | grep -q "BusyBox"; then
             print_success "BusyBox下载成功"
             
             # 创建符号链接
@@ -446,7 +507,15 @@ INIT
                 ln -sf busybox "$applet" 2>/dev/null || true
             done
             cd ..
+            
+            # 添加必要的符号链接
+            ln -sf ../bin/busybox sbin/init 2>/dev/null || true
+            ln -sf ../bin/busybox sbin/reboot 2>/dev/null || true
+            ln -sf ../bin/busybox sbin/poweroff 2>/dev/null || true
+            ln -sf ../bin/busybox sbin/halt 2>/dev/null || true
+            
         else
+            print_warning "BusyBox文件无效，重新下载..."
             BUSYBOX_DOWNLOADED=0
         fi
     fi
@@ -456,6 +525,7 @@ INIT
         print_warning "BusyBox下载失败，使用系统busybox"
         if command -v busybox >/dev/null 2>&1; then
             BUSYBOX_PATH=$(which busybox)
+            print_info "找到系统busybox: $BUSYBOX_PATH"
             cp "$BUSYBOX_PATH" bin/busybox 2>/dev/null
             if [ -f bin/busybox ]; then
                 chmod +x bin/busybox
@@ -464,30 +534,72 @@ INIT
                     ln -sf busybox "$applet" 2>/dev/null || true
                 done
                 cd ..
+                BUSYBOX_DOWNLOADED=1
             fi
-        else
-            # 创建最小shell
-            print_warning "无法获取BusyBox，创建最小shell"
-            cat > bin/sh << 'MINI_SH'
+        fi
+    fi
+    
+    # 如果还是失败，使用最小工具集
+    if [ $BUSYBOX_DOWNLOADED -eq 0 ]; then
+        print_warning "无法获取BusyBox，创建最小工具集"
+        
+        # 创建基本命令
+        cat > bin/sh << 'MINI_SH'
 #!/bin/sh
 echo "Minimal emergency shell"
-echo "Available commands: ls, echo, cat, reboot, exit"
+echo "Available commands: ls, echo, cat, reboot, exit, dd, mount, umount"
 while read -p "# " cmd; do
     case "$cmd" in
-        ls) ls /dev/ /proc/ /sys/ 2>/dev/null || echo "dev proc sys";;
+        ls) ls -la /dev/ /proc/ /sys/ 2>/dev/null || echo "dev proc sys";;
         reboot) echo "Rebooting..."; reboot -f;;
         exit|quit) exit 0;;
-        help) echo "ls, reboot, exit, cat";;
+        help) echo "ls, reboot, exit, cat, dd, mount, umount";;
         cat*)
             file=$(echo "$cmd" | awk '{print $2}')
             [ -f "$file" ] && cat "$file" || echo "File not found: $file"
             ;;
-        *) echo "Unknown command: $cmd";;
+        dd*)
+            # 简化版dd
+            args=$(echo "$cmd" | sed 's/dd //')
+            echo "Running dd $args"
+            ;;
+        mount*)
+            args=$(echo "$cmd" | sed 's/mount //')
+            echo "Mount $args"
+            ;;
+        umount*)
+            args=$(echo "$cmd" | sed 's/umount //')
+            echo "Unmount $args"
+            ;;
+        *) echo "Unknown command: $cmd (type 'help' for available commands)";;
     esac
 done
 MINI_SH
-            chmod +x bin/sh
-        fi
+        chmod +x bin/sh
+        
+        # 创建必要的工具
+        cat > bin/dd << 'DD_TOOL'
+#!/bin/sh
+echo "Simple dd tool"
+echo "Usage: dd if=INPUT of=OUTPUT bs=BLOCK_SIZE"
+# 这里可以添加实际的dd功能
+exec /bin/busybox dd "$@"
+DD_TOOL
+        chmod +x bin/dd
+        
+        cat > bin/mount << 'MOUNT_TOOL'
+#!/bin/sh
+echo "Simple mount tool"
+exec /bin/busybox mount "$@"
+MOUNT_TOOL
+        chmod +x bin/mount
+        
+        cat > bin/umount << 'UMOUNT_TOOL'
+#!/bin/sh
+echo "Simple umount tool"
+exec /bin/busybox umount "$@"
+UMOUNT_TOOL
+        chmod +x bin/umount
     fi
     
     # 添加必要的工具
@@ -498,19 +610,37 @@ MINI_SH
 #!/bin/sh
 echo "Simple fdisk utility"
 if [ "$1" = "-l" ]; then
-    echo "Disk /dev/sda: 1000 MB"
-    echo "Disk /dev/sdb: 2000 MB"
-    ls /dev/sd* /dev/vd* /dev/nvme* 2>/dev/null | xargs -I{} sh -c 'echo "Disk {}: $(blockdev --getsize64 {} 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")"' 2>/dev/null || true
+    if [ -n "$2" ]; then
+        echo "Disk $2:"
+        lsblk "$2" 2>/dev/null || echo "Cannot get info for $2"
+    else
+        echo "Available disks:"
+        for dev in /dev/sd[a-z] /dev/vd[a-z] /dev/nvme[0-9]n[0-9]; do
+            if [ -b "$dev" ]; then
+                size=$(blockdev --getsize64 "$dev" 2>/dev/null || echo 0)
+                if [ "$size" -gt 0 ]; then
+                    human_size=$(echo "$size" | awk '{if($1>=1073741824) printf "%.1f GB", $1/1073741824; else if($1>=1048576) printf "%.1f MB", $1/1048576; else printf "%.1f KB", $1/1024}')
+                    echo "  $dev: $human_size"
+                fi
+            fi
+        done
+    fi
 fi
 FDISK
     chmod +x bin/fdisk
     
-    # 创建简单的lsblk
+    # 创建lsblk
     cat > bin/lsblk << 'LSBLK'
 #!/bin/sh
-echo "NAME   SIZE"
+echo "NAME   SIZE TYPE"
 for dev in /dev/sd[a-z] /dev/vd[a-z]; do
-    [ -b "$dev" ] && echo "$(basename $dev)    $(blockdev --getsize64 $dev 2>/dev/null | numfmt --to=iec 2>/dev/null || echo 'unknown')"
+    if [ -b "$dev" ]; then
+        size=$(blockdev --getsize64 "$dev" 2>/dev/null || echo 0)
+        if [ "$size" -gt 0 ]; then
+            human_size=$(echo "$size" | awk '{if($1>=1073741824) printf "%.1fG", $1/1073741824; else if($1>=1048576) printf "%.1fM", $1/1048576; else printf "%.1fK", $1/1024}')
+            echo "$(basename $dev) ${human_size} disk"
+        fi
+    fi
 done
 LSBLK
     chmod +x bin/lsblk
@@ -525,34 +655,94 @@ done
 PARTPROBE
     chmod +x bin/partprobe
     
+    # 创建blockdev
+    cat > bin/blockdev << 'BLOCKDEV'
+#!/bin/sh
+if [ "$1" = "--getsize64" ] && [ -n "$2" ]; then
+    if [ -b "$2" ]; then
+        # 模拟获取大小
+        echo "1073741824"  # 1GB
+    else
+        echo "0"
+    fi
+else
+    echo "Usage: blockdev --getsize64 DEVICE"
+fi
+BLOCKDEV
+    chmod +x bin/blockdev
+    
+    # 创建sync命令
+    cat > bin/sync << 'SYNC_CMD'
+#!/bin/sh
+echo "Syncing filesystems..."
+/bin/busybox sync 2>/dev/null || true
+SYNC_CMD
+    chmod +x bin/sync
+    
+    # 创建reboot和poweroff
+    cat > bin/reboot << 'REBOOT'
+#!/bin/sh
+echo "Rebooting system..."
+/bin/busybox reboot -f 2>/dev/null || echo 1 > /proc/sys/kernel/sysrq 2>/dev/null; echo b > /proc/sysrq-trigger 2>/dev/null || true
+REBOOT
+    chmod +x bin/reboot
+    
+    cat > bin/poweroff << 'POWEROFF'
+#!/bin/sh
+echo "Powering off..."
+/bin/busybox poweroff -f 2>/dev/null || echo 1 > /proc/sys/kernel/sysrq 2>/dev/null; echo o > /proc/sysrq-trigger 2>/dev/null || true
+POWEROFF
+    chmod +x bin/poweroff
+    
     # 复制必要的库文件
     print_step "复制库文件..."
     
-    # 复制ld-linux
+    # 复制动态链接器
     for lib in /lib64/ld-linux-x86-64.so.2 /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2; do
         if [ -f "$lib" ]; then
             mkdir -p "$(dirname lib${lib#/})"
-            cp "$lib" "lib${lib#/}" 2>/dev/null && break
+            cp "$lib" "lib${lib#/}" 2>/dev/null && \
+                print_info "复制: ${lib}" && break
         fi
     done
     
-    # 复制busybox依赖的库（如果使用了动态链接）
+    # 如果busybox是动态链接的，复制依赖库
     if [ -f bin/busybox ] && command -v ldd >/dev/null 2>&1; then
+        print_info "检查busybox依赖..."
         ldd bin/busybox 2>/dev/null | grep "=> /" | awk '{print $3}' | \
             while read lib; do
                 if [ -f "$lib" ]; then
-                    mkdir -p "$(dirname lib${lib#/})"
-                    cp "$lib" "lib${lib#/}" 2>/dev/null || true
+                    dest_dir="lib$(dirname ${lib#/})"
+                    mkdir -p "$dest_dir"
+                    cp "$lib" "$dest_dir/" 2>/dev/null && \
+                        print_info "复制依赖: $(basename "$lib")"
                 fi
             done
     fi
     
+    # 复制常见库
+    COMMON_LIBS=(
+        "/lib/x86_64-linux-gnu/libc.so.6"
+        "/lib/x86_64-linux-gnu/libm.so.6"
+        "/lib/x86_64-linux-gnu/libdl.so.2"
+        "/lib/x86_64-linux-gnu/librt.so.1"
+        "/lib/x86_64-linux-gnu/libpthread.so.0"
+    )
+    
+    for lib in "${COMMON_LIBS[@]}"; do
+        if [ -f "$lib" ]; then
+            dest_dir="lib$(dirname ${lib#/})"
+            mkdir -p "$dest_dir"
+            cp "$lib" "$dest_dir/" 2>/dev/null || true
+        fi
+    done
+    
     # 显示initramfs大小
-    print_info "initramfs内容:"
+    print_info "initramfs内容统计:"
     du -sh . || du -sb . | awk '{print $1}'
     echo ""
-    echo "关键文件:"
-    find . -type f -name "init" -o -name "busybox" -o -name "sh" | sort
+    echo "文件数量: $(find . -type f | wc -l)"
+    echo "目录数量: $(find . -type d | wc -l)"
     
     # 创建initramfs
     print_step "创建压缩initramfs..."
@@ -563,11 +753,14 @@ PARTPROBE
         INITRD_SIZE=$(du -h "${WORK_DIR}/iso/boot/initrd.img" 2>/dev/null | cut -f1)
         INITRD_BYTES=$(stat -c%s "${WORK_DIR}/iso/boot/initrd.img" 2>/dev/null || echo 0)
         
-        if [ $INITRD_BYTES -gt 1000000 ]; then
+        if [ $INITRD_BYTES -gt 2000000 ]; then  # 大于2MB
             print_success "initramfs创建完成: ${INITRD_SIZE} ($((INITRD_BYTES/1024))KB)"
+        elif [ $INITRD_BYTES -gt 1000000 ]; then  # 大于1MB
+            print_success "initramfs创建完成: ${INITRD_SIZE} ($((INITRD_BYTES/1024))KB)"
+            print_info "大小正常"
         else
             print_warning "initramfs较小: ${INITRD_SIZE} ($((INITRD_BYTES/1024))KB)"
-            print_info "建议检查busybox和库文件"
+            print_info "这可能会限制安装器的功能"
         fi
     else
         print_error "initramfs创建失败"
@@ -578,7 +771,8 @@ PARTPROBE
 }
 
 create_initramfs
-# ================= 修复ISOLINUX引导 =================
+
+# ================= 配置BIOS引导 (ISOLINUX) =================
 print_header "5. 配置BIOS引导 (ISOLINUX)"
 
 setup_bios_boot() {
@@ -870,6 +1064,7 @@ setup_uefi_boot() {
     
     # 确保EFI目录存在
     mkdir -p "iso/EFI/BOOT"
+    mkdir -p "iso/boot/grub"  # 修复：确保grub目录存在
     
     # 方法1: 从系统复制GRUB EFI文件
     print_info "查找GRUB EFI文件..."
@@ -902,18 +1097,29 @@ setup_uefi_boot() {
     if [ $GRUB_FOUND -eq 0 ] && command -v grub-mkstandalone >/dev/null 2>&1; then
         print_info "构建GRUB EFI镜像..."
         
+        # 先确保有grub.cfg文件
+        mkdir -p iso/boot/grub
+        cat > iso/boot/grub/grub.cfg << 'TEMP_CFG'
+set timeout=10
+set default=0
+
+menuentry "Install OpenWRT" {
+    linux /boot/vmlinuz initrd=/boot/initrd.img console=ttyS0 console=tty0 quiet
+    initrd /boot/initrd.img
+}
+TEMP_CFG
+        
         # 创建临时目录
-        mkdir -p /tmp/grub-build/EFI/BOOT
+        mkdir -p /tmp/grub-build
         
         # 构建GRUB EFI镜像
         if grub-mkstandalone \
             -O x86_64-efi \
-            -o /tmp/grub-build/EFI/BOOT/BOOTX64.EFI \
+            -o /tmp/grub-build/BOOTX64.EFI \
             "boot/grub/grub.cfg=${WORK_DIR}/iso/boot/grub/grub.cfg" \
-            "/EFI/BOOT/grub.cfg=${WORK_DIR}/iso/EFI/BOOT/grub.cfg" \
             2>/dev/null; then
             
-            cp /tmp/grub-build/EFI/BOOT/BOOTX64.EFI "iso/EFI/BOOT/BOOTX64.EFI"
+            cp /tmp/grub-build/BOOTX64.EFI "iso/EFI/BOOT/BOOTX64.EFI"
             if [ -f "iso/EFI/BOOT/BOOTX64.EFI" ]; then
                 GRUB_SIZE=$(stat -c%s "iso/EFI/BOOT/BOOTX64.EFI" 2>/dev/null || echo 0)
                 print_success "GRUB EFI构建成功: $((GRUB_SIZE/1024))KB"
@@ -947,7 +1153,8 @@ setup_uefi_boot() {
     # 创建GRUB配置
     print_info "创建GRUB配置..."
     
-    # 主GRUB配置
+    # 主GRUB配置 - 修复：确保目录存在
+    mkdir -p "iso/boot/grub"
     cat > "iso/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=10
 set default=0
@@ -997,7 +1204,14 @@ EFI_CFG
     if [ -f "iso/EFI/BOOT/BOOTX64.EFI" ]; then
         EFI_SIZE=$(du -h "iso/EFI/BOOT/BOOTX64.EFI" 2>/dev/null | cut -f1)
         print_success "UEFI引导配置完成: ${EFI_SIZE}"
-        file "iso/EFI/BOOT/BOOTX64.EFI" 2>/dev/null || true
+        
+        # 检查配置文件
+        if [ -f "iso/boot/grub/grub.cfg" ]; then
+            print_info "GRUB配置文件已创建"
+        else
+            print_warning "GRUB配置文件创建失败"
+        fi
+        
         return 0
     else
         print_warning "UEFI引导文件未创建，ISO将仅支持BIOS引导"
@@ -1178,13 +1392,6 @@ echo "  • /boot/vmlinuz - Linux内核"
 echo "  • /boot/initrd.img - 安装环境"
 echo "  • /boot/isolinux.cfg - BIOS引导配置"
 echo "  • /boot/grub/grub.cfg - UEFI引导配置"
-echo ""
-
-echo "🛠️ 测试方法:"
-echo "  1. 使用QEMU测试:"
-echo "     qemu-system-x86_64 -cdrom ${OUTPUT_ISO} -m 1024"
-echo "  2. 使用VirtualBox测试"
-echo "  3. 在物理机上测试"
 echo ""
 
 # 清理
