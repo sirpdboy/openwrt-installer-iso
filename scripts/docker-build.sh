@@ -117,6 +117,7 @@ RUN echo "🔧 验证安装:" && \
     echo "" && \
     echo "xorriso: $(which xorriso)" && \
     echo "mkfs.fat: $(which mkfs.fat 2>/dev/null || which mkfs.vfat 2>/dev/null || echo '未找到')"
+    echo "syslinux: $(ls -la /usr/share/syslinux/isolinux.bin 2>/dev/null || echo '未找到')" 
 
 WORKDIR /work
 
@@ -173,12 +174,15 @@ if [ -d "$SYSBOOT_DIR" ]; then
     for file in isolinux.bin ldlinux.c32 libutil.c32 libcom32.c32 menu.c32; do
         if [ -f "$SYSBOOT_DIR/$file" ]; then
             cp "$SYSBOOT_DIR/$file" "$ISO_DIR/boot/isolinux/"
-            echo "  ✅ $file"
+            echo " $SYSBOOT_DIR/$file ✅ $file"
+        else
+            echo "  ⚠ $file 未找到"
         fi
     done
 fi
-
+ls -l  $ISO_DIR/boot/isolinux/
 # 创建ISOLINUX配置
+echo "创建ISOLINUX配置..."
 cat > "$ISO_DIR/boot/isolinux/isolinux.cfg" << 'ISOLINUX_CFG_EOF'
 DEFAULT menu.c32
 PROMPT 0
@@ -191,13 +195,6 @@ LABEL install
   KERNEL /boot/vmlinuz
   APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200n8
 
-LABEL bootlocal
-  MENU LABEL Boot from local disk
-  LOCALBOOT 0x80
-
-LABEL reboot
-  MENU LABEL Reboot
-  COM32 reboot.c32
 ISOLINUX_CFG_EOF
 
 echo "✅ BIOS引导配置完成"
@@ -218,14 +215,6 @@ menuentry "Install OpenWRT" {
     echo "Booting OpenWRT installer..."
 }
 
-menuentry "Boot from local disk" {
-    echo "Attempting to boot from local disk..."
-    exit
-}
-
-menuentry "Reboot" {
-    reboot
-}
 GRUB_CFG_EOF
 
 echo "✅ GRUB配置创建完成"
@@ -264,7 +253,7 @@ KERNEL_FOUND=false
 echo "在系统中查找内核文件..."
 find /boot -name "vmlinuz*" 2>/dev/null | while read kernel; do
     echo "找到内核: $kernel"
-    cp "$kernel" "$ISO_DIR/boot/vmlinuz" || cp /boot/vmlinuz-lts "$ISO_DIR/boot/vmlinuz" 
+    cp $kernel $ISO_DIR/boot/vmlinuz || cp /boot/vmlinuz-lts $ISO_DIR/boot/vmlinuz"
     KERNEL_FOUND=true
     echo "✅ 使用内核: "$kernel""
     break
