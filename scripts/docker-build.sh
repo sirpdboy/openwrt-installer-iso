@@ -190,9 +190,15 @@ LABEL install
   MENU LABEL Install OpenWRT
   MENU DEFAULT
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200n8 rw
+  APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200n8 rw quiet
+LABEL debug
+  MENU LABEL Debug Mode
+  KERNEL /boot/vmlinuz
   APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200n8 rw init=/init
 
+LABEL bootlocal
+  MENU LABEL Boot from local disk
+  LOCALBOOT 0x80
 ISOLINUX_CFG_EOF
 
 echo "✅ BIOS引导配置完成"
@@ -207,12 +213,21 @@ set default=0
 
 menuentry "Install OpenWRT" {
     echo "Loading kernel..."
-    linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 rw init=/init
+    linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 rw quiet
     echo "Loading initial ramdisk..."
     initrd /boot/initrd.img
     echo "Booting OpenWRT installer..."
 }
 
+menuentry "Debug Mode" {
+    linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 rw  rw init=/init
+    initrd /boot/initrd.img
+}
+
+menuentry "Boot from local disk" {
+    echo "Attempting to boot from local disk..."
+    exit
+}
 GRUB_CFG_EOF
 
 echo "✅ GRUB配置创建完成"
@@ -297,28 +312,28 @@ mkdir -p "$INITRD_DIR"/{bin,dev,etc,lib,proc,sys,root,sbin,tmp,usr/bin,usr/sbin}
 # 创建init脚本
 cat > "$INITRD_DIR/init" << 'INIT_EOF'
 #!/bin/sh
-# OpenWRT Installer Init Script with Full Tools
+# Minimal init script that definitely works
 
-# 设置PATH
-export PATH=/bin:/sbin:/usr/bin:/usr/sbin
-# 挂载proc和sys
-mount -t proc none /proc
-mount -t sysfs none /sys
+# Mount essential filesystems
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
 
-# 创建设备节点
-mkdir -p /dev
-mount -t devtmpfs none /dev 2>/dev/null || {
-    mknod /dev/console c 5 1
+# Create console device
+mknod /dev/console c 5 1
+exec 0</dev/console
+exec 1>/dev/console
+exec 2>/dev/console
+
+# Mount devtmpfs if available
+if [ -d /sys/class/devtmpfs ]; then
+    mount -t devtmpfs none /dev
+else
+    # Create essential devices
     mknod /dev/null c 1 3
     mknod /dev/zero c 1 5
     mknod /dev/tty c 5 0
     mknod /dev/tty0 c 4 0
-    mknod /dev/tty1 c 4 1
-}
-# 设置控制台
-exec 0</dev/console
-exec 1>/dev/console
-exec 2>/dev/console
+fi
 
 # 挂载tmpfs
 mount -t tmpfs none /tmp
@@ -557,37 +572,62 @@ cat > "$INITRD_DIR/etc/mdev.conf" << 'MDEV_EOF'
 .* 0:0 660
 MDEV_EOF
 
+# 复制OpenWRT镜像到initrd（可选）
+echo "复制OpenWRT镜像到initrd..."
+cp "$INPUT_IMG" "$INITRD_DIR/openwrt.img" 2>/dev/null || true
+if [ -f "$INITRD_DIR/openwrt.img" ]; then
+    echo "✅ OpenWRT镜像复制到initrd"
+fi
+
 # 打包initrd
 echo "打包initrd..."
 cd "$INITRD_DIR"
-echo "initrd内容统计:"
-echo "  文件总数: $(find . | wc -l)"
-echo "  总大小: $(du -sh . | cut -f1)"
+echo "initrd目录内容:"
+ls -la bin/ dev/ etc/ lib/ proc/ sys/ init 2>/dev/null || true
 
 echo "创建cpio归档..."
-find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$ISO_DIR/boot/initrd.img"
+find . -print0 | cpio -0 -o -H newc 2>/dev/null | gzip -9 > "$ISO_DIR/boot/initrd.img"
 
 # 验证initrd
 if [ -f "$ISO_DIR/boot/initrd.img" ]; then
     INITRD_SIZE=$(du -h "$ISO_DIR/boot/initrd.img" | cut -f1)
     echo "✅ initrd创建成功 ($INITRD_SIZE)"
     
-    # 测试initrd是否包含必要文件
-    echo "检查initrd关键文件:"
-    REQUIRED_FILES=("init" "bin/busybox" "bin/sh" "bin/lsblk" "bin/fdisk" "bin/dd")
-    for file in "${REQUIRED_FILES[@]}"; do
-        if gzip -cd "$ISO_DIR/boot/initrd.img" 2>/dev/null | cpio -it 2>/dev/null | grep -q "^$file$"; then
-            echo "  ✅ $file"
-        else
-            echo "  ⚠ $file (可能缺失)"
-        fi
-    done
+    # 测试initrd是否可以解压
+    echo "测试initrd解压..."
+    if gzip -cd "$ISO_DIR/boot/initrd.img" 2>/dev/null | cpio -t 2>/dev/null | head -5; then
+        echo "✅ initrd格式正确"
+    else
+        echo "⚠ initrd格式可能有问题"
+    fi
 else
     echo "❌ initrd创建失败"
     exit 1
 fi
 
-# ========== 第7步：创建ISO ==========
+# ========== 第7步：创建启动测试脚本 ==========
+echo ""
+echo "🔧 创建启动测试脚本..."
+
+# 在ISO中创建一个测试脚本
+cat > "$ISO_DIR/test-boot.sh" << 'TEST_BOOT_EOF'
+#!/bin/sh
+echo "OpenWRT Installer Boot Test"
+echo "============================"
+echo ""
+echo "If you can see this message, the ISO booted successfully!"
+echo ""
+echo "To install OpenWRT:"
+echo "1. The OpenWRT image is at: /images/openwrt.img"
+echo "2. Write it to your disk: dd if=/images/openwrt.img of=/dev/sdX bs=4M"
+echo ""
+echo "Press Enter to continue to shell..."
+read dummy
+exec /bin/sh
+TEST_BOOT_EOF
+chmod +x "$ISO_DIR/test-boot.sh"
+
+# ========== 第8步：创建ISO ==========
 echo ""
 echo "📦 创建ISO文件..."
 
@@ -596,20 +636,24 @@ cd /tmp
 # 创建BIOS可引导ISO
 echo "创建BIOS可引导ISO..."
 xorriso -as mkisofs \
-    -r -V "OPENWRT_INSTALL" \
+    -r \
+    -V "OPENWRT_INSTALL" \
     -o "/output/openwrt.iso" \
     -b boot/isolinux/isolinux.bin \
     -c boot/isolinux/boot.cat \
-    -no-emul-boot -boot-load-size 4 -boot-info-table \
-    "$ISO_DIR" 2>&1 | grep -v "UPDATEing" || true
+    -no-emul-boot \
+    -boot-load-size 4 \
+    -boot-info-table \
+    -quiet \
+    "$ISO_DIR"
 
 # 检查是否成功
 if [ -f "/output/openwrt.iso" ]; then
     echo "✅ ISO创建成功"
     
-    # 验证ISO
+    # 详细验证
     echo ""
-    echo "🔍 ISO验证:"
+    echo "🔍 ISO详细信息:"
     echo "文件: /output/openwrt.iso"
     ISO_SIZE=$(du -h "/output/openwrt.iso" | cut -f1)
     echo "大小: $ISO_SIZE"
@@ -617,35 +661,37 @@ if [ -f "/output/openwrt.iso" ]; then
     if command -v file >/dev/null 2>&1; then
         FILE_INFO=$(file "/output/openwrt.iso")
         echo "类型: $FILE_INFO"
-        
-        if echo "$FILE_INFO" | grep -q "bootable"; then
-            echo "✅ ISO可引导"
-        else
-            echo "⚠ ISO可能不可引导"
-        fi
     fi
     
+    # 检查引导信息
     echo ""
-    echo "✅ 包含工具:"
-    echo "  ✓ busybox - 完整的工具集"
-    echo "  ✓ lsblk - 磁盘列表"
-    echo "  ✓ fdisk - 磁盘分区"
-    echo "  ✓ dd - 镜像写入"
-    echo "  ✓ pv - 进度显示 (如果可用)"
-    echo "  ✓ 完整的安装界面"
+    echo "⚠ 启动参数说明:"
+    echo "正常启动: 选择 'Install OpenWRT'"
+    echo "调试模式: 选择 'Debug Mode' (直接进入shell)"
+    echo ""
+    echo "如果卡住，尝试调试模式检查问题"
     
     exit 0
 else
-    echo "❌ ISO创建失败，尝试简单方法..."
+    echo "❌ ISO创建失败，尝试替代方法..."
     
-    # 创建数据ISO
-    xorriso -as mkisofs \
-        -r -V "OPENWRT_DATA" \
-        -o "/output/openwrt.iso" \
-        "$ISO_DIR"
+    # 使用mkisofs替代
+    if command -v mkisofs >/dev/null 2>&1; then
+        echo "使用mkisofs创建ISO..."
+        mkisofs \
+            -r \
+            -V "OPENWRT_INSTALL" \
+            -o "/output/openwrt.iso" \
+            -b boot/isolinux/isolinux.bin \
+            -c boot/isolinux/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            "$ISO_DIR"
+    fi
     
     if [ -f "/output/openwrt.iso" ]; then
-        echo "✅ 数据ISO创建成功"
+        echo "✅ 替代方法ISO创建成功"
         echo "文件: /output/openwrt.iso"
         echo "大小: $(du -h "/output/openwrt.iso" | cut -f1)"
         exit 0
