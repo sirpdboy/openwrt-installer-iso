@@ -36,10 +36,12 @@ jobs:
             parted \
             gdisk \
             jq
+            
+        mkdir -p assets
+        cd assets
+        echo "ROOTDIR=$PWD" >> $GITHUB_ENV
     - name: Download OpenWRT image
       run: |
-        mkdir -p assets
-        
         # 使用你的下载脚本或直接下载
         if [ -f scripts/download-image.sh ]; then
           chmod +x scripts/download-image.sh
@@ -67,26 +69,26 @@ jobs:
     
     - name: Create output directory
       run: |
-        mkdir -p output
-        chmod 777 output
+        mkdir -p $ROOTDIR/output
+        chmod 777 $ROOTDIR/output
     
     - name: build-iso-tinycore
       run: |
         chmod +x build-iso-tinycore.sh
         ./build-iso-tinycore.sh \
-          "$pwd/ezopwrt.img" \
-          "$pwd/output" \
+          "$ROOTDIR/ezopwrt.img" \
+          "$ROOTDIR/output" \
           "openwrt-tiny-installer.iso"
       
         echo "ISO构建完成:"
-        ls -lh output
+        ls -lh $ROOTDIR/output
     
     
     - name: 上传制品
       uses: actions/upload-artifact@v4
       with:
         name: openwrt-tiny-installer
-        path: output/*.iso
+        path: $ROOTDIR/output/*.iso
         retention-days: 30
         if-no-files-found: error
     
@@ -96,7 +98,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        files: output/*.iso
+        files: $ROOTDIR/output/*.iso
         body: |
           # 🎯 OpenWRT 微型安装器
           
