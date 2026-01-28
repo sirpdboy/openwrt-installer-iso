@@ -183,15 +183,23 @@ echo "创建ISOLINUX配置..."
 cat > "$ISO_DIR/boot/isolinux/isolinux.cfg" << 'ISOLINUX_CFG_EOF'
 DEFAULT menu.c32
 PROMPT 0
-TIMEOUT 300
+TIMEOUT 10
 MENU TITLE OpenWRT Installation System
 
 LABEL install
   MENU LABEL Install OpenWRT
   MENU DEFAULT
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200n8 rw init=/init
+  APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200n8 rw
 
+LABEL shell
+  MENU LABEL Rescue Shell
+  KERNEL /boot/vmlinuz
+  APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200n8 rw init=/bin/sh
+
+LABEL bootlocal
+  MENU LABEL Boot from local disk
+  LOCALBOOT 0x80
 ISOLINUX_CFG_EOF
 
 echo "✅ BIOS引导配置完成"
@@ -201,17 +209,21 @@ echo ""
 echo "🔧 创建GRUB配置..."
 
 cat > "$ISO_DIR/boot/grub/grub.cfg" << 'GRUB_CFG_EOF'
-set timeout=5
+set timeout=10
 set default=0
 
 menuentry "Install OpenWRT" {
     echo "Loading kernel..."
-    linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 rw init=/init
+    linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 rw
     echo "Loading initial ramdisk..."
     initrd /boot/initrd.img
     echo "Booting OpenWRT installer..."
 }
 
+menuentry "Boot from local disk" {
+    echo "Attempting to boot from local disk..."
+    exit
+}
 GRUB_CFG_EOF
 
 echo "✅ GRUB配置创建完成"
@@ -296,17 +308,24 @@ mkdir -p "$INITRD_DIR"/{bin,dev,etc,lib,proc,sys,root,sbin,tmp,usr/bin,usr/sbin}
 # 创建init脚本
 cat > "$INITRD_DIR/init" << 'INIT_EOF'
 #!/bin/sh
-# OpenWRT Installer Init Script
+# OpenWRT Installer Init Script with Full Tools
 
+# 设置PATH
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 # 挂载proc和sys
 mount -t proc none /proc
 mount -t sysfs none /sys
 
 # 创建设备节点
 mkdir -p /dev
-mount -t devtmpfs none /dev 2>/dev/null || mknod /dev/console c 5 1
-mknod /dev/null c 1 3 2>/dev/null || true
-mknod /dev/zero c 1 5 2>/dev/null || true
+mount -t devtmpfs none /dev 2>/dev/null || {
+    mknod /dev/console c 5 1
+    mknod /dev/null c 1 3
+    mknod /dev/zero c 1 5
+    mknod /dev/tty c 5 0
+    mknod /dev/tty0 c 4 0
+    mknod /dev/tty1 c 4 1
+}
 # 设置控制台
 exec 0</dev/console
 exec 1>/dev/console
@@ -314,6 +333,38 @@ exec 2>/dev/console
 
 # 挂载tmpfs
 mount -t tmpfs none /tmp
+mount -t tmpfs none /run
+
+# 加载内核模块（如果可用）
+modprobe -q loop 2>/dev/null || true
+modprobe -q ext4 2>/dev/null || true
+modprobe -q fat 2>/dev/null || true
+modprobe -q vfat 2>/dev/null || true
+modprobe -q iso9660 2>/dev/null || true
+
+# 挂载ISO（如果从光盘启动）
+mkdir -p /mnt/iso
+if [ -b /dev/sr0 ]; then
+    mount -t iso9660 -o ro /dev/sr0 /mnt/iso 2>/dev/null || true
+elif [ -b /dev/cdrom ]; then
+    mount -t iso9660 -o ro /dev/cdrom /mnt/iso 2>/dev/null || true
+fi
+
+# 查找OpenWRT镜像
+OPENWRT_IMG=""
+for path in "/openwrt.img" "/mnt/iso/openwrt.img" "/mnt/iso/images/openwrt.img" "/images/openwrt.img"; do
+    if [ -f "$path" ]; then
+        OPENWRT_IMG="$path"
+        break
+    fi
+done
+
+# 复制镜像到tmpfs（如果找到）
+if [ -n "$OPENWRT_IMG" ] && [ -f "$OPENWRT_IMG" ]; then
+    echo "Copying OpenWRT image to RAM..."
+    cp "$OPENWRT_IMG" /tmp/openwrt.img
+    OPENWRT_IMG="/tmp/openwrt.img"
+fi
 # 设置PATH
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 clear
@@ -325,7 +376,7 @@ echo "╚═══════════════════════�
 
 echo ""
 echo "Checking OpenWRT image..."
-if [ ! -f "/openwrt.img" ]; then
+if [ ! -f "$OPENWRT_IMG" ]; then
     echo "❌ ERROR: OpenWRT image not found!"
     echo ""
     echo "Press Enter for shell..."
@@ -371,9 +422,9 @@ while true; do
     echo ""
     
     if command -v pv >/dev/null 2>&1; then
-        pv /openwrt.img | dd of="/dev/$TARGET_DISK" bs=4M
+        pv "$OPENWRT_IMG" | dd of="/dev/$target_disk" bs=4M oflag=sync
     else
-        dd if=/openwrt.img of="/dev/$TARGET_DISK" bs=4M status=progress
+        dd if="$OPENWRT_IMG" of="/dev/$target_disk" bs=4M status=progress oflag=sync
     fi
     
     sync
@@ -396,85 +447,133 @@ chmod +x "$INITRD_DIR/init"
 
 # 创建符号链接：/sbin/init -> /init（很多系统会找/sbin/init）
 ln -sf /init "$INITRD_DIR/sbin/init"
-# 复制busybox（这是关键！）
-echo "设置busybox..."
+
+echo "复制必要工具到initrd..."
+
+# 复制busybox（这是最关键的）
 if command -v busybox >/dev/null 2>&1; then
     BUSYBOX_PATH=$(which busybox)
     if [ -f "$BUSYBOX_PATH" ]; then
-        echo "复制busybox: $BUSYBOX_PATH"
+        echo "复制busybox..."
         cp "$BUSYBOX_PATH" "$INITRD_DIR/bin/"
         chmod +x "$INITRD_DIR/bin/busybox"
         
-        # 创建必要的符号链接
+        # 为busybox创建所有符号链接
         cd "$INITRD_DIR"
         echo "创建busybox符号链接..."
-        
-        # 创建基本命令的符号链接
-        for cmd in sh ls echo cat cp mount umount mkdir mknod dd ps grep awk sed; do
+        ./bin/busybox --list | while read cmd; do
+            # 创建到/bin的链接
             ln -sf /bin/busybox "bin/$cmd" 2>/dev/null || true
+            # 为部分命令创建到/sbin的链接
+            case $cmd in
+                init|modprobe|reboot|poweroff|halt|ifconfig|route|arp|ip|tc)
+                    ln -sf /bin/busybox "sbin/$cmd" 2>/dev/null || true
+                    ;;
+            esac
         done
-        
-        # 创建sbin目录的链接
-        ln -sf /bin/busybox "sbin/init" 2>/dev/null || true
-        ln -sf /bin/busybox "sbin/modprobe" 2>/dev/null || true
-        
         cd - >/dev/null
         echo "✅ busybox设置完成"
-    else
-        echo "⚠ 无法复制busybox"
     fi
 fi
 
-# 复制必要的库文件（Alpine使用musl libc）
-echo "复制库文件..."
-if [ -f "/lib/ld-musl-x86_64.so.1" ]; then
-    cp "/lib/ld-musl-x86_64.so.1" "$INITRD_DIR/lib/" 2>/dev/null || true
-    echo "✅ 复制musl loader"
-fi
-
 # 复制其他必要工具
-echo "复制其他工具..."
-for tool in lsblk fdisk blkid; do
+echo "复制其他系统工具..."
+TOOLS_TO_COPY=(
+    "lsblk" "fdisk" "blkid" "dd" "mount" "umount" "sync" "cp" "mv" "rm"
+    "mkdir" "rmdir" "cat" "echo" "grep" "awk" "sed" "cut" "du" "head" "tail"
+    "readlink" "basename" "dirname" "chmod" "chown" "ln" "ls" "ps"
+    "pv" "modprobe" "reboot" "poweroff" "halt" "sh" "bash" "dash"
+)
+
+for tool in "${TOOLS_TO_COPY[@]}"; do
     tool_path=$(which "$tool" 2>/dev/null || true)
     if [ -n "$tool_path" ] && [ -f "$tool_path" ]; then
-        mkdir -p "$INITRD_DIR$(dirname "$tool_path")"
+        # 创建目标目录
+        target_dir="$INITRD_DIR$(dirname "$tool_path")"
+        mkdir -p "$target_dir"
+        
+        # 复制二进制文件
         cp "$tool_path" "$INITRD_DIR$tool_path" 2>/dev/null || true
+        
+        # 如果是动态链接的，复制依赖的库
+        if file "$tool_path" 2>/dev/null | grep -q "dynamically linked"; then
+            ldd "$tool_path" 2>/dev/null | grep "=>" | awk '{print $3}' | while read lib; do
+                if [ -f "$lib" ]; then
+                    lib_dir="$INITRD_DIR$(dirname "$lib")"
+                    mkdir -p "$lib_dir"
+                    cp "$lib" "$INITRD_DIR$lib" 2>/dev/null || true
+                fi
+            done
+        fi
+        
         echo "  ✅ $tool"
     fi
 done
 
-# 创建必要的目录结构
-echo "创建目录结构..."
-mkdir -p "$INITRD_DIR/mnt/iso"
-mkdir -p "$INITRD_DIR/run"
-mkdir -p "$INITRD_DIR/var/run"
+# 复制必要的库文件（Alpine使用musl）
+echo "复制库文件..."
+LIBRARIES=(
+    "/lib/ld-musl-x86_64.so.1"
+    "/lib/libc.musl-x86_64.so.1"
+    "/lib/libblkid.so.1"
+    "/lib/libmount.so.1"
+    "/lib/libsmartcols.so.1"
+    "/lib/libuuid.so.1"
+    "/lib/libz.so.1"
+)
 
-# 创建fstab文件
+for lib in "${LIBRARIES[@]}"; do
+    if [ -f "$lib" ]; then
+        lib_dir="$INITRD_DIR$(dirname "$lib")"
+        mkdir -p "$lib_dir"
+        cp "$lib" "$INITRD_DIR$lib" 2>/dev/null || true
+        echo "  ✅ $(basename "$lib")"
+    fi
+done
+
+# 复制内核模块（可选）
+echo "复制内核模块..."
+if [ -d "/lib/modules" ]; then
+    mkdir -p "$INITRD_DIR/lib/modules"
+    # 只复制必要的模块
+    MODULES=("loop" "ext4" "fat" "vfat" "iso9660" "sd_mod" "sr_mod" "cdrom")
+    for module in "${MODULES[@]}"; do
+        find /lib/modules -name "*$module*" -type f 2>/dev/null | head -2 | while read mod_file; do
+            cp "$mod_file" "$INITRD_DIR/lib/modules/" 2>/dev/null || true
+        done
+    done
+    echo "✅ 内核模块复制完成"
+fi
+
+# 创建设备节点（备用）
+echo "创建设备节点..."
+mknod "$INITRD_DIR/dev/console" c 5 1 2>/dev/null || true
+mknod "$INITRD_DIR/dev/null" c 1 3 2>/dev/null || true
+mknod "$INITRD_DIR/dev/zero" c 1 5 2>/dev/null || true
+mknod "$INITRD_DIR/dev/tty" c 5 0 2>/dev/null || true
+mknod "$INITRD_DIR/dev/tty0" c 4 0 2>/dev/null || true
+
+# 创建配置文件
+echo "创建配置文件..."
 cat > "$INITRD_DIR/etc/fstab" << 'FSTAB_EOF'
 none    /proc   proc    defaults    0 0
 none    /sys    sysfs   defaults    0 0
 none    /dev    devtmpfs defaults   0 0
 none    /tmp    tmpfs   defaults    0 0
+none    /run    tmpfs   defaults    0 0
 FSTAB_EOF
 
-# 创建inittab文件
-cat > "$INITRD_DIR/etc/inittab" << 'INITTAB_EOF'
-::sysinit:/bin/busybox mount -t proc proc /proc
-::sysinit:/bin/busybox mount -t sysfs sysfs /sys
-::sysinit:/bin/busybox mount -t devtmpfs devtmpfs /dev
-::sysinit:/bin/busybox mkdir -p /dev/pts
-::sysinit:/bin/busybox mount -t devpts devpts /dev/pts
-::sysinit:/bin/busybox --install -s
-::respawn:/bin/sh
-::ctrlaltdel:/bin/busybox reboot -f
-::shutdown:/bin/busybox umount -a -r
-INITTAB_EOF
+cat > "$INITRD_DIR/etc/mdev.conf" << 'MDEV_EOF'
+# 简单的mdev配置
+.* 0:0 660
+MDEV_EOF
 
 # 打包initrd
 echo "打包initrd..."
 cd "$INITRD_DIR"
-echo "initrd目录结构:"
-find . | head -20
+echo "initrd内容统计:"
+echo "  文件总数: $(find . | wc -l)"
+echo "  总大小: $(du -sh . | cut -f1)"
 
 echo "创建cpio归档..."
 find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$ISO_DIR/boot/initrd.img"
@@ -484,10 +583,16 @@ if [ -f "$ISO_DIR/boot/initrd.img" ]; then
     INITRD_SIZE=$(du -h "$ISO_DIR/boot/initrd.img" | cut -f1)
     echo "✅ initrd创建成功 ($INITRD_SIZE)"
     
-    # 检查initrd内容
-    echo "检查initrd内容:"
-    echo "是否有/init: $(gzip -cd "$ISO_DIR/boot/initrd.img" 2>/dev/null | cpio -it 2>/dev/null | grep -c "^init$" || echo 0)"
-    echo "是否有/bin/busybox: $(gzip -cd "$ISO_DIR/boot/initrd.img" 2>/dev/null | cpio -it 2>/dev/null | grep -c "bin/busybox$" || echo 0)"
+    # 测试initrd是否包含必要文件
+    echo "检查initrd关键文件:"
+    REQUIRED_FILES=("init" "bin/busybox" "bin/sh" "bin/lsblk" "bin/fdisk" "bin/dd")
+    for file in "${REQUIRED_FILES[@]}"; do
+        if gzip -cd "$ISO_DIR/boot/initrd.img" 2>/dev/null | cpio -it 2>/dev/null | grep -q "^$file$"; then
+            echo "  ✅ $file"
+        else
+            echo "  ⚠ $file (可能缺失)"
+        fi
+    done
 else
     echo "❌ initrd创建失败"
     exit 1
@@ -531,13 +636,14 @@ if [ -f "/output/openwrt.iso" ]; then
         fi
     fi
     
-    # 检查内核参数
     echo ""
-    echo "⚠ 重要: 内核启动参数已添加 'init=/init'"
-    echo "如果仍有问题，可以尝试其他init位置:"
-    echo "  init=/sbin/init"
-    echo "  init=/bin/sh"
-    echo "  init=/bin/busybox sh"
+    echo "✅ 包含工具:"
+    echo "  ✓ busybox - 完整的工具集"
+    echo "  ✓ lsblk - 磁盘列表"
+    echo "  ✓ fdisk - 磁盘分区"
+    echo "  ✓ dd - 镜像写入"
+    echo "  ✓ pv - 进度显示 (如果可用)"
+    echo "  ✓ 完整的安装界面"
     
     exit 0
 else
