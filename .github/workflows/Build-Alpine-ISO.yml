@@ -4,8 +4,8 @@ on:
   push:
     branches: [ main, master ]
     paths:
-      #- 'scripts/**'
-      #- 'Dockerfile'
+      - 'scripts/**'
+      - 'Dockerfile'
       - '.github/workflows/Build-Alpine-ISO.yml'
   pull_request:
     branches: [ main, master ]
@@ -38,61 +38,63 @@ jobs:
       run: |
         chmod +x scripts/*.sh
         chmod +x scripts/include/*.sh
-    
-    - name: 准备OpenWRT镜像
-      id: prepare-openwrt
+      
+    - name: 获取OpenWRT镜像
+     
       run: |
         mkdir -p assets
         
-        echo "正在获取OpenWRT镜像..."
+        # 下载OpenWRT镜像
+        echo "下载OpenWRT镜像..."
         
-        # 使用OpenWRT官方镜像或指定仓库
-        REPO="openwrt/openwrt"
+        # 方法1: 尝试下载最新版本
+        REPO="sirpdboy/openwrt"
+        echo "获取最新版本..."
         
-        if [ "${{ env.OPENWRT_VERSION }}" = "latest" ]; then
-            # 获取最新版本
-            LATEST_RELEASE=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.tag_name // empty')
-        else
-            LATEST_RELEASE="${{ env.OPENWRT_VERSION }}"
-        fi
+        # 获取最新版本
+        LATEST_RELEASE=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.tag_name // empty')
         
         if [ -z "$LATEST_RELEASE" ]; then
-            echo "获取版本错误！"
-            exit
+            echo "无法获取最新版本，使用硬编码版本"
+            LATEST_RELEASE="v2024.09.01"
         fi
         
-        echo "使用版本: $LATEST_RELEASE"
+        echo "最新版本: $LATEST_RELEASE"
         
-        # 查找x86-64的IMG文件
-        DOWNLOAD_URL=$(curl -sL "https://api.github.com/repos/$REPO/releases" | \
-                      jq -r ".[] | select(.tag_name == \"$LATEST_RELEASE\") | .assets[] | select(.name | contains(\"x86-64\") and contains(\"combined\") and contains(\".img.gz\")) | .browser_download_url" | head -n1)
+        # 获取下载URL
+        DOWNLOAD_URLS=$(curl -sL "https://api.github.com/repos/$REPO/releases/tags/$LATEST_RELEASE" | \
+              jq -r '.assets[] | select(.name | endswith("img.gz")) | .browser_download_url' 2>/dev/null || echo "")
         
-        if [ -z "$DOWNLOAD_URL" ]; then
+        if [ -z "$DOWNLOAD_URLS" ]; then
+            echo "无法获取下载URL，使用备用方法"
             # 备用URL
-            DOWNLOAD_URL="https://downloads.openwrt.org/releases/23.05.3/targets/x86/64/openwrt-23.05.3-x86-64-generic-ext4-combined.img.gz"
+            DOWNLOAD_URLS="https://github.com/sirpdboy/openwrt/releases/download/v2024.09.01/2024.09.01-x86-64-generic-squashfs-combined.img.gz"
         fi
         
-        echo "下载URL: $DOWNLOAD_URL"
+        FIRST_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
+        echo "下载URL: $FIRST_URL"
         
         # 下载镜像
-        if wget --tries=3 --timeout=60 -q "$DOWNLOAD_URL" -O assets/openwrt.img.gz; then
-            echo "✅ 下载完成"
-        else
-            echo "尝试使用curl下载..."
-            curl -L -o assets/openwrt.img.gz --connect-timeout 30 --retry 3 "$DOWNLOAD_URL"
+        wget --tries=3 --timeout=60 -q "$FIRST_URL" -O assets/openwrt.img.gz
+        
+        # 如果wget失败，尝试curl
+        if [ ! -f "assets/openwrt.img.gz" ] || [ ! -s "assets/openwrt.img.gz" ]; then
+            echo "wget下载失败，尝试curl..."
+            curl -L -o "assets/openwrt.img.gz" --connect-timeout 30 --retry 3 "$FIRST_URL"
         fi
         
-        # 验证文件
         if [ -f "assets/openwrt.img.gz" ] && [ -s "assets/openwrt.img.gz" ]; then
-            echo "文件大小: $(ls -lh assets/openwrt.img.gz | awk '{print $5}')"
+            echo "✅ 下载完成"
+            echo "压缩文件大小: $(ls -lh assets/openwrt.img.gz | awk '{print $5}')"
             
             # 解压
             echo "解压镜像..."
-            if gzip -d -f assets/openwrt.img.gz; then
+            gzip -d assets/openwrt.img.gz
+            
+            if [ -f "assets/openwrt.img" ]; then
                 echo "✅ 解压成功"
-                echo "最终镜像大小: $(ls -lh assets/openwrt.img | awk '{print $5}')"
+                echo "镜像大小: $(ls -lh assets/openwrt.img | awk '{print $5}')"
                 
-                # 设置输出
                 echo "img_path=$(pwd)/assets/openwrt.img" >> $GITHUB_OUTPUT
             else
                 echo "❌ 解压失败"
@@ -100,9 +102,9 @@ jobs:
             fi
         else
             echo "❌ 下载失败"
-            exit 1
+            exit
         fi
-    
+
     - name: 构建ISO
       run: |
         INPUT_IMG="${{ steps.prepare-openwrt.outputs.img_path }}"
