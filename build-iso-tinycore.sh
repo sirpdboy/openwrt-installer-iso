@@ -614,7 +614,7 @@ setup_bios_boot() {
         if curl -L --connect-timeout 30 -s -o /tmp/syslinux.tar.gz "$SYSLINUX_URL"; then
             mkdir -p /tmp/syslinux-extract
             tar -xzf /tmp/syslinux.tar.gz -C /tmp/syslinux-extract --strip-components=1
-            
+            ls /tmp/syslinux-extract 
             # 复制关键文件
             cp /tmp/syslinux-extract/bios/core/isolinux.bin iso/boot/ 2>/dev/null || true
             cp /tmp/syslinux-extract/bios/com32/elflink/ldlinux/ldlinux.c32 iso/boot/ 2>/dev/null || true
