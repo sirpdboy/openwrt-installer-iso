@@ -59,12 +59,11 @@ mkdir -p "${WORK_DIR}"
 cd "${WORK_DIR}"
 
 # 创建完整的ISO目录结构
-mkdir -p "iso"
-mkdir -p "iso/boot"
-mkdir -p "iso/boot/grub"
-mkdir -p "iso/EFI/BOOT"
-mkdir -p "iso/img"
-mkdir -p "iso/installer"
+mkdir -p "$WORK_DIR/iso/boot"
+mkdir -p "$WORK_DIR/iso/boot/grub"
+mkdir -p "$WORK_DIR/iso/EFI/BOOT"
+mkdir -p "$WORK_DIR/iso/img"
+mkdir -p "$WORK_DIR/iso/installer"
 mkdir -p "${OUTPUT_DIR}"
 
 print_info "目录结构:"
@@ -75,8 +74,8 @@ print_success "目录结构创建完成"
 # ================= 复制OpenWRT镜像 =================
 print_header "2. 复制OpenWRT镜像"
 
-cp "${INPUT_IMG}" "iso/img/openwrt.img"
-IMG_SIZE_FINAL=$(du -h "iso/img/openwrt.img" 2>/dev/null | cut -f1)
+cp "${INPUT_IMG}" "$WORK_DIR/iso/img/openwrt.img"
+IMG_SIZE_FINAL=$(du -h "$WORK_DIR/iso/img/openwrt.img" 2>/dev/null | cut -f1)
 print_success "IMG文件复制完成: ${IMG_SIZE_FINAL}"
 
 # ================= 获取内核 =================
@@ -98,13 +97,13 @@ get_kernel() {
         print_info "尝试: $url"
         
         if curl -L --connect-timeout 15 --max-time 30 --retry 2 \
-            -s -o "iso/boot/vmlinuz" "$url" 2>/dev/null; then
+            -s -o "$WORK_DIR/iso/boot/vmlinuz" "$url" 2>/dev/null; then
             
-            if [ -f "iso/boot/vmlinuz" ] && [ -s "iso/boot/vmlinuz" ]; then
-                KERNEL_SIZE=$(stat -c%s "iso/boot/vmlinuz" 2>/dev/null || echo 0)
+            if [ -f "$WORK_DIR/iso/boot/vmlinuz" ] && [ -s "$WORK_DIR/iso/boot/vmlinuz" ]; then
+                KERNEL_SIZE=$(stat -c%s "$WORK_DIR/iso/boot/vmlinuz" 2>/dev/null || echo 0)
                 if [ $KERNEL_SIZE -gt 1000000 ]; then
                     print_success "内核下载成功: $((KERNEL_SIZE/1024/1024))MB"
-                    file "iso/boot/vmlinuz"
+                    file "$WORK_DIR/iso/boot/vmlinuz"
                     return 0
                 fi
             fi
@@ -119,8 +118,8 @@ get_kernel() {
     if [ -f "/boot/vmlinuz" ] || [ -f "/boot/vmlinuz-$(uname -r)" ]; then
         for kernel in /boot/vmlinuz*; do
             if [ -f "$kernel" ] && ! [[ "$kernel" =~ "System.map" ]] && ! [[ "$kernel" =~ "config" ]]; then
-                cp "$kernel" "iso/boot/vmlinuz" 2>/dev/null
-                if [ -f "iso/boot/vmlinuz" ]; then
+                cp "$kernel" "$WORK_DIR/iso/boot/vmlinuz" 2>/dev/null
+                if [ -f "$WORK_DIR/iso/boot/vmlinuz" ]; then
                     print_success "使用本地内核: $kernel"
                     return 0
                 fi
@@ -130,15 +129,15 @@ get_kernel() {
     
     # 最后尝试下载最小内核
     print_warning "创建最小内核..."
-    dd if=/dev/zero of="iso/boot/vmlinuz" bs=1M count=1 2>/dev/null
-    echo "LINUX_KERNEL_PLACEHOLDER" > "iso/boot/vmlinuz"
+    dd if=/dev/zero of="$WORK_DIR/iso/boot/vmlinuz" bs=1M count=1 2>/dev/null
+    echo "LINUX_KERNEL_PLACEHOLDER" > "$WORK_DIR/iso/boot/vmlinuz"
     print_info "使用占位内核，安装时需手动替换"
     return 1
 }
 
 get_kernel
 
-KERNEL_SIZE=$(du -h "iso/boot/vmlinuz" 2>/dev/null | cut -f1)
+KERNEL_SIZE=$(du -h "$WORK_DIR/iso/boot/vmlinuz" 2>/dev/null | cut -f1)
 print_success "内核准备完成: ${KERNEL_SIZE}"
 
 # ================= 创建完整的initramfs =================
@@ -779,8 +778,8 @@ setup_bios_boot() {
     print_step "设置ISOLINUX引导..."
     
     # 确保boot目录存在
-    if [ ! -d "iso/boot" ]; then
-        mkdir -p "iso/boot"
+    if [ ! -d "$WORK_DIR/iso/boot" ]; then
+        mkdir -p "$WORK_DIR/iso/boot"
     fi
     
     print_info "获取ISOLINUX引导文件..."
@@ -802,7 +801,7 @@ setup_bios_boot() {
     for file in "${SYSLINUX_FILES[@]}"; do
         if [ -f "$file" ]; then
             filename=$(basename "$file")
-            cp "$file" "iso/boot/" 2>/dev/null && \
+            cp "$file" "$WORK_DIR/iso/boot/" 2>/dev/null && \
                 print_info "复制: $filename"
         fi
     done
@@ -812,7 +811,7 @@ setup_bios_boot() {
     MISSING_FILES=()
     
     for file in "${CRITICAL_FILES[@]}"; do
-        if [ ! -f "iso/boot/$file" ]; then
+        if [ ! -f "$WORK_DIR/iso/boot/$file" ]; then
             MISSING_FILES+=("$file")
         fi
     done
@@ -865,20 +864,20 @@ setup_bios_boot() {
                     for file in /mnt/tinycore/boot/isolinux/*; do
                         if [ -f "$file" ]; then
                             filename=$(basename "$file")
-                            cp "$file" "iso/boot/$filename" 2>/dev/null && \
+                            cp "$file" "$WORK_DIR/iso/boot/$filename" 2>/dev/null && \
                                 print_info "提取: $filename"
                         fi
                     done
                     
                     # 检查并复制关键文件
                     if [ -f "/mnt/tinycore/boot/isolinux/isolinux.bin" ] && \
-                       [ ! -f "iso/boot/isolinux.bin" ]; then
-                        cp "/mnt/tinycore/boot/isolinux/isolinux.bin" "iso/boot/"
+                       [ ! -f "$WORK_DIR/iso/boot/isolinux.bin" ]; then
+                        cp "/mnt/tinycore/boot/isolinux/isolinux.bin" "$WORK_DIR/iso/boot/"
                     fi
                     
                     if [ -f "/mnt/tinycore/boot/isolinux/ldlinux.c32" ] && \
-                       [ ! -f "iso/boot/ldlinux.c32" ]; then
-                        cp "/mnt/tinycore/boot/isolinux/ldlinux.c32" "iso/boot/"
+                       [ ! -f "$WORK_DIR/iso/boot/ldlinux.c32" ]; then
+                        cp "/mnt/tinycore/boot/isolinux/ldlinux.c32" "$WORK_DIR/iso/boot/"
                     fi
                     
                     umount /mnt/tinycore 2>/dev/null
@@ -888,7 +887,7 @@ setup_bios_boot() {
                 rm -f /tmp/tinycore.iso
                 
                 # 检查是否获取了必要文件
-                if [ -f "iso/boot/isolinux.bin" ] && [ -f "iso/boot/ldlinux.c32" ]; then
+                if [ -f "$WORK_DIR/iso/boot/isolinux.bin" ] && [ -f "$WORK_DIR/iso/boot/ldlinux.c32" ]; then
                     print_success "从TinyCore ISO成功提取引导文件"
                     break
                 fi
@@ -897,7 +896,7 @@ setup_bios_boot() {
     fi
     
     # 如果仍然缺少isolinux.bin，从网络直接下载
-    if [ ! -f "iso/boot/isolinux.bin" ]; then
+    if [ ! -f "$WORK_DIR/iso/boot/isolinux.bin" ]; then
         print_warning "仍然缺少isolinux.bin，尝试直接下载..."
         
         # 直接下载预编译的isolinux.bin
@@ -919,12 +918,12 @@ setup_bios_boot() {
                     
                     # 查找isolinux.bin
                     find /tmp/syslinux-extract -name "isolinux.bin" -type f | head -1 | while read found_file; do
-                        cp "$found_file" "iso/boot/isolinux.bin" 2>/dev/null
+                        cp "$found_file" "$WORK_DIR/iso/boot/isolinux.bin" 2>/dev/null
                     done
                     
                     # 查找ldlinux.c32
                     find /tmp/syslinux-extract -name "ldlinux.c32" -type f | head -1 | while read found_file; do
-                        cp "$found_file" "iso/boot/ldlinux.c32" 2>/dev/null
+                        cp "$found_file" "$WORK_DIR/iso/boot/ldlinux.c32" 2>/dev/null
                     done
                     
                     rm -rf /tmp/syslinux-extract /tmp/syslinux.tar.gz
@@ -932,22 +931,22 @@ setup_bios_boot() {
             else
                 # 直接下载文件
                 filename=$(basename "$url")
-                curl -L --connect-timeout 30 -s -o "iso/boot/$filename" "$url" 2>/dev/null || true
+                curl -L --connect-timeout 30 -s -o "$WORK_DIR/iso/boot/$filename" "$url" 2>/dev/null || true
             fi
             
             # 检查是否成功
-            if [ -f "iso/boot/isolinux.bin" ] && [ -f "iso/boot/ldlinux.c32" ]; then
+            if [ -f "$WORK_DIR/iso/boot/isolinux.bin" ] && [ -f "$WORK_DIR/iso/boot/ldlinux.c32" ]; then
                 break
             fi
         done
     fi
     
     # 如果仍然缺少文件，创建最小版本
-    if [ ! -f "iso/boot/isolinux.bin" ]; then
+    if [ ! -f "$WORK_DIR/iso/boot/isolinux.bin" ]; then
         print_warning "无法下载isolinux.bin，创建最小引导程序..."
         
         # 创建最小isolinux.bin（实际是占位符）
-        cat > iso/boot/isolinux.bin << 'MINI_BIN'
+        cat > $WORK_DIR/iso/boot/isolinux.bin << 'MINI_BIN'
 #!/bin/sh
 # Minimal isolinux placeholder
 echo "OpenWRT Installer - Minimal BIOS Boot"
@@ -956,15 +955,15 @@ echo "Please press Enter to continue..."
 read dummy
 exec /bin/sh
 MINI_BIN
-        chmod +x iso/boot/isolinux.bin
+        chmod +x $WORK_DIR/iso/boot/isolinux.bin
         
         # 创建ldlinux.c32占位符
-        echo "placeholder" > iso/boot/ldlinux.c32
+        echo "placeholder" > $WORK_DIR/iso/boot/ldlinux.c32
     fi
     
     # 验证关键文件
-    if [ -f "iso/boot/isolinux.bin" ]; then
-        ISOLINUX_SIZE=$(stat -c%s "iso/boot/isolinux.bin" 2>/dev/null || echo 0)
+    if [ -f "$WORK_DIR/iso/boot/isolinux.bin" ]; then
+        ISOLINUX_SIZE=$(stat -c%s "$WORK_DIR/iso/boot/isolinux.bin" 2>/dev/null || echo 0)
         if [ $ISOLINUX_SIZE -gt 10000 ]; then
             print_success "isolinux.bin: $((ISOLINUX_SIZE/1024))KB"
         else
@@ -976,7 +975,7 @@ MINI_BIN
     fi
     
     # 创建ISOLINUX配置
-    cat > iso/boot/isolinux.cfg << 'ISOLINUX_CFG'
+    cat > $WORK_DIR/iso/boot/isolinux.cfg << 'ISOLINUX_CFG'
 DEFAULT menu.c32
 PROMPT 0
 TIMEOUT 300
@@ -1013,9 +1012,9 @@ LABEL poweroff
 ISOLINUX_CFG
     
     # 如果缺少menu.c32，创建简单的文本模式配置
-    if [ ! -f "iso/boot/menu.c32" ]; then
+    if [ ! -f "$WORK_DIR/iso/boot/menu.c32" ]; then
         print_info "创建文本模式配置..."
-        cat > iso/boot/simple.cfg << 'SIMPLE_CFG'
+        cat > $WORK_DIR/iso/boot/simple.cfg << 'SIMPLE_CFG'
 DEFAULT linux
 PROMPT 1
 TIMEOUT 100
@@ -1036,19 +1035,19 @@ LABEL reboot
   COM32 reboot.c32
 SIMPLE_CFG
         # 使用简单配置
-        cp iso/boot/simple.cfg iso/boot/isolinux.cfg
+        cp $WORK_DIR/iso/boot/simple.cfg $WORK_DIR/iso/boot/isolinux.cfg
     fi
     
     # 创建boot.cat文件
     print_info "创建引导目录..."
-    mkdir -p iso/boot/isolinux
-    echo "OpenWRT Installer Boot Catalog" > iso/boot/isolinux/boot.cat
+    mkdir -p $WORK_DIR/iso/boot/isolinux
+    echo "OpenWRT Installer Boot Catalog" > $WORK_DIR/iso/boot/isolinux/boot.cat
     
     print_success "BIOS引导配置完成"
     
     # 显示最终的文件列表
     print_info "引导文件清单:"
-    ls -la iso/boot/*.bin iso/boot/*.c32 2>/dev/null | awk '{print $5" "$9}' || true
+    ls -la $WORK_DIR/iso/boot/*.bin $WORK_DIR/iso/boot/*.c32 2>/dev/null | awk '{print $5" "$9}' || true
     
     return 0
 }
@@ -1063,8 +1062,8 @@ setup_uefi_boot() {
     print_step "设置UEFI引导..."
     
     # 确保EFI目录存在
-    mkdir -p "iso/EFI/BOOT"
-    mkdir -p "iso/boot/grub"  # 修复：确保grub目录存在
+    mkdir -p "$WORK_DIR/iso/EFI/BOOT"
+    mkdir -p "$WORK_DIR/iso/boot/grub"  # 修复：确保grub目录存在
     
     # 方法1: 从系统复制GRUB EFI文件
     print_info "查找GRUB EFI文件..."
@@ -1081,9 +1080,9 @@ setup_uefi_boot() {
     for path in "${GRUB_PATHS[@]}"; do
         if [ -f "$path" ]; then
             print_info "找到GRUB: $path"
-            cp "$path" "iso/EFI/BOOT/BOOTX64.EFI" 2>/dev/null
-            if [ -f "iso/EFI/BOOT/BOOTX64.EFI" ]; then
-                GRUB_SIZE=$(stat -c%s "iso/EFI/BOOT/BOOTX64.EFI" 2>/dev/null || echo 0)
+            cp "$path" "$WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI" 2>/dev/null
+            if [ -f "$WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI" ]; then
+                GRUB_SIZE=$(stat -c%s "$WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI" 2>/dev/null || echo 0)
                 if [ $GRUB_SIZE -gt 100000 ]; then
                     print_success "复制GRUB EFI成功: $((GRUB_SIZE/1024))KB"
                     GRUB_FOUND=1
@@ -1098,8 +1097,8 @@ setup_uefi_boot() {
         print_info "构建GRUB EFI镜像..."
         
         # 先确保有grub.cfg文件
-        mkdir -p iso/boot/grub
-        cat > iso/boot/grub/grub.cfg << 'TEMP_CFG'
+        mkdir -p $WORK_DIR/iso/boot/grub
+        cat > $WORK_DIR/iso/boot/grub/grub.cfg << 'TEMP_CFG'
 set timeout=10
 set default=0
 
@@ -1119,9 +1118,9 @@ TEMP_CFG
             "boot/grub/grub.cfg=${WORK_DIR}/iso/boot/grub/grub.cfg" \
             2>/dev/null; then
             
-            cp /tmp/grub-build/BOOTX64.EFI "iso/EFI/BOOT/BOOTX64.EFI"
-            if [ -f "iso/EFI/BOOT/BOOTX64.EFI" ]; then
-                GRUB_SIZE=$(stat -c%s "iso/EFI/BOOT/BOOTX64.EFI" 2>/dev/null || echo 0)
+            cp /tmp/grub-build/BOOTX64.EFI "$WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI"
+            if [ -f "$WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI" ]; then
+                GRUB_SIZE=$(stat -c%s "$WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI" 2>/dev/null || echo 0)
                 print_success "GRUB EFI构建成功: $((GRUB_SIZE/1024))KB"
                 GRUB_FOUND=1
             fi
@@ -1143,7 +1142,7 @@ TEMP_CFG
             $MODULES \
             2>/dev/null; then
             
-            cp /tmp/grub-modules/grubx64.efi "iso/EFI/BOOT/BOOTX64.EFI"
+            cp /tmp/grub-modules/grubx64.efi "$WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI"
             GRUB_FOUND=1
             print_success "grub-mkimage构建成功"
         fi
@@ -1154,8 +1153,8 @@ TEMP_CFG
     print_info "创建GRUB配置..."
     
     # 主GRUB配置 - 修复：确保目录存在
-    mkdir -p "iso/boot/grub"
-    cat > "iso/boot/grub/grub.cfg" << 'GRUB_CFG'
+    mkdir -p "$WORK_DIR/iso/boot/grub"
+    cat > "$WORK_DIR/iso/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=10
 set default=0
 
@@ -1196,17 +1195,17 @@ menuentry "Power Off" {
 GRUB_CFG
     
     # EFI目录的配置
-    cat > "iso/EFI/BOOT/grub.cfg" << 'EFI_CFG'
+    cat > "$WORK_DIR/iso/EFI/BOOT/grub.cfg" << 'EFI_CFG'
 configfile /boot/grub/grub.cfg
 EFI_CFG
     
     # 验证
-    if [ -f "iso/EFI/BOOT/BOOTX64.EFI" ]; then
-        EFI_SIZE=$(du -h "iso/EFI/BOOT/BOOTX64.EFI" 2>/dev/null | cut -f1)
+    if [ -f "$WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI" ]; then
+        EFI_SIZE=$(du -h "$WORK_DIR/iso/EFI/BOOT/BOOTX64.EFI" 2>/dev/null | cut -f1)
         print_success "UEFI引导配置完成: ${EFI_SIZE}"
         
         # 检查配置文件
-        if [ -f "iso/boot/grub/grub.cfg" ]; then
+        if [ -f "$WORK_DIR/iso/boot/grub/grub.cfg" ]; then
             print_info "GRUB配置文件已创建"
         else
             print_warning "GRUB配置文件创建失败"
