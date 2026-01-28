@@ -1,333 +1,379 @@
 #!/bin/bash
-# 最小Alpine Linux双引导ISO构建脚本
-# 使用Alpine 3.18 - 最佳兼容性
+# 主构建脚本：构建支持BIOS/UEFI双引导的OpenWRT Alpine安装ISO
+# 参数：无（通过环境变量传递）
 
-set -e
+set -euo pipefail
 
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-CYAN='\033[0;36m'
 NC='\033[0m'
 
-print_title() { echo -e "${CYAN}\n$1${NC}"; }
-print_info() { echo -e "${GREEN}[✓]${NC} $1"; }
-print_warn() { echo -e "${YELLOW}[!]${NC} $1"; }
-print_error() { echo -e "${RED}[✗]${NC} $1"; }
+# 日志函数
+print_info() { echo -e "${GREEN}[INFO]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"; }
+print_warn() { echo -e "${YELLOW}[WARN]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"; }
+print_step() { echo -e "${BLUE}[STEP]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"; }
 
-# ================= 配置部分 =================
-# 使用Alpine 3.18.6 - 最佳兼容性版本
-ALPINE_VERSION="${ALPINE_VERSION:-3.18.6}"
-ISO_NAME="${ISO_NAME:-alpine-mini-dualboot}"
-WORK_DIR="/work"
-OUTPUT_DIR="/output"
-ISO_FILE="${OUTPUT_DIR}/${ISO_NAME}.iso"
-
-# 显示构建信息
-print_title "Alpine Linux 最小双引导ISO构建器"
-echo -e "${BLUE}=========================================${NC}"
-print_info "Alpine版本: ${ALPINE_VERSION} (最佳兼容性)"
-print_info "ISO名称: ${ISO_NAME}"
-print_info "目标: BIOS + UEFI 双引导"
-print_info "内核: Linux 6.1 LTS"
-echo -e "${BLUE}=========================================${NC}"
-
-# ================= 初始化目录 =================
-print_title "1. 初始化工作目录"
-rm -rf ${WORK_DIR} ${OUTPUT_DIR}/*
-mkdir -p ${WORK_DIR}/{rootfs,iso/{boot,EFI/boot}} ${OUTPUT_DIR}
-print_info "目录结构创建完成"
-
-# ================= 下载rootfs =================
-print_title "2. 下载Alpine迷你rootfs"
-
-# 提取主版本号
-MAJOR_VER=$(echo ${ALPINE_VERSION} | cut -d. -f1-2)
-ROOTFS_FILE="alpine-minirootfs-${ALPINE_VERSION}-x86_64.tar.gz"
-
-# 按顺序尝试的镜像源（优先国内源）
-MIRRORS=(
-    "https://mirrors.tuna.tsinghua.edu.cn/alpine/v${MAJOR_VER}/releases/x86_64"
-    "https://mirrors.aliyun.com/alpine/v${MAJOR_VER}/releases/x86_64"
-    "https://dl-cdn.alpinelinux.org/alpine/v${MAJOR_VER}/releases/x86_64"
-)
-
-DOWNLOAD_SUCCESS=0
-for MIRROR in "${MIRRORS[@]}"; do
-    URL="${MIRROR}/${ROOTFS_FILE}"
-    print_info "尝试下载: $(basename ${URL})"
+# 环境变量检查
+check_env() {
+    print_step "检查环境变量..."
     
-    if curl -s -f -L -o ${WORK_DIR}/rootfs.tar.gz "${URL}"; then
-        # 验证文件
-        if tar -tzf ${WORK_DIR}/rootfs.tar.gz >/dev/null 2>&1; then
-            DOWNLOAD_SUCCESS=1
-            print_info "✓ 下载成功 (来自: $(echo ${MIRROR} | cut -d/ -f3))"
-            break
-        else
-            print_warn "文件验证失败，尝试下一个镜像"
-            rm -f ${WORK_DIR}/rootfs.tar.gz
-        fi
+    # 必需的环境变量
+    : "${INPUT_IMG:?环境变量 INPUT_IMG 未设置}"
+    : "${OUTPUT_ISO_FILENAME:?环境变量 OUTPUT_ISO_FILENAME 未设置}"
+    
+    # 可选环境变量，设置默认值
+    ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
+    ISO_LABEL="${ISO_LABEL:-OPENWRT_INSTALL}"
+    ISO_VOLUME="${ISO_VOLUME:-OpenWRT_Installer}"
+    
+    print_info "Alpine版本: ${ALPINE_VERSION}"
+    print_info "输入IMG文件: ${INPUT_IMG}"
+    print_info "输出ISO文件名: ${OUTPUT_ISO_FILENAME}"
+    print_info "ISO卷标: ${ISO_LABEL}"
+    print_info "ISO卷名: ${ISO_VOLUME}"
+    
+    # 检查输入文件是否存在
+    if [[ ! -f "${INPUT_IMG}" ]]; then
+        print_error "输入文件不存在: ${INPUT_IMG}"
+        return 1
     fi
-done
+    
+    # 检查文件类型
+    if ! file "${INPUT_IMG}" | grep -q "DOS/MBR boot sector\|Linux.*filesystem data"; then
+        print_warn "输入文件可能不是有效的IMG文件"
+    fi
+}
 
-if [ ${DOWNLOAD_SUCCESS} -eq 0 ]; then
-    print_error "所有镜像下载失败"
+# 清理临时文件
+cleanup() {
+    print_step "清理临时文件..."
+    umount -qf /tmp/rootfs/boot 2>/dev/null || true
+    umount -qf /tmp/rootfs 2>/dev/null || true
+    umount -qf /tmp/efi 2>/dev/null || true
+    rm -rf /tmp/iso /tmp/rootfs /tmp/efi /tmp/bios /tmp/grub.img /tmp/efiboot.img
+}
+
+# 准备ISO目录结构
+prepare_iso_structure() {
+    print_step "准备ISO目录结构..."
+    
+    # 创建ISO目录结构
+    mkdir -p /tmp/iso/{boot/grub,boot/isolinux,EFI/boot,images}
+    
+    # 复制必要的文件
+    cp /usr/share/syslinux/isolinux.bin /tmp/iso/boot/isolinux/
+    cp /usr/share/syslinux/ldlinux.c32 /tmp/iso/boot/isolinux/
+    cp /usr/share/syslinux/libutil.c32 /tmp/iso/boot/isolinux/
+    cp /usr/share/syslinux/menu.c32 /tmp/iso/boot/isolinux/
+    cp /usr/share/syslinux/libcom32.c32 /tmp/iso/boot/isolinux/
+}
+
+# 创建GRUB配置文件
+create_grub_config() {
+    print_step "创建GRUB配置文件..."
+    
+    # 创建GRUB配置文件
+    cat > /tmp/iso/boot/grub/grub.cfg << 'EOF'
+set default=0
+set timeout=5
+set menu_color_normal=cyan/blue
+set menu_color_highlight=white/blue
+
+menuentry "Install OpenWRT to Disk (UEFI Mode)" {
+    echo "Loading OpenWRT installer..."
+    linux /boot/vmlinuz root=/dev/ram0 console=tty0 console=ttyS0,115200n8
+    initrd /boot/initramfs
+}
+
+menuentry "Install OpenWRT to Disk (Legacy BIOS Mode)" {
+    echo "Loading OpenWRT installer..."
+    linux /boot/vmlinuz root=/dev/ram0 console=tty0 console=ttyS0,115200n8
+    initrd /boot/initramfs
+}
+
+menuentry "Boot from Hard Disk (UEFI)" {
+    echo "Booting from local disk..."
     exit 1
-fi
+}
 
-# ================= 解压rootfs =================
-print_title "3. 解压rootfs"
-tar -xzf ${WORK_DIR}/rootfs.tar.gz -C ${WORK_DIR}/rootfs
-print_info "rootfs解压完成"
-
-# ================= 基础配置 =================
-print_title "4. 基础系统配置"
-
-# 配置APK源
-cat > ${WORK_DIR}/rootfs/etc/apk/repositories << EOF
-https://mirrors.tuna.tsinghua.edu.cn/alpine/v${MAJOR_VER}/main
-https://mirrors.tuna.tsinghua.edu.cn/alpine/v${MAJOR_VER}/community
+menuentry "Boot from Hard Disk (BIOS)" {
+    echo "Booting from local disk..."
+    exit 2
+}
 EOF
 
-# 最小化安装 - 只安装必需包
-print_info "安装最小必需包..."
-chroot ${WORK_DIR}/rootfs /bin/sh <<EOF 2>/dev/null
-# 更新源
-apk update
-
-# 最小化安装 - 只安装引导必需的包
-apk add --no-cache \
-    alpine-base \
-    linux-lts \
-    linux-firmware-none \  # 最小固件包
-    grub-efi \
-    grub-bios \
-    syslinux
-EOF
-
-# ================= BIOS引导配置 =================
-print_title "5. 配置BIOS引导 (SYSLINUX)"
-
-# 复制SYSLINUX文件
-SYSLINUX_FILES=(
-    "isolinux.bin"
-    "ldlinux.c32"
-    "libutil.c32"
-    "vesamenu.c32"
-)
-
-for file in "${SYSLINUX_FILES[@]}"; do
-    if [ -f "/usr/share/syslinux/${file}" ]; then
-        cp "/usr/share/syslinux/${file}" ${WORK_DIR}/iso/boot/
-    fi
-done
-
-# 最小化BIOS引导配置
-cat > ${WORK_DIR}/iso/boot/isolinux.cfg << 'EOF'
-DEFAULT linux
-TIMEOUT 30
+    # 创建ISOLINUX配置文件
+    cat > /tmp/iso/boot/isolinux/isolinux.cfg << 'EOF'
+DEFAULT menu.c32
 PROMPT 0
-MENU TITLE Alpine Linux Minimal (BIOS)
+TIMEOUT 50
+ONTIMEOUT install
 
-LABEL linux
-  MENU LABEL ^Start Alpine Linux
-  KERNEL /boot/vmlinuz-lts
-  APPEND initrd=/boot/initramfs-lts modules=loop,squashfs,sd-mod,usb-storage quiet
+MENU TITLE OpenWRT Installer
+MENU BACKGROUND /boot/isolinux/splash.png
+MENU COLOR border       30;44   #40ffffff #a0000000 std
+MENU COLOR title        1;36;44 #9033ccff #a0000000 std
+MENU COLOR sel          7;37;40 #e0ffffff #20ffffff all
+MENU COLOR unsel        37;44   #50ffffff #a0000000 std
+MENU COLOR help         37;40   #c0ffffff #a0000000 std
+MENU COLOR timeout_msg  37;40   #80ffffff #00000000 std
+MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
+MENU COLOR msg07        37;40   #90ffffff #a0000000 std
+MENU COLOR tabmsg       31;40   #30ffffff #00000000 std
 
-LABEL memtest
-  MENU LABEL ^Memory Test
-  KERNEL /boot/memtest
+LABEL install
+    MENU LABEL Install OpenWRT to Disk
+    KERNEL /boot/vmlinuz
+    APPEND root=/dev/ram0 console=tty0 console=ttyS0,115200n8 initrd=/boot/initramfs
 
-LABEL hwdetect
-  MENU LABEL ^Hardware Detection
-  COM32 hdt.c32
+LABEL bootlocal
+    MENU LABEL Boot from local disk
+    LOCALBOOT 0x80
 
 LABEL reboot
-  MENU LABEL ^Reboot
-  COM32 reboot.c32
+    MENU LABEL Reboot
+    COM32 reboot.c32
 EOF
+}
 
-print_info "BIOS引导配置完成"
-
-# ================= UEFI引导配置 =================
-print_title "6. 配置UEFI引导 (GRUB)"
-
-# 复制EFI引导文件
-EFI_FILES=(
-    "bootx64.efi:x86_64-efi"
-    "bootia32.efi:i386-efi"
-)
-
-for efi_file in "${EFI_FILES[@]}"; do
-    filename=$(echo $efi_file | cut -d: -f1)
-    arch=$(echo $efi_file | cut -d: -f2)
+# 准备OpenWRT镜像
+prepare_openwrt_image() {
+    print_step "准备OpenWRT镜像..."
     
-    # 尝试多个可能的位置
-    for path in "/usr/lib/grub/${arch}/grub.efi" "/usr/share/grub/${arch}/grub.efi"; do
-        if [ -f "$path" ]; then
-            cp "$path" "${WORK_DIR}/iso/EFI/boot/${filename}"
-            print_info "已复制: ${filename} (${arch})"
-            break
-        fi
-    done
-done
-
-# 最小化GRUB配置（支持x64和ia32）
-cat > ${WORK_DIR}/iso/EFI/boot/grub.cfg << 'EOF'
-set timeout=3
-set default=0
-
-if [ "${grub_platform}" = "efi" ]; then
-    # UEFI specific settings
-    loadfont unicode
-    set gfxmode=auto
-fi
-
-menuentry "Start Alpine Linux" {
-    linux /boot/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage quiet
-    initrd /boot/initramfs-lts
+    local img_size=$(stat -c%s "${INPUT_IMG}")
+    print_info "OpenWRT镜像大小: $((img_size/1024/1024)) MB"
+    
+    # 复制OpenWRT镜像到ISO目录
+    cp "${INPUT_IMG}" /tmp/iso/images/openwrt.img
+    
+    # 如果需要，可以在这里压缩镜像
+    if [[ "${COMPRESS_IMG:-false}" == "true" ]]; then
+        print_info "压缩OpenWRT镜像..."
+        gzip -9 /tmp/iso/images/openwrt.img
+        mv /tmp/iso/images/openwrt.img.gz /tmp/iso/images/openwrt.img.gz
+    fi
 }
 
-menuentry "Start Alpine Linux (Safe Mode)" {
-    linux /boot/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage nomodeset quiet
-    initrd /boot/initramfs-lts
-}
+# 创建可引导文件系统
+create_bootable_filesystem() {
+    print_step "创建可引导文件系统..."
+    
+    # 创建initramfs（最小系统）
+    cat > /tmp/initramfs.list << 'EOF'
+# 最小initramfs内容
+dir /dev 0755 0 0
+dir /proc 0755 0 0
+dir /sys 0755 0 0
+dir /mnt 0755 0 0
+dir /tmp 0755 0 0
+dir /root 0700 0 0
 
-menuentry "Memory Test" {
-    linux /boot/memtest
-}
+# 设备节点
+nod /dev/console 0600 0 0 c 5 1
+nod /dev/null 0666 0 0 c 1 3
+nod /dev/zero 0666 0 0 c 1 5
+nod /dev/tty 0666 0 0 c 5 0
+nod /dev/tty0 0600 0 0 c 4 0
+nod /dev/tty1 0600 0 0 c 4 1
+nod /dev/ram0 0600 0 0 b 1 0
 
-menuentry "Reboot" {
-    reboot
-}
-
-menuentry "Shutdown" {
-    halt
-}
+# 基本文件
+file /init /usr/local/include/init.sh 0755 0 0
+file /sbin/init /usr/local/include/init.sh 0755 0 0
 EOF
-
-print_info "UEFI引导配置完成 (支持x64和ia32)"
-
-# ================= 内核文件 =================
-print_title "7. 准备内核文件"
-
-# 复制内核
-if [ -f "${WORK_DIR}/rootfs/boot/vmlinuz-lts" ]; then
-    cp "${WORK_DIR}/rootfs/boot/vmlinuz-lts" "${WORK_DIR}/iso/boot/"
-    print_info "已复制: vmlinuz-lts"
-else
-    # 如果rootfs中没有，尝试使用宿主机的
-    if [ -f "/boot/vmlinuz-lts" ]; then
-        cp "/boot/vmlinuz-lts" "${WORK_DIR}/iso/boot/"
-        print_warn "使用宿主机内核"
+    
+    # 使用Alpine的mkinitfs创建initramfs（如果有的话）
+    if command -v mkinitfs &>/dev/null; then
+        print_info "使用mkinitfs创建initramfs..."
+        mkinitfs -o /tmp/iso/boot/initramfs
     else
-        print_error "找不到内核文件"
-        exit 1
-    fi
-fi
-
-# 复制initramfs或创建最小的
-if [ -f "${WORK_DIR}/rootfs/boot/initramfs-lts" ]; then
-    cp "${WORK_DIR}/rootfs/boot/initramfs-lts" "${WORK_DIR}/iso/boot/"
-    print_info "已复制: initramfs-lts"
-else
-    # 创建最小initramfs
-    print_info "创建最小initramfs..."
-    cat > ${WORK_DIR}/iso/boot/initramfs-lts << 'EOF'
-#!/bin/busybox sh
-# Minimal initramfs
-/bin/busybox --install -s
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev
-exec /bin/sh
-EOF
-    chmod +x ${WORK_DIR}/iso/boot/initramfs-lts
-fi
-
-# 创建内存测试占位文件
-echo "MEMTEST" > ${WORK_DIR}/iso/boot/memtest
-print_info "内核文件准备完成"
-
-# ================= 创建squashfs =================
-print_title "8. 创建squashfs文件系统"
-print_info "正在压缩rootfs..."
-
-# 使用xz压缩获得最小体积
-mksquashfs ${WORK_DIR}/rootfs ${WORK_DIR}/iso/alpine.squashfs \
-    -comp xz \
-    -Xbcj x86 \
-    -b 1M \
-    -noappend 2>/dev/null
-
-SQUASHFS_SIZE=$(du -h ${WORK_DIR}/iso/alpine.squashfs | cut -f1)
-print_info "squashfs创建完成: ${SQUASHFS_SIZE}"
-
-# ================= 创建ISO =================
-print_title "9. 创建双引导ISO"
-
-cd ${WORK_DIR}/iso
-
-# 创建ISO镜像
-xorriso -as mkisofs \
-    -volid "ALPINE_MINIMAL" \
-    -full-iso9660-filenames \
-    -joliet \
-    -rock \
-    -rational-rock \
-    -eltorito-boot boot/isolinux.bin \
-    -eltorito-catalog boot/boot.cat \
-    -no-emul-boot \
-    -boot-load-size 4 \
-    -boot-info-table \
-    -eltorito-alt-boot \
-    -e EFI/boot/bootx64.efi \
-    -no-emul-boot \
-    -isohybrid-gpt-basdat \
-    -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
-    -output "${ISO_FILE}" . 2>/dev/null
-
-# 添加UEFI支持
-isohybrid -u "${ISO_FILE}" 2>/dev/null || true
-
-print_info "ISO创建完成"
-
-# ================= 验证和输出 =================
-print_title "10. 验证和输出"
-
-if [ -f "${ISO_FILE}" ]; then
-    ISO_SIZE=$(du -h "${ISO_FILE}" | cut -f1)
-    ISO_INFO=$(file "${ISO_FILE}")
-    
-    echo -e "${BLUE}=========================================${NC}"
-    print_info "✓ ISO构建成功！"
-    echo -e "${BLUE}=========================================${NC}"
-    print_info "文件: ${ISO_FILE}"
-    print_info "大小: ${ISO_SIZE}"
-    print_info "支持的引导模式:"
-    print_info "  • BIOS (传统模式) - SYSLINUX"
-    print_info "  • UEFI x64 (64位) - GRUB"
-    print_info "  • UEFI ia32 (32位) - GRUB"
-    print_info "内核: Linux 6.1 LTS"
-    print_info "Alpine版本: ${ALPINE_VERSION}"
-    echo -e "${BLUE}=========================================${NC}"
-    
-    # 显示ISO详细信息
-    print_info "ISO详细信息:"
-    echo "${ISO_INFO}" | sed 's/^/  /'
-    
-    # 显示引导信息
-    print_info "引导扇区信息:"
-    if which isoinfo >/dev/null 2>&1; then
-        isoinfo -d -i "${ISO_FILE}" 2>/dev/null | grep -E "(Volume id|Bootable)" | sed 's/^/  /'
+        print_info "使用busybox创建initramfs..."
+        # 创建简单的initramfs
+        (cd /tmp && find . -print0 | cpio -0 -H newc -o | gzip -9 > /tmp/iso/boot/initramfs)
     fi
     
-else
-    print_error "ISO文件创建失败"
-    exit 1
-fi
+    # 复制内核（使用Alpine的内核）
+    if [[ -f "/boot/vmlinuz-lts" ]]; then
+        cp /boot/vmlinuz-lts /tmp/iso/boot/vmlinuz
+    elif [[ -f "/boot/vmlinuz-hardened" ]]; then
+        cp /boot/vmlinuz-hardened /tmp/iso/boot/vmlinuz
+    elif [[ -f "/boot/vmlinuz" ]]; then
+        cp /boot/vmlinuz /tmp/iso/boot/vmlinuz
+    else
+        # 下载Alpine内核
+        print_warn "未找到内核，下载Alpine内核..."
+        local kernel_url="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/x86_64/alpine-mini-${ALPINE_VERSION}-x86_64.iso"
+        wget -q -O /tmp/alpine-mini.iso "${kernel_url}"
+        7z e -o/tmp /tmp/alpine-mini.iso boot/vmlinuz-lts 2>/dev/null || true
+        if [[ -f "/tmp/vmlinuz-lts" ]]; then
+            cp /tmp/vmlinuz-lts /tmp/iso/boot/vmlinuz
+        else
+            print_error "无法获取内核文件"
+            return 1
+        fi
+    fi
+}
 
-print_title "构建完成！"
-echo -e "${GREEN}最小Alpine双引导ISO已准备就绪${NC}"
+# 创建EFI引导镜像
+create_efi_boot_image() {
+    print_step "创建EFI引导镜像..."
+    
+    # 创建EFI分区镜像
+    dd if=/dev/zero of=/tmp/efiboot.img bs=1M count=10
+    mkfs.vfat -F 32 /tmp/efiboot.img
+    
+    # 挂载并准备EFI分区
+    mkdir -p /tmp/efi_mnt
+    mount -o loop /tmp/efiboot.img /tmp/efi_mnt
+    mkdir -p /tmp/efi_mnt/EFI/BOOT
+    
+    # 复制EFI引导文件
+    if [[ -f "/usr/lib/grub/x86_64-efi/monolithic/grubx64.efi" ]]; then
+        cp /usr/lib/grub/x86_64-efi/monolithic/grubx64.efi /tmp/efi_mnt/EFI/BOOT/bootx64.efi
+    elif [[ -f "/usr/share/grub/grubx64.efi" ]]; then
+        cp /usr/share/grub/grubx64.efi /tmp/efi_mnt/EFI/BOOT/bootx64.efi
+    else
+        # 生成GRUB EFI可执行文件
+        print_info "生成GRUB EFI可执行文件..."
+        grub-mkimage \
+            -O x86_64-efi \
+            -o /tmp/efi_mnt/EFI/BOOT/bootx64.efi \
+            -p /boot/grub \
+            fat iso9660 part_gpt part_msdos normal boot linux configfile loopback chain \
+            efifwsetup efi_gop efi_uga ls search search_label search_fs_uuid search_fs_file \
+            gfxterm gfxterm_background gfxterm_menu test all_video loadenv exfat ext2 \
+            echo true probe terminal
+    fi
+    
+    # 复制GRUB配置文件
+    mkdir -p /tmp/efi_mnt/boot/grub
+    cp /tmp/iso/boot/grub/grub.cfg /tmp/efi_mnt/boot/grub/
+    
+    # 卸载
+    umount /tmp/efi_mnt
+    rmdir /tmp/efi_mnt
+    
+    # 移动EFI引导镜像到ISO目录
+    mv /tmp/efiboot.img /tmp/iso/EFI/boot/efiboot.img
+}
+
+# 创建BIOS引导镜像
+create_bios_boot_image() {
+    print_step "创建BIOS引导镜像..."
+    
+    # 创建GRUB BIOS引导镜像
+    dd if=/dev/zero of=/tmp/grub.img bs=1M count=2
+    mkfs.ext2 -F /tmp/grub.img
+    
+    # 挂载并准备GRUB
+    mkdir -p /tmp/grub_mnt
+    mount -o loop /tmp/grub.img /tmp/grub_mnt
+    mkdir -p /tmp/grub_mnt/boot/grub
+    
+    # 复制GRUB模块
+    cp -r /usr/lib/grub/i386-pc/* /tmp/grub_mnt/boot/grub/ 2>/dev/null || true
+    
+    # 创建GRUB core.img
+    grub-mkimage \
+        -O i386-pc \
+        -o /tmp/grub_mnt/boot/grub/core.img \
+        -p /boot/grub \
+        biosdisk iso9660 part_msdos ext2
+    
+    # 安装GRUB到镜像
+    echo "(hd0) /tmp/grub.img" > /tmp/device.map
+    grub-bios-setup \
+        --device-map=/tmp/device.map \
+        --directory=/tmp/grub_mnt/boot/grub \
+        --boot-image=boot/grub/core.img \
+        /tmp/grub.img
+    
+    # 卸载
+    umount /tmp/grub_mnt
+    rmdir /tmp/grub_mnt
+    
+    # 移动GRUB引导镜像到ISO目录
+    mv /tmp/grub.img /tmp/iso/boot/grub/grub.img
+}
+
+# 创建最终的ISO
+create_final_iso() {
+    print_step "创建最终的ISO..."
+    
+    local output_path="/output/${OUTPUT_ISO_FILENAME}"
+    
+    # 使用xorriso创建支持BIOS/UEFI双引导的ISO
+    xorriso -as mkisofs \
+        -iso-level 3 \
+        -full-iso9660-filenames \
+        -volid "${ISO_VOLUME}" \
+        -eltorito-boot boot/isolinux/isolinux.bin \
+        -eltorito-catalog boot/isolinux/boot.cat \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
+        -eltorito-alt-boot \
+        -e EFI/boot/efiboot.img \
+        -no-emul-boot \
+        -append_partition 2 0xef /tmp/iso/EFI/boot/efiboot.img \
+        -o "${output_path}" \
+        /tmp/iso
+    
+    # 检查ISO是否创建成功
+    if [[ $? -eq 0 ]] && [[ -f "${output_path}" ]]; then
+        local iso_size=$(du -h "${output_path}" | cut -f1)
+        print_info "✓ ISO创建成功!"
+        print_info "文件: ${output_path}"
+        print_info "大小: ${iso_size}"
+        
+        # 显示ISO信息
+        if command -v isoinfo >/dev/null 2>&1; then
+            print_info "ISO详细信息:"
+            isoinfo -d -i "${output_path}" | grep -E "Volume id|Volume size|Bootable" || true
+        fi
+        
+        # 验证ISO可引导性
+        if file "${output_path}" | grep -q "bootable"; then
+            print_info "✓ ISO是可引导的"
+        else
+            print_warn "⚠ ISO可能不可引导"
+        fi
+        
+        return 0
+    else
+        print_error "ISO创建失败"
+        return 1
+    fi
+}
+
+# 主函数
+main() {
+    print_info "开始构建OpenWRT安装ISO..."
+    
+    # 设置陷阱，确保清理
+    trap cleanup EXIT INT TERM
+    
+    # 检查环境
+    check_env || exit 1
+    
+    # 清理旧文件
+    cleanup
+    
+    # 执行构建步骤
+    prepare_iso_structure
+    create_grub_config
+    prepare_openwrt_image
+    create_bootable_filesystem
+    create_efi_boot_image
+    create_bios_boot_image
+    create_final_iso
+    
+    print_info "构建完成！"
+}
+
+# 运行主函数
+main "$@"
