@@ -31,7 +31,9 @@ jobs:
         syslinux \
         syslinux-common \
         isolinux \
-        syslinux-efi \
+        grub-efi-amd64-bin \
+        grub-common \
+        grub2-common \
         mtools \
         dosfstools \
         squashfs-tools \
@@ -39,15 +41,11 @@ jobs:
         parted \
         gdisk \
         jq \
-        grub-efi-amd64-bin \
-        grub-pc-bin \
-        grub-common \
-        grub2-common \
         file \
         cpio \
         gzip \
         genisoimage \
-        fakeroot
+        pv  # 用于安装进度显示
     
         # 确保isohdpfx.bin存在
         echo "检查系统文件..."
