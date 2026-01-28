@@ -36,7 +36,14 @@ jobs:
             parted \
             gdisk \
             jq
-            
+        sudo apt-get update
+        sudo apt-get install -y \
+        wget curl xorriso genisoimage \
+        syslinux isolinux \
+        grub-efi-amd64-bin grub-pc-bin \
+        squashfs-tools \
+        file cpio gzip
+        
         mkdir -p assets
         cd assets
         echo "ROOTDIR=$PWD" >> $GITHUB_ENV
