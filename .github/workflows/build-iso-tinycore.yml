@@ -31,6 +31,7 @@ jobs:
         syslinux \
         syslinux-common \
         isolinux \
+        syslinux-efi \
         mtools \
         dosfstools \
         squashfs-tools \
@@ -46,12 +47,24 @@ jobs:
         cpio \
         gzip \
         genisoimage \
-        fakeroot \
-        p7zip-full
+        fakeroot
+    
+        # 确保isohdpfx.bin存在
+        echo "检查系统文件..."
+        ls -la /usr/lib/syslinux/ /usr/share/syslinux/ 2>/dev/null | grep -E "isohdpfx|isolinux" || true
+    
+        # 如果isohdpfx.bin不存在，创建它
+        if [ ! -f /usr/lib/syslinux/isohdpfx.bin ] && [ ! -f /usr/share/syslinux/isohdpfx.bin ]; then
+        echo "创建isohdpfx.bin..."
+        sudo dd if=/dev/zero of=/usr/lib/syslinux/isohdpfx.bin bs=440 count=1 2>/dev/null
+        sudo chmod 644 /usr/lib/syslinux/isohdpfx.bin
+        fi
+  
     
         # 确保所有必要的syslinux文件都存在
         sudo apt-get install --reinstall -y syslinux isolinux
         mkdir -p assets
+        mkdir -p output
         cd assets
         echo "ROOTDIR=$PWD" >> $GITHUB_ENV
     - name: Download OpenWRT image
