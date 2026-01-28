@@ -116,9 +116,7 @@ RUN echo "🔧 验证安装:" && \
     find /boot -name "vmlinuz*" 2>/dev/null | head -5 || echo "未找到内核" && \
     echo "" && \
     echo "xorriso: $(which xorriso)" && \
-    echo "mkfs.fat: $(which mkfs.fat 2>/dev/null || which mkfs.vfat 2>/dev/null || echo '未找到')"&& \
-    echo "syslinux: $(ls -la /usr/share/syslinux/isolinux.bin 2>/dev/null || echo '未找到')" 
-
+    echo "mkfs.fat: $(which mkfs.fat 2>/dev/null || which mkfs.vfat 2>/dev/null || echo '未找到')"
 WORKDIR /work
 
 # 复制构建脚本
@@ -253,7 +251,7 @@ KERNEL_FOUND=false
 echo "在系统中查找内核文件..."
 find /boot -name "vmlinuz*" 2>/dev/null | while read kernel; do
     echo "找到内核: $kernel"
-    cp $kernel $ISO_DIR/boot/vmlinuz || cp /boot/vmlinuz-lts $ISO_DIR/boot/vmlinuz"
+    cp $kernel $ISO_DIR/boot/vmlinuz || cp /boot/vmlinuz-lts $ISO_DIR/boot/vmlinuz
     KERNEL_FOUND=true
     echo "✅ 使用内核: "$kernel""
     break
