@@ -1,6 +1,5 @@
 #!/bin/bash
 # build-iso-tinycore.sh OpenWRT Installer ISO Builder 
-# 支持BIOS/UEFI双引导
 
 set -e
 
@@ -87,6 +86,8 @@ get_kernel() {
     
     # TinyCore Linux 内核 (兼容性好)
     KERNEL_URLS=(
+        "https://distro.ibiblio.org/tinycorelinux/15.x/x86_64/release/distribution_files/vmlinuz64"
+        "https://distro.ibiblio.org/tinycorelinux/10.x/x86_64/release/distribution_files/vmlinuz64"
         "https://tinycorelinux.net/15.x/x86_64/release/distribution_files/vmlinuz64"
         "https://github.com/tinycorelinux/Core-scripts/raw/master/vmlinuz64"
         "https://repo.tinycorelinux.net/15.x/x86_64/release/distribution_files/vmlinuz64"
