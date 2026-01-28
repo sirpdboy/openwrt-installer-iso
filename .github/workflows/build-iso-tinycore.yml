@@ -88,7 +88,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: openwrt-tiny-installer
-        path: $ROOTDIR/output/*.iso
+        path: assets/output/*.iso
         retention-days: 30
         if-no-files-found: error
     
@@ -98,7 +98,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        files: $ROOTDIR/output/*.iso
+        files: assets/output/*.iso
         body: |
           # 🎯 OpenWRT 微型安装器
           
