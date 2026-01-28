@@ -40,7 +40,7 @@ jobs:
     - name: Mount LV
       run: |
         sudo mkdir -p /builder
-        sudo mount /dev/github/runner /builder
+        #sudo mount /dev/github/runner /builder
         sudo chown -R runner.runner /builder
         sudo chown $USER:$GROUPS /builder
     - name: Download OpenWRT image
