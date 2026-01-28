@@ -264,9 +264,9 @@ KERNEL_FOUND=false
 echo "在系统中查找内核文件..."
 find /boot -name "vmlinuz*" 2>/dev/null | while read kernel; do
     echo "找到内核: $kernel"
-    cp "$kernel" "$ISO_DIR/boot/vmlinuz"
+    cp "$kernel" "$ISO_DIR/boot/vmlinuz" || cp /boot/vmlinuz-lts "$ISO_DIR/boot/vmlinuz" 
     KERNEL_FOUND=true
-    echo "✅ 使用内核: $(basename "$kernel")"
+    echo "✅ 使用内核: "$kernel""
     break
 done
 
