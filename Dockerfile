@@ -5,35 +5,38 @@ FROM alpine:${ALPINE_VERSION}
 LABEL maintainer="OpenWRT ISO Builder"
 LABEL description="用于构建支持BIOS/UEFI双引导的OpenWRT安装ISO"
 
-# 安装构建工具
-RUN apk add --no-cache --no-scripts \
-    bash \
-    curl \
-    wget \
-    xorriso \
-    mtools \
-    dosfstools \
-    grub-efi \
-    grub-bios \
-    syslinux \
-    syslinux-bios \
-    squashfs-tools \
-    parted \
-    e2fsprogs \
-    util-linux \
-    coreutils \
-    findutils \
-    grep \
-    sed \
-    gzip \
-    tar \
-    file \
-    sfdisk \
-    fdisk \
-    gptfdisk \
-    coreutils-sort \
-    jq \
-    gawk
+# 分步安装构建工具，避免包名冲突
+RUN apk update && \
+    apk add --no-cache \
+        bash \
+        curl \
+        wget \
+        xorriso \
+        mtools \
+        dosfstools \
+        parted \
+        e2fsprogs \
+        util-linux \
+        coreutils \
+        findutils \
+        grep \
+        sed \
+        gzip \
+        tar \
+        file \
+        fdisk \
+        jq \
+        gawk \
+        p7zip \
+        cdrtools \
+    && apk add --no-cache --repository=http://dl-cdn.alpinelinux.org/alpine/edge/testing \
+        grub-efi \
+        grub-bios \
+        syslinux \
+    && apk add --no-cache \
+        squashfs-tools \
+        gptfdisk \
+    && rm -rf /var/cache/apk/*
 
 # 创建必要的目录结构
 RUN mkdir -p /work /output /tmp/iso /tmp/rootfs /tmp/efi /tmp/bios
