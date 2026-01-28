@@ -1,0 +1,144 @@
+name: Build-Alpine-ISO
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      #- 'scripts/**'
+      #- 'Dockerfile'
+      - '.github/workflows/Build-Alpine-ISO.yml'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      alpine_version:
+        description: 'Alpine版本 (例如: 3.18, 3.19, 3.20)'
+        required: true
+        default: '3.20'
+      openwrt_version:
+        description: 'OpenWRT版本标签'
+        required: false
+        default: 'latest'
+
+env:
+  ALPINE_VERSION: ${{ github.event.inputs.alpine_version || '3.20' }}
+  OPENWRT_VERSION: ${{ github.event.inputs.openwrt_version || 'latest' }}
+
+jobs:
+  build-iso:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+    
+    - name: 设置执行权限
+      run: |
+        chmod +x scripts/*.sh
+        chmod +x scripts/include/*.sh
+    
+    - name: 准备OpenWRT镜像
+      id: prepare-openwrt
+      run: |
+        mkdir -p assets
+        
+        echo "正在获取OpenWRT镜像..."
+        
+        # 使用OpenWRT官方镜像或指定仓库
+        REPO="openwrt/openwrt"
+        
+        if [ "${{ env.OPENWRT_VERSION }}" = "latest" ]; then
+            # 获取最新版本
+            LATEST_RELEASE=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.tag_name // empty')
+        else
+            LATEST_RELEASE="${{ env.OPENWRT_VERSION }}"
+        fi
+        
+        if [ -z "$LATEST_RELEASE" ]; then
+            echo "获取版本错误！"
+            exit
+        fi
+        
+        echo "使用版本: $LATEST_RELEASE"
+        
+        # 查找x86-64的IMG文件
+        DOWNLOAD_URL=$(curl -sL "https://api.github.com/repos/$REPO/releases" | \
+                      jq -r ".[] | select(.tag_name == \"$LATEST_RELEASE\") | .assets[] | select(.name | contains(\"x86-64\") and contains(\"combined\") and contains(\".img.gz\")) | .browser_download_url" | head -n1)
+        
+        if [ -z "$DOWNLOAD_URL" ]; then
+            # 备用URL
+            DOWNLOAD_URL="https://downloads.openwrt.org/releases/23.05.3/targets/x86/64/openwrt-23.05.3-x86-64-generic-ext4-combined.img.gz"
+        fi
+        
+        echo "下载URL: $DOWNLOAD_URL"
+        
+        # 下载镜像
+        if wget --tries=3 --timeout=60 -q "$DOWNLOAD_URL" -O assets/openwrt.img.gz; then
+            echo "✅ 下载完成"
+        else
+            echo "尝试使用curl下载..."
+            curl -L -o assets/openwrt.img.gz --connect-timeout 30 --retry 3 "$DOWNLOAD_URL"
+        fi
+        
+        # 验证文件
+        if [ -f "assets/openwrt.img.gz" ] && [ -s "assets/openwrt.img.gz" ]; then
+            echo "文件大小: $(ls -lh assets/openwrt.img.gz | awk '{print $5}')"
+            
+            # 解压
+            echo "解压镜像..."
+            if gzip -d -f assets/openwrt.img.gz; then
+                echo "✅ 解压成功"
+                echo "最终镜像大小: $(ls -lh assets/openwrt.img | awk '{print $5}')"
+                
+                # 设置输出
+                echo "img_path=$(pwd)/assets/openwrt.img" >> $GITHUB_OUTPUT
+            else
+                echo "❌ 解压失败"
+                exit 1
+            fi
+        else
+            echo "❌ 下载失败"
+            exit 1
+        fi
+    
+    - name: 构建ISO
+      run: |
+        INPUT_IMG="${{ steps.prepare-openwrt.outputs.img_path }}"
+        OUTPUT_DIR="$(pwd)/output"
+        ISO_NAME="openwrt-installer-alpine-${{ env.ALPINE_VERSION }}-$(date +%Y%m%d).iso"
+        
+        echo "构建参数:"
+        echo "  INPUT_IMG: $INPUT_IMG"
+        echo "  OUTPUT_DIR: $OUTPUT_DIR"
+        echo "  ISO_NAME: $ISO_NAME"
+        
+        mkdir -p "$OUTPUT_DIR"
+        
+        ./scripts/docker-build.sh "$INPUT_IMG" "$OUTPUT_DIR" "$ISO_NAME" "${{ env.ALPINE_VERSION }}"
+        
+        # 验证ISO
+        if [ -f "$OUTPUT_DIR/$ISO_NAME" ]; then
+            echo "✅ ISO构建成功"
+            ls -lh "$OUTPUT_DIR/$ISO_NAME"
+        else
+            echo "❌ ISO构建失败"
+            exit 1
+        fi
+    
+    - name: 上传ISO文件
+      uses: actions/upload-artifact@v4
+      with:
+        name: openwrt-installer-iso
+        path: output/*.iso
+        retention-days: 7
+    
+    - name: 输出构建信息
+      run: |
+        echo "=== 构建完成 ==="
+        echo "Alpine版本: ${{ env.ALPINE_VERSION }}"
+        echo "OpenWRT版本: ${{ env.OPENWRT_VERSION }}"
+        echo ""
+        echo "生成的文件:"
+        ls -lh output/ 2>/dev/null || echo "output目录为空"
