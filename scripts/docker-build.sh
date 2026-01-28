@@ -190,7 +190,7 @@ LABEL install
   MENU LABEL Install OpenWRT
   MENU DEFAULT
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200n8
+  APPEND initrd=/boot/initrd.img console=tty0 console=ttyS0,115200n8 rw init=/init
 
 ISOLINUX_CFG_EOF
 
@@ -206,7 +206,7 @@ set default=0
 
 menuentry "Install OpenWRT" {
     echo "Loading kernel..."
-    linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8
+    linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 rw init=/init
     echo "Loading initial ramdisk..."
     initrd /boot/initrd.img
     echo "Booting OpenWRT installer..."
@@ -267,6 +267,8 @@ for kernel_path in "${POSSIBLE_KERNELS[@]}"; do
         if [ -f "$ISO_DIR/boot/vmlinuz" ]; then
             KERNEL_SIZE=$(du -h "$ISO_DIR/boot/vmlinuz" | cut -f1)
             echo "✅ 内核复制成功，大小: $KERNEL_SIZE"
+            echo "内核信息:"
+            file "$ISO_DIR/boot/vmlinuz" || true
         else
             echo "❌ 内核复制失败"
             KERNEL_FOUND=false
@@ -289,23 +291,31 @@ echo "🔧 创建initrd..."
 
 INITRD_DIR="/tmp/initrd"
 rm -rf "$INITRD_DIR"
-mkdir -p "$INITRD_DIR"
+mkdir -p "$INITRD_DIR"/{bin,dev,etc,lib,proc,sys,root,sbin,tmp,usr/bin,usr/sbin}
 
 # 创建init脚本
 cat > "$INITRD_DIR/init" << 'INIT_EOF'
 #!/bin/sh
 # OpenWRT Installer Init Script
 
-# 基本挂载
-mount -t proc proc /proc 2>/dev/null || true
-mount -t sysfs sysfs /sys 2>/dev/null || true
+# 挂载proc和sys
+mount -t proc none /proc
+mount -t sysfs none /sys
 
-# 控制台
-mknod /dev/console c 5 1 2>/dev/null || true
+# 创建设备节点
+mkdir -p /dev
+mount -t devtmpfs none /dev 2>/dev/null || mknod /dev/console c 5 1
+mknod /dev/null c 1 3 2>/dev/null || true
+mknod /dev/zero c 1 5 2>/dev/null || true
+# 设置控制台
 exec 0</dev/console
 exec 1>/dev/console
 exec 2>/dev/console
 
+# 挂载tmpfs
+mount -t tmpfs none /tmp
+# 设置PATH
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 clear
 echo ""
 echo "╔══════════════════════════════════════════════╗"
@@ -384,33 +394,100 @@ done
 INIT_EOF
 chmod +x "$INITRD_DIR/init"
 
-# 复制busybox（如果可用）
+# 创建符号链接：/sbin/init -> /init（很多系统会找/sbin/init）
+ln -sf /init "$INITRD_DIR/sbin/init"
+# 复制busybox（这是关键！）
+echo "设置busybox..."
 if command -v busybox >/dev/null 2>&1; then
     BUSYBOX_PATH=$(which busybox)
     if [ -f "$BUSYBOX_PATH" ]; then
-        cp "$BUSYBOX_PATH" "$INITRD_DIR/"
-        echo "✅ 复制busybox到initrd"
+        echo "复制busybox: $BUSYBOX_PATH"
+        cp "$BUSYBOX_PATH" "$INITRD_DIR/bin/"
+        chmod +x "$INITRD_DIR/bin/busybox"
         
-        # 为busybox创建常用命令的符号链接
+        # 创建必要的符号链接
         cd "$INITRD_DIR"
-        ./busybox --list | while read cmd; do
-            case $cmd in
-                sh|ash|bash|dd|mount|umount|ls|cat|echo|cp|mv|rm|mkdir|rmdir|chmod|chown|ln|clear)
-                    ln -sf busybox "$cmd" 2>/dev/null || true
-                    ;;
-            esac
+        echo "创建busybox符号链接..."
+        
+        # 创建基本命令的符号链接
+        for cmd in sh ls echo cat cp mount umount mkdir mknod dd ps grep awk sed; do
+            ln -sf /bin/busybox "bin/$cmd" 2>/dev/null || true
         done
+        
+        # 创建sbin目录的链接
+        ln -sf /bin/busybox "sbin/init" 2>/dev/null || true
+        ln -sf /bin/busybox "sbin/modprobe" 2>/dev/null || true
+        
         cd - >/dev/null
+        echo "✅ busybox设置完成"
+    else
+        echo "⚠ 无法复制busybox"
     fi
 fi
 
+# 复制必要的库文件（Alpine使用musl libc）
+echo "复制库文件..."
+if [ -f "/lib/ld-musl-x86_64.so.1" ]; then
+    cp "/lib/ld-musl-x86_64.so.1" "$INITRD_DIR/lib/" 2>/dev/null || true
+    echo "✅ 复制musl loader"
+fi
+
+# 复制其他必要工具
+echo "复制其他工具..."
+for tool in lsblk fdisk blkid; do
+    tool_path=$(which "$tool" 2>/dev/null || true)
+    if [ -n "$tool_path" ] && [ -f "$tool_path" ]; then
+        mkdir -p "$INITRD_DIR$(dirname "$tool_path")"
+        cp "$tool_path" "$INITRD_DIR$tool_path" 2>/dev/null || true
+        echo "  ✅ $tool"
+    fi
+done
+
+# 创建必要的目录结构
+echo "创建目录结构..."
+mkdir -p "$INITRD_DIR/mnt/iso"
+mkdir -p "$INITRD_DIR/run"
+mkdir -p "$INITRD_DIR/var/run"
+
+# 创建fstab文件
+cat > "$INITRD_DIR/etc/fstab" << 'FSTAB_EOF'
+none    /proc   proc    defaults    0 0
+none    /sys    sysfs   defaults    0 0
+none    /dev    devtmpfs defaults   0 0
+none    /tmp    tmpfs   defaults    0 0
+FSTAB_EOF
+
+# 创建inittab文件
+cat > "$INITRD_DIR/etc/inittab" << 'INITTAB_EOF'
+::sysinit:/bin/busybox mount -t proc proc /proc
+::sysinit:/bin/busybox mount -t sysfs sysfs /sys
+::sysinit:/bin/busybox mount -t devtmpfs devtmpfs /dev
+::sysinit:/bin/busybox mkdir -p /dev/pts
+::sysinit:/bin/busybox mount -t devpts devpts /dev/pts
+::sysinit:/bin/busybox --install -s
+::respawn:/bin/sh
+::ctrlaltdel:/bin/busybox reboot -f
+::shutdown:/bin/busybox umount -a -r
+INITTAB_EOF
+
 # 打包initrd
 echo "打包initrd..."
-(cd "$INITRD_DIR" && find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$ISO_DIR/boot/initrd.img")
+cd "$INITRD_DIR"
+echo "initrd目录结构:"
+find . | head -20
 
+echo "创建cpio归档..."
+find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$ISO_DIR/boot/initrd.img"
+
+# 验证initrd
 if [ -f "$ISO_DIR/boot/initrd.img" ]; then
     INITRD_SIZE=$(du -h "$ISO_DIR/boot/initrd.img" | cut -f1)
-    echo "✅ initrd创建完成 ($INITRD_SIZE)"
+    echo "✅ initrd创建成功 ($INITRD_SIZE)"
+    
+    # 检查initrd内容
+    echo "检查initrd内容:"
+    echo "是否有/init: $(gzip -cd "$ISO_DIR/boot/initrd.img" 2>/dev/null | cpio -it 2>/dev/null | grep -c "^init$" || echo 0)"
+    echo "是否有/bin/busybox: $(gzip -cd "$ISO_DIR/boot/initrd.img" 2>/dev/null | cpio -it 2>/dev/null | grep -c "bin/busybox$" || echo 0)"
 else
     echo "❌ initrd创建失败"
     exit 1
@@ -454,15 +531,13 @@ if [ -f "/output/openwrt.iso" ]; then
         fi
     fi
     
-    # 检查内容
+    # 检查内核参数
     echo ""
-    echo "📂 ISO内容摘要:"
-    if command -v isoinfo >/dev/null 2>&1; then
-        echo "卷标: $(isoinfo -d -i "/output/openwrt.iso" 2>/dev/null | grep "Volume id" | cut -d: -f2- | sed 's/^ *//' || echo "未知")"
-        echo ""
-        echo "文件列表:"
-        isoinfo -f -i "/output/openwrt.iso" 2>/dev/null | head -15 || true
-    fi
+    echo "⚠ 重要: 内核启动参数已添加 'init=/init'"
+    echo "如果仍有问题，可以尝试其他init位置:"
+    echo "  init=/sbin/init"
+    echo "  init=/bin/sh"
+    echo "  init=/bin/busybox sh"
     
     exit 0
 else
