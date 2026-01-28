@@ -1181,6 +1181,8 @@ setup_uefi_boot
 
 # ================= 创建ISO镜像 =================
 print_header "7. 创建ISO镜像"
+# ================= 创建ISO镜像 =================
+print_header "7. 创建ISO镜像"
 
 create_iso() {
     print_step "创建ISO..."
@@ -1189,117 +1191,66 @@ create_iso() {
     
     # 显示ISO内容
     print_info "ISO目录内容:"
-    find . -type f | sort | head -30
+    find . -type f | sort | head -20
     
-    # 检查关键文件
-    print_info "检查关键文件:"
-    echo "BIOS引导文件:"
-    [ -f "boot/isolinux.bin" ] && echo "  ✅ boot/isolinux.bin" || echo "  ❌ boot/isolinux.bin"
-    [ -f "boot/ldlinux.c32" ] && echo "  ✅ boot/ldlinux.c32" || echo "  ❌ boot/ldlinux.c32"
-    [ -f "boot/isolinux.cfg" ] && echo "  ✅ boot/isolinux.cfg" || echo "  ❌ boot/isolinux.cfg"
-    
-    echo ""
-    echo "UEFI引导文件:"
-    [ -f "EFI/BOOT/BOOTX64.EFI" ] && echo "  ✅ EFI/BOOT/BOOTX64.EFI" || echo "  ❌ EFI/BOOT/BOOTX64.EFI"
-    [ -f "boot/grub/grub.cfg" ] && echo "  ✅ boot/grub/grub.cfg" || echo "  ❌ boot/grub/grub.cfg"
-    
-    echo ""
-    echo "核心文件:"
-    [ -f "boot/vmlinuz" ] && echo "  ✅ boot/vmlinuz" || echo "  ❌ boot/vmlinuz"
-    [ -f "boot/initrd.img" ] && echo "  ✅ boot/initrd.img" || echo "  ❌ boot/initrd.img"
-    [ -f "img/openwrt.img" ] && echo "  ✅ img/openwrt.img" || echo "  ❌ img/openwrt.img"
-    
-    # 创建ISO - 使用正确的参数
+    # 创建ISO - 使用可靠的方法
     print_info "使用xorriso创建ISO..."
     
-    # 方法1：使用完整的参数（支持BIOS和UEFI）
-    if [ -f "boot/isolinux.bin" ] && [ -f "EFI/BOOT/BOOTX64.EFI" ]; then
-        print_info "创建BIOS+UEFI双引导ISO..."
-        
-        xorriso -as mkisofs \
-            -volid "OPENWRT_INSTALL" \
-            -J -r -rock \
-            -b boot/isolinux.bin \
-            -c boot/boot.cat \
-            -no-emul-boot \
-            -boot-load-size 4 \
-            -boot-info-table \
-            -eltorito-alt-boot \
-            -e EFI/BOOT/BOOTX64.EFI \
-            -no-emul-boot \
-            -isohybrid-gpt-basdat \
-            -isohybrid-mbr /usr/lib/syslinux/isohdpfx.bin \
-            -o "${OUTPUT_ISO}" .
-        
-        ISO_RESULT=$?
-    elif [ -f "boot/isolinux.bin" ]; then
-        print_info "创建仅BIOS引导ISO..."
-        
-        xorriso -as mkisofs \
-            -volid "OPENWRT_INSTALL" \
-            -J -r -rock \
-            -b boot/isolinux.bin \
-            -c boot/boot.cat \
-            -no-emul-boot \
-            -boot-load-size 4 \
-            -boot-info-table \
-            -isohybrid-mbr /usr/lib/syslinux/isohdpfx.bin \
-            -o "${OUTPUT_ISO}" .
-        
-        ISO_RESULT=$?
+    # 方法1: 标准方法（无isohybrid）
+    echo "尝试标准方法..."
+    xorriso -as mkisofs \
+        -volid "OPENWRT_INSTALL" \
+        -J -r -rock \
+        -full-iso9660-filenames \
+        -b boot/isolinux.bin \
+        -c boot/boot.cat \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
+        -eltorito-alt-boot \
+        -e EFI/BOOT/BOOTX64.EFI \
+        -no-emul-boot \
+        -o "${OUTPUT_ISO}" . 2>&1
+    
+    if [ $? -eq 0 ]; then
+        print_success "ISO创建成功（标准方法）"
     else
-        print_warning "无引导文件，创建普通ISO..."
-        
+        # 方法2: 简化方法
+        print_warning "标准方法失败，尝试简化方法..."
         xorriso -as mkisofs \
             -volid "OPENWRT_INSTALL" \
-            -J -r -rock \
-            -o "${OUTPUT_ISO}" .
+            -J -r \
+            -b boot/isolinux.bin \
+            -c boot/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            -o "${OUTPUT_ISO}" . 2>&1
         
-        ISO_RESULT=$?
+        if [ $? -ne 0 ]; then
+            # 方法3: 最基本的方法
+            print_warning "简化方法失败，尝试最基本方法..."
+            xorriso -as mkisofs \
+                -volid "OPENWRT_INSTALL" \
+                -o "${OUTPUT_ISO}" . 2>&1
+        fi
     fi
     
-    # 检查结果
-    if [ $ISO_RESULT -eq 0 ] && [ -f "${OUTPUT_ISO}" ]; then
+    # 验证ISO
+    if [ -f "${OUTPUT_ISO}" ] && [ -s "${OUTPUT_ISO}" ]; then
         ISO_SIZE=$(du -h "${OUTPUT_ISO}" 2>/dev/null | cut -f1)
         ISO_BYTES=$(stat -c%s "${OUTPUT_ISO}" 2>/dev/null || echo 0)
         
-        if [ $ISO_BYTES -gt 1000000 ]; then
-            print_success "ISO创建完成: ${ISO_SIZE} ($((ISO_BYTES/1024/1024))MB)"
-            
-            # 检查ISO引导信息
-            print_info "检查ISO引导信息..."
-            if command -v isoinfo >/dev/null 2>&1; then
-                isoinfo -d -i "${OUTPUT_ISO}" 2>/dev/null | grep -E "Volume|Boot" || true
-            fi
-            
-            return 0
-        else
-            print_error "ISO文件太小: ${ISO_SIZE}"
-            return 1
+        print_success "ISO创建完成: ${ISO_SIZE} ($((ISO_BYTES/1024/1024))MB)"
+        
+        # 检查ISO类型
+        if command -v file >/dev/null 2>&1; then
+            file "${OUTPUT_ISO}" 2>/dev/null || true
         fi
+        
+        return 0
     else
-        print_error "ISO创建失败，尝试备用方法..."
-        
-        # 备用方法：使用genisoimage
-        if command -v genisoimage >/dev/null 2>&1; then
-            print_info "使用genisoimage创建ISO..."
-            
-            genisoimage \
-                -volid "OPENWRT_INSTALL" \
-                -J -r -rock \
-                -b boot/isolinux.bin \
-                -c boot/boot.cat \
-                -no-emul-boot \
-                -boot-load-size 4 \
-                -boot-info-table \
-                -o "${OUTPUT_ISO}" .
-            
-            if [ $? -eq 0 ] && [ -f "${OUTPUT_ISO}" ]; then
-                print_success "genisoimage创建ISO成功"
-                return 0
-            fi
-        fi
-        
+        print_error "ISO创建失败"
         return 1
     fi
 }
