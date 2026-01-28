@@ -178,7 +178,6 @@ if [ -d "$SYSBOOT_DIR" ]; then
         fi
     done
 fi
-ls -l  $ISO_DIR/boot/isolinux/
 # 创建ISOLINUX配置
 echo "创建ISOLINUX配置..."
 cat > "$ISO_DIR/boot/isolinux/isolinux.cfg" << 'ISOLINUX_CFG_EOF'
@@ -242,19 +241,44 @@ fi
 cp "$ISO_DIR/boot/grub/grub.cfg" "$ISO_DIR/EFI/boot/grub.cfg" 2>/dev/null || true
 echo "✅ EFI引导配置完成"
 
-# ========== 第5步：处理内核 - 关键修复 ==========
+# ========== 第5步：处理内核 ==========
 echo ""
 echo "🔧 处理内核文件..."
 
+KERNEL_FOUND=false
 # 方法1：检查Alpine安装的内核
 echo "在系统中查找内核文件..."
-find /boot -name "vmlinuz*" 2>/dev/null | while read kernel; do
-    echo "找到内核: $kernel"
-    cp $kernel $ISO_DIR/boot/vmlinuz || cp /boot/vmlinuz-lts $ISO_DIR/boot/vmlinuz
-    echo "✅ 使用内核: "$kernel""
-    break
+POSSIBLE_KERNELS=(
+    "/boot/vmlinuz-lts"
+    "/boot/vmlinuz-hardened"
+    "/boot/vmlinuz"
+    "/boot/vmlinuz-grsec"
+    "/vmlinuz"
+)
+
+for kernel_path in "${POSSIBLE_KERNELS[@]}"; do
+    if [ -f "$kernel_path" ]; then
+        echo "✅ 找到内核: $kernel_path"
+        cp "$kernel_path" "$ISO_DIR/boot/vmlinuz"
+        KERNEL_FOUND=true
+        echo "✅ 复制内核: $(basename "$kernel_path") -> $ISO_DIR/boot/vmlinuz"
+        
+        # 验证复制是否成功
+        if [ -f "$ISO_DIR/boot/vmlinuz" ]; then
+            KERNEL_SIZE=$(du -h "$ISO_DIR/boot/vmlinuz" | cut -f1)
+            echo "✅ 内核复制成功，大小: $KERNEL_SIZE"
+        else
+            echo "❌ 内核复制失败"
+            KERNEL_FOUND=false
+        fi
+        break
+    fi
 done
-ls -l $ISO_DIR/boot
+
+if [ "$KERNEL_FOUND" = false ]; then
+    echo "⚠ 未找到标准Linux内核，"
+fi
+
 
 
 echo "✅ 内核处理完成"
@@ -282,41 +306,115 @@ exec 0</dev/console
 exec 1>/dev/console
 exec 2>/dev/console
 
-# 显示欢迎信息
 clear
 echo ""
 echo "╔══════════════════════════════════════════════╗"
-echo "║         OpenWRT Installation System          ║"
+echo "         OpenWRT Installation System"
 echo "╚══════════════════════════════════════════════╝"
+
+
 echo ""
-echo "Welcome to the OpenWRT installation environment."
-echo ""
-echo "The OpenWRT firmware image is ready for installation."
-echo "Location: /images/openwrt.img"
-echo ""
-echo "To install OpenWRT to your device:"
-echo "1. Identify your target disk (e.g., /dev/sda)"
-echo "2. Run: dd if=/images/openwrt.img of=/dev/sdX bs=4M"
-echo "3. Wait for completion, then reboot"
-echo ""
-echo "Type 'exit' to reboot or Ctrl+D"
+echo "Checking OpenWRT image..."
+if [ ! -f "/openwrt.img" ]; then
+    echo "❌ ERROR: OpenWRT image not found!"
+    echo ""
+    echo "Press Enter for shell..."
+    read
+    exec /bin/bash
+fi
+
+echo "✅ OpenWRT image found: $(ls -lh /openwrt.img | awk '{print $5}')"
 echo ""
 
-# 启动shell
-export PS1="(openwrt-installer) # "
-exec /bin/sh
+while true; do
+    echo "Available disks:"
+    echo "================="
+    lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^(sd|hd|nvme)' || echo "No disks detected"
+    echo "================="
+    echo ""
+    
+    read -p "Enter target disk (e.g., sda): " TARGET_DISK
+    
+    if [ -z "$TARGET_DISK" ]; then
+        echo "Please enter a disk name"
+        continue
+    fi
+    
+    if [ ! -b "/dev/$TARGET_DISK" ]; then
+        echo "❌ Disk /dev/$TARGET_DISK not found!"
+        continue
+    fi
+    
+    echo ""
+    echo "⚠️  WARNING: This will erase ALL data on /dev/$TARGET_DISK!"
+    echo ""
+    read -p "Type 'YES' to confirm: " CONFIRM
+    
+    if [ "$CONFIRM" != "YES" ]; then
+        echo "Cancelled."
+        continue
+    fi
+    
+    clear
+    echo ""
+    echo "Installing OpenWRT to /dev/$TARGET_DISK..."
+    echo ""
+    
+    if command -v pv >/dev/null 2>&1; then
+        pv /openwrt.img | dd of="/dev/$TARGET_DISK" bs=4M
+    else
+        dd if=/openwrt.img of="/dev/$TARGET_DISK" bs=4M status=progress
+    fi
+    
+    sync
+    echo ""
+    echo "✅ Installation complete!"
+    echo ""
+    
+    echo "System will reboot in 10 seconds..."
+    
+    for i in {10..1}; do
+        echo -ne "Rebooting in $i seconds...\r"
+        sleep 1
+    done
+    
+    reboot -f
+done
+
 INIT_EOF
 chmod +x "$INITRD_DIR/init"
 
 # 复制busybox（如果可用）
 if command -v busybox >/dev/null 2>&1; then
-    cp $(which busybox) "$INITRD_DIR/" 2>/dev/null || true
-    echo "✅ 复制busybox到initrd"
+    BUSYBOX_PATH=$(which busybox)
+    if [ -f "$BUSYBOX_PATH" ]; then
+        cp "$BUSYBOX_PATH" "$INITRD_DIR/"
+        echo "✅ 复制busybox到initrd"
+        
+        # 为busybox创建常用命令的符号链接
+        cd "$INITRD_DIR"
+        ./busybox --list | while read cmd; do
+            case $cmd in
+                sh|ash|bash|dd|mount|umount|ls|cat|echo|cp|mv|rm|mkdir|rmdir|chmod|chown|ln|clear)
+                    ln -sf busybox "$cmd" 2>/dev/null || true
+                    ;;
+            esac
+        done
+        cd - >/dev/null
+    fi
 fi
 
 # 打包initrd
+echo "打包initrd..."
 (cd "$INITRD_DIR" && find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$ISO_DIR/boot/initrd.img")
-echo "✅ initrd创建完成 ($(du -h "$ISO_DIR/boot/initrd.img" | cut -f1))"
+
+if [ -f "$ISO_DIR/boot/initrd.img" ]; then
+    INITRD_SIZE=$(du -h "$ISO_DIR/boot/initrd.img" | cut -f1)
+    echo "✅ initrd创建完成 ($INITRD_SIZE)"
+else
+    echo "❌ initrd创建失败"
+    exit 1
+fi
 
 # ========== 第7步：创建ISO ==========
 echo ""
@@ -342,7 +440,8 @@ if [ -f "/output/openwrt.iso" ]; then
     echo ""
     echo "🔍 ISO验证:"
     echo "文件: /output/openwrt.iso"
-    echo "大小: $(du -h "/output/openwrt.iso" | cut -f1)"
+    ISO_SIZE=$(du -h "/output/openwrt.iso" | cut -f1)
+    echo "大小: $ISO_SIZE"
     
     if command -v file >/dev/null 2>&1; then
         FILE_INFO=$(file "/output/openwrt.iso")
@@ -359,7 +458,10 @@ if [ -f "/output/openwrt.iso" ]; then
     echo ""
     echo "📂 ISO内容摘要:"
     if command -v isoinfo >/dev/null 2>&1; then
-        isoinfo -f -i "/output/openwrt.iso" 2>/dev/null | grep -E "(boot|images|EFI)" | head -10 || true
+        echo "卷标: $(isoinfo -d -i "/output/openwrt.iso" 2>/dev/null | grep "Volume id" | cut -d: -f2- | sed 's/^ *//' || echo "未知")"
+        echo ""
+        echo "文件列表:"
+        isoinfo -f -i "/output/openwrt.iso" 2>/dev/null | head -15 || true
     fi
     
     exit 0
