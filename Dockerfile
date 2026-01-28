@@ -1,53 +1,53 @@
-FROM debian:buster-slim
+# 使用指定版本的Alpine作为基础镜像
+ARG ALPINE_VERSION=3.20
+FROM alpine:${ALPINE_VERSION}
 
-# 设置元数据
-LABEL maintainer="sirpdboy"
-LABEL description="OpenWRT IMG to ISO Builder"
-LABEL version="1.0"
+LABEL maintainer="OpenWRT ISO Builder"
+LABEL description="用于构建支持BIOS/UEFI双引导的OpenWRT安装ISO"
 
-# 设置环境
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LC_ALL=C.UTF-8
-ENV LANG=C.UTF-8
+# 安装构建工具
+RUN apk add --no-cache --no-scripts \
+    bash \
+    curl \
+    wget \
+    xorriso \
+    mtools \
+    dosfstools \
+    grub-efi \
+    grub-bios \
+    syslinux \
+    syslinux-bios \
+    squashfs-tools \
+    parted \
+    e2fsprogs \
+    util-linux \
+    coreutils \
+    findutils \
+    grep \
+    sed \
+    gzip \
+    tar \
+    file \
+    sfdisk \
+    fdisk \
+    gptfdisk \
+    coreutils-sort \
+    jq \
+    gawk
+
+# 创建必要的目录结构
+RUN mkdir -p /work /output /tmp/iso /tmp/rootfs /tmp/efi /tmp/bios
+
+# 复制构建脚本
+COPY scripts/build-iso-alpine.sh /usr/local/bin/
+COPY scripts/include/ /usr/local/include/
+
+# 设置执行权限
+RUN chmod +x /usr/local/bin/build-iso-alpine.sh && \
+    find /usr/local/include -type f -name "*.sh" -exec chmod +x {} \;
 
 # 设置工作目录
-WORKDIR /build
-
-# 安装必要工具
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
-        wget \
-        curl \
-        gnupg \
-        && \
-    echo "deb http://archive.debian.org/debian buster main" > /etc/apt/sources.list && \
-    echo "deb http://archive.debian.org/debian-security buster/updates main" >> /etc/apt/sources.list && \
-    echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
-        debootstrap \
-        squashfs-tools \
-        xorriso \
-        isolinux \
-        syslinux \
-        syslinux-common \
-        grub-pc-bin \
-        grub-efi-amd64-bin \
-        mtools \
-        dosfstools \
-        parted \
-        live-boot \
-        live-boot-initramfs-tools \
-        pv \
-        file \
-        dialog \
-        && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# 创建挂载点
-RUN mkdir -p /mnt /output
+WORKDIR /work
 
 # 设置入口点
-ENTRYPOINT ["/build.sh"]
+ENTRYPOINT ["/usr/local/bin/build-iso-alpine.sh"]
