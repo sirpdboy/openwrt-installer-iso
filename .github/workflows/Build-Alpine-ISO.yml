@@ -94,8 +94,6 @@ jobs:
             if [ -f "assets/openwrt.img" ]; then
                 echo "✅ 解压成功"
                 echo "镜像大小: $(ls -lh assets/openwrt.img | awk '{print $5}')"
-                
-                echo "img_path=$(pwd)/assets/openwrt.img" >> $GITHUB_OUTPUT
             else
                 echo "❌ 解压失败"
                 exit 1
@@ -107,7 +105,7 @@ jobs:
 
     - name: 构建ISO
       run: |
-        INPUT_IMG="${{ steps.prepare-openwrt.outputs.img_path }}"
+        INPUT_IMG="$(pwd)/assets/openwrt.img"
         OUTPUT_DIR="$(pwd)/output"
         ISO_NAME="openwrt-installer-alpine-${{ env.ALPINE_VERSION }}-$(date +%Y%m%d).iso"
         
