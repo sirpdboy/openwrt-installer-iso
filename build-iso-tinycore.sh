@@ -1,6 +1,5 @@
 #!/bin/bash
-# Complete OpenWRT Installer ISO Builder with SquashFS
-# 修复ISOLINUX问题，使用SquashFS优化压缩
+# OpenWRT Installer ISO Builder - 完整修复版
 
 set -e
 
@@ -14,9 +13,9 @@ NC='\033[0m'
 
 # 配置
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INPUT_IMG="${1:-${SCRIPT_DIR}/assets/openwrt.img}"
-OUTPUT_DIR="${2:-${SCRIPT_DIR}/output}"
-OUTPUT_ISO_FILENAME="${3:-openwrt-installer.iso}"
+INPUT_IMG="${INPUT_IMG:-${SCRIPT_DIR}/../assets/openwrt.img}"
+OUTPUT_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/../output}"
+OUTPUT_ISO_FILENAME="openwrt-installer.iso"
 OUTPUT_ISO="${OUTPUT_DIR}/${OUTPUT_ISO_FILENAME}"
 WORK_DIR="/tmp/iso-work-$$"
 
@@ -78,19 +77,21 @@ get_kernel() {
     KERNEL_URLS=(
         "https://tinycorelinux.net/10.x/x86_64/release/distribution_files/vmlinuz64"
         "https://github.com/tinycorelinux/Core-scripts/raw/master/vmlinuz64"
+        "http://distro.ibiblio.org/tinycorelinux/10.x/x86_64/release/distribution_files/vmlinuz64"
     )
     
     for url in "${KERNEL_URLS[@]}"; do
         print_info "尝试: $(basename "$url")"
         
-        if curl -L --connect-timeout 20 --max-time 30 --retry 2 \
-            -s -o "iso/boot/vmlinuz" "$url" 2>/dev/null && \
-            [ -f "iso/boot/vmlinuz" ] && [ -s "iso/boot/vmlinuz" ]; then
+        if curl -L --connect-timeout 15 --max-time 30 --retry 2 \
+            -s -o "iso/boot/vmlinuz" "$url" 2>/dev/null; then
             
-            KERNEL_SIZE=$(stat -c%s "iso/boot/vmlinuz" 2>/dev/null || echo 0)
-            if [ $KERNEL_SIZE -gt 1000000 ]; then
-                print_success "内核下载成功: $((KERNEL_SIZE/1024/1024))MB"
-                return 0
+            if [ -f "iso/boot/vmlinuz" ] && [ -s "iso/boot/vmlinuz" ]; then
+                KERNEL_SIZE=$(stat -c%s "iso/boot/vmlinuz" 2>/dev/null || echo 0)
+                if [ $KERNEL_SIZE -gt 1000000 ]; then
+                    print_success "内核下载成功: $((KERNEL_SIZE/1024/1024))MB"
+                    return 0
+                fi
             fi
         fi
         sleep 1
@@ -130,6 +131,7 @@ EOF
     fi
     
     print_warning "使用最小内核占位文件"
+    print_info "建议手动替换为完整内核: https://tinycorelinux.net"
     return 1
 }
 
