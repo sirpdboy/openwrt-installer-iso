@@ -146,95 +146,6 @@ create_initramfs() {
     mknod -m 666 dev/sda1 b 8 1 2>/dev/null || true
     mknod -m 666 dev/sr0 b 11 0 2>/dev/null || true  # CDROM
     
-    # 创建主init脚本 - 直接运行安装程序
-    cat > init << 'INIT'
-#!/bin/sh
-# OpenWRT Installer - Main Init Script
-
-export PATH=/bin:/sbin:/usr/bin:/usr/sbin
-
-# 基本挂载
-mount -t proc proc /proc 2>/dev/null
-mount -t sysfs sysfs /sys 2>/dev/null
-mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
-mount -t tmpfs tmpfs /tmp 2>/dev/null || true
-mount -t tmpfs tmpfs /run 2>/dev/null || true
-
-# 设置控制台
-exec 0</dev/console
-exec 1>/dev/console
-exec 2>/dev/console
-
-# 设置环境
-export TERM=linux
-export HOME=/root
-
-clear
-echo "========================================"
-echo "       OpenWRT Installer v1.0"
-echo "========================================"
-echo ""
-echo "Initializing installation environment..."
-echo ""
-
-# 挂载安装介质
-echo "Mounting installation media..."
-for device in /dev/sr0 /dev/cdrom /dev/hdc /dev/hdd; do
-    if [ -b "$device" ]; then
-        echo "Trying $device..."
-        mkdir -p /cdrom
-        if mount -t iso9660 -o ro "$device" /cdrom 2>/dev/null; then
-            if [ -f /cdrom/img/openwrt.img ]; then
-                echo "✅ Media mounted successfully"
-                
-                # 复制镜像到内存中（更快）
-                echo "Copying OpenWRT image to memory..."
-                cp /cdrom/img/openwrt.img /openwrt.img 2>/dev/null || true
-                
-                if [ -f /openwrt.img ]; then
-                    IMG_SIZE=$(ls -lh /openwrt.img 2>/dev/null | awk '{print $5}' || echo "unknown")
-                    echo "✅ OpenWRT image ready: $IMG_SIZE"
-                    
-                    # 运行安装程序
-                    echo ""
-                    echo "Starting installation program..."
-                    echo "========================================"
-                    
-                    # 直接运行安装逻辑
-                    /bin/install_openwrt.sh
-                    
-                    # 如果安装程序返回，显示消息
-                    echo ""
-                    echo "Installation program completed."
-                    echo "Press Enter for shell..."
-                    read dummy
-                    exec /bin/sh
-                else
-                    echo "❌ Failed to copy image"
-                fi
-                break
-            else
-                umount /cdrom 2>/dev/null
-            fi
-        fi
-    fi
-done
-
-if [ ! -f /openwrt.img ]; then
-    echo "❌ ERROR: Cannot find OpenWRT image!"
-    echo ""
-    echo "Troubleshooting:"
-    echo "1. Check media is inserted"
-    echo "2. Try: mount -t iso9660 /dev/sr0 /cdrom"
-    echo "3. Check: ls /cdrom/img/"
-    echo ""
-    echo "Entering emergency shell..."
-    exec /bin/sh
-fi
-INIT
-
-    chmod +x init
-    
     # 创建安装脚本（/bin/install_openwrt.sh）
     cat > bin/install_openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/sh
@@ -401,7 +312,96 @@ exit 0
 INSTALL_SCRIPT
 
     chmod +x /bin/install_openwrt.sh
-    
+
+    # 创建主init脚本 - 直接运行安装程序
+    cat > init << 'INIT'
+#!/bin/sh
+# OpenWRT Installer - Main Init Script
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+# 基本挂载
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mount -t tmpfs tmpfs /tmp 2>/dev/null || true
+mount -t tmpfs tmpfs /run 2>/dev/null || true
+
+# 设置控制台
+exec 0</dev/console
+exec 1>/dev/console
+exec 2>/dev/console
+
+# 设置环境
+export TERM=linux
+export HOME=/root
+
+clear
+echo "========================================"
+echo "       OpenWRT Installer v1.0"
+echo "========================================"
+echo ""
+echo "Initializing installation environment..."
+echo ""
+
+# 挂载安装介质
+echo "Mounting installation media..."
+for device in /dev/sr0 /dev/cdrom /dev/hdc /dev/hdd; do
+    if [ -b "$device" ]; then
+        echo "Trying $device..."
+        mkdir -p /cdrom
+        if mount -t iso9660 -o ro "$device" /cdrom 2>/dev/null; then
+            if [ -f /cdrom/img/openwrt.img ]; then
+                echo "✅ Media mounted successfully"
+                
+                # 复制镜像到内存中（更快）
+                echo "Copying OpenWRT image to memory..."
+                cp /cdrom/img/openwrt.img /openwrt.img 2>/dev/null || true
+                
+                if [ -f /openwrt.img ]; then
+                    IMG_SIZE=$(ls -lh /openwrt.img 2>/dev/null | awk '{print $5}' || echo "unknown")
+                    echo "✅ OpenWRT image ready: $IMG_SIZE"
+                    
+                    # 运行安装程序
+                    echo ""
+                    echo "Starting installation program..."
+                    echo "========================================"
+                    
+                    # 直接运行安装逻辑
+                    /bin/install_openwrt.sh
+                    
+                    # 如果安装程序返回，显示消息
+                    echo ""
+                    echo "Installation program completed."
+                    echo "Press Enter for shell..."
+                    read dummy
+                    exec /bin/sh
+                else
+                    echo "❌ Failed to copy image"
+                fi
+                break
+            else
+                umount /cdrom 2>/dev/null
+            fi
+        fi
+    fi
+done
+
+if [ ! -f /openwrt.img ]; then
+    echo "❌ ERROR: Cannot find OpenWRT image!"
+    echo ""
+    echo "Troubleshooting:"
+    echo "1. Check media is inserted"
+    echo "2. Try: mount -t iso9660 /dev/sr0 /cdrom"
+    echo "3. Check: ls /cdrom/img/"
+    echo ""
+    echo "Entering emergency shell..."
+    exec /bin/sh
+fi
+INIT
+
+    chmod +x init
+        
     # 下载BusyBox静态二进制
     print_info "获取BusyBox..."
     
