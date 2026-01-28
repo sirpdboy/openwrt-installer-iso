@@ -350,9 +350,9 @@ LABEL reboot
 ISOLINUX_CFG
 
     # 如果缺少图形菜单文件，使用简单配置
-    if [ ! -f "iso/isolinux/vesamenu.c32" ] && [ ! -f "iso/isolinux/menu.c32" ]; then
+    if [ ! -f "$WORK_DIR/iso/isolinux/vesamenu.c32" ] && [ ! -f "$WORK_DIR/iso/isolinux/menu.c32" ]; then
         print_info "使用文本模式配置..."
-        cat > iso/isolinux/isolinux.cfg << 'TEXT_CFG'
+        cat > $WORK_DIR/iso/isolinux/isolinux.cfg << 'TEXT_CFG'
 DEFAULT linux
 PROMPT 1
 TIMEOUT 100
