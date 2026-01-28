@@ -610,7 +610,7 @@ setup_bios_boot() {
         print_warning "缺少ISOLINUX文件，尝试下载..."
         
         # 下载syslinux
-        SYSLINUX_URL="https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/6.xx/syslinux-6.03.tar.gz"
+        SYSLINUX_URL="https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/syslinux-6.03.tar.gz"
         if curl -L --connect-timeout 30 -s -o /tmp/syslinux.tar.gz "$SYSLINUX_URL"; then
             mkdir -p /tmp/syslinux-extract
             tar -xzf /tmp/syslinux.tar.gz -C /tmp/syslinux-extract --strip-components=1
