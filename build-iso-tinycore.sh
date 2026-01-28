@@ -466,33 +466,26 @@ setup_bios_boot() {
     print_info "获取ISOLINUX文件..."
     
     # 首先从系统复制
-    if [ -f "/usr/lib/ISOLINUX/isolinux.bin" ]; then
-        cp /usr/lib/ISOLINUX/isolinux.bin iso/isolinux/ 2>/dev/null || true
-    fi
-    
-    if [ -f "/usr/lib/syslinux/isolinux.bin" ]; then
+    if [ -d "/usr/lib/syslinux" ]; then
+        print_info "从/usr/lib/syslinux复制..."
         cp /usr/lib/syslinux/isolinux.bin iso/isolinux/ 2>/dev/null || true
+        cp /usr/lib/syslinux/ldlinux.c32 iso/isolinux/ 2>/dev/null || true
+        cp /usr/lib/syslinux/menu.c32 iso/isolinux/ 2>/dev/null || true
+        cp /usr/lib/syslinux/libcom32.c32 iso/isolinux/ 2>/dev/null || true
+        cp /usr/lib/syslinux/libutil.c32 iso/isolinux/ 2>/dev/null || true
     fi
     
-    if [ -f "/usr/share/syslinux/isolinux.bin" ]; then
+    if [ -d "/usr/share/syslinux" ]; then
+        print_info "从/usr/share/syslinux复制..."
         cp /usr/share/syslinux/isolinux.bin iso/isolinux/ 2>/dev/null || true
+        cp /usr/share/syslinux/ldlinux.c32 iso/isolinux/ 2>/dev/null || true
     fi
-    
-    # 复制.c32文件
-    for path in /usr/lib/syslinux /usr/share/syslinux /usr/lib/ISOLINUX; do
-        if [ -d "$path" ]; then
-            find "$path" -name "*.c32" -type f 2>/dev/null | head -5 | while read file; do
-                cp "$file" iso/isolinux/ 2>/dev/null || true
-            done
-        fi
-    done
     
     # 如果isolinux.bin不存在，下载它
     if [ ! -f "iso/isolinux/isolinux.bin" ]; then
         print_warning "isolinux.bin不存在，下载..."
         
-        # 方法1：从kernel.org下载
-        wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/6.03/syslinux-6.03.tar.gz" -O /tmp/syslinux.tar.gz
+        wget -q "https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/Testing/6.04/syslinux-6.04-pre1.tar.gz" -O /tmp/syslinux.tar.gz
         if [ -f /tmp/syslinux.tar.gz ]; then
             tar -xzf /tmp/syslinux.tar.gz -C /tmp
             find /tmp -name "isolinux.bin" -type f | head -1 | while read file; do
@@ -625,7 +618,9 @@ TEMP_GRUB
             --modules="part_gpt part_msdos fat iso9660 ext2" \
             "boot/grub/grub.cfg=/tmp/grub_tmp/boot/grub/grub.cfg" \
             2>/dev/null; then
-            
+	    
+            ls -l  /tmp/grub_tmp
+	    
             if [ -f /tmp/grub_tmp/BOOTX64.EFI ]; then
                 cp /tmp/grub_tmp/BOOTX64.EFI "iso/EFI/BOOT/BOOTX64.EFI"
                 print_success "GRUB EFI构建成功"
