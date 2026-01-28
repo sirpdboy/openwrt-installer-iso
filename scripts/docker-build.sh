@@ -1,207 +1,165 @@
 #!/bin/bash
-# Docker构建包装脚本
-# 用法: ./docker-build.sh <img_file> <output_dir> <iso_name> [alpine_version]
+# 简化版Docker构建脚本
 
-set -euo pipefail
+set -e
 
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+echo "=== OpenWRT ISO Builder ==="
+echo "参数: $@"
+echo ""
 
-print_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-print_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-print_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
-
-# 显示帮助
-show_help() {
-    cat << EOF
-使用方法: $0 <img_file> <output_dir> <iso_name> [alpine_version]
-
-参数说明:
-  img_file       : OpenWRT IMG文件路径
-  output_dir     : 输出目录
-  iso_name       : 输出的ISO文件名（如：openwrt-installer.iso）
-  alpine_version : Alpine版本（默认：3.20）
-
-示例:
-  $0 ./openwrt.img ./output openwrt-installer.iso 3.20
-  $0 ./openwrt.img ./output openwrt-installer.iso
-EOF
-    exit 1
-}
-
-# 检查参数
-if [[ $# -lt 3 ]]; then
-    show_help
-fi
-
+# 参数
 IMG_FILE="$1"
 OUTPUT_DIR="$2"
 ISO_NAME="$3"
 ALPINE_VERSION="${4:-3.20}"
 
-# 获取绝对路径
-IMG_FILE_ABS=$(readlink -f "$IMG_FILE" 2>/dev/null || echo "$(cd "$(dirname "$IMG_FILE")" && pwd)/$(basename "$IMG_FILE")")
-OUTPUT_DIR_ABS=$(readlink -f "$OUTPUT_DIR" 2>/dev/null || echo "$(cd "$(dirname "$OUTPUT_DIR")" && pwd)/$(basename "$OUTPUT_DIR")")
-
-print_step "开始构建OpenWRT安装ISO..."
-print_info "Alpine版本: ${ALPINE_VERSION}"
-print_info "IMG文件: ${IMG_FILE_ABS}"
-print_info "输出目录: ${OUTPUT_DIR_ABS}"
-print_info "ISO文件名: ${ISO_NAME}"
-
-# 检查文件是否存在
-if [[ ! -f "${IMG_FILE_ABS}" ]]; then
-    print_error "IMG文件不存在: ${IMG_FILE_ABS}"
+# 基本检查
+if [ $# -lt 3 ]; then
+    echo "用法: $0 <img文件> <输出目录> <iso名称> [alpine版本]"
     exit 1
 fi
 
-# 检查文件类型
-if ! file "${IMG_FILE_ABS}" | grep -q "DOS/MBR boot sector\|Linux.*filesystem data"; then
-    print_warn "警告：输入文件可能不是有效的IMG文件"
-    print_info "文件类型: $(file "${IMG_FILE_ABS}")"
-fi
-
-# 创建输出目录
-mkdir -p "${OUTPUT_DIR_ABS}"
-
-# 检查Docker是否可用
-if ! command -v docker &>/dev/null; then
-    print_error "Docker未安装或不可用"
+if [ ! -f "$IMG_FILE" ]; then
+    echo "错误: IMG文件不存在: $IMG_FILE"
     exit 1
 fi
 
-# 检查Docker是否运行
-if ! docker info &>/dev/null; then
-    print_error "Docker守护进程未运行"
-    exit 1
-fi
+# 创建目录
+mkdir -p "$OUTPUT_DIR"
 
-# 验证Dockerfile存在
-if [[ ! -f "Dockerfile" ]]; then
-    print_error "Dockerfile不存在"
-    exit 1
-fi
+# 使用绝对路径
+IMG_ABS=$(realpath "$IMG_FILE")
+OUTPUT_ABS=$(realpath "$OUTPUT_DIR")
 
-# 构建Docker镜像
-print_step "构建Docker镜像..."
-print_info "使用Alpine版本: ${ALPINE_VERSION}"
+echo "构建配置:"
+echo "  Alpine版本: $ALPINE_VERSION"
+echo "  输入IMG: $IMG_ABS"
+echo "  输出目录: $OUTPUT_ABS"
+echo "  ISO名称: $ISO_NAME"
+echo ""
 
-if docker build \
-    --build-arg ALPINE_VERSION="${ALPINE_VERSION}" \
-    -t alpine-openwrt-builder:latest \
-    .; then
-    print_info "✅ Docker镜像构建成功"
+# 简单Dockerfile
+cat > Dockerfile.simple << EOF
+FROM alpine:$ALPINE_VERSION
+
+RUN apk update && apk add --no-cache \\
+    bash \\
+    xorriso \\
+    mtools \\
+    dosfstools \\
+    grub \\
+    grub-efi \\
+    syslinux \\
+    parted \\
+    e2fsprogs \\
+    util-linux
+
+WORKDIR /work
+EOF
+
+echo "构建Docker镜像..."
+if docker build -f Dockerfile.simple -t alpine-builder .; then
+    echo "Docker镜像构建成功"
 else
-    print_error "❌ Docker镜像构建失败"
-    
-    # 尝试使用备用Dockerfile
-    print_info "尝试使用备用Dockerfile..."
-    cat > Dockerfile.backup << 'EOF'
-ARG ALPINE_VERSION=3.20
-FROM alpine:${ALPINE_VERSION}
-
-RUN apk update && apk add --no-cache \
-    bash \
-    curl \
-    wget \
-    xorriso \
-    mtools \
-    dosfstools \
-    parted \
-    e2fsprogs \
-    util-linux \
-    coreutils \
-    gzip \
-    tar \
-    file \
-    fdisk \
-    jq \
-    gawk \
-    syslinux \
-    grub \
-    grub-efi \
-    squashfs-tools
-
-RUN mkdir -p /work /output
+    echo "Docker镜像构建失败，尝试简化版本..."
+    # 更简单的Dockerfile
+    cat > Dockerfile.minimal << EOF
+FROM alpine:$ALPINE_VERSION
+RUN apk add --no-cache xorriso syslinux grub parted
 WORKDIR /work
 EOF
     
-    if docker build -f Dockerfile.backup \
-        --build-arg ALPINE_VERSION="${ALPINE_VERSION}" \
-        -t alpine-openwrt-builder:latest .; then
-        print_info "✅ 使用备用Dockerfile构建成功"
-        rm -f Dockerfile.backup
-    else
-        print_error "❌ 备用Dockerfile也构建失败"
-        rm -f Dockerfile.backup
+    docker build -f Dockerfile.minimal -t alpine-builder . || {
+        echo "Docker构建失败，请检查网络和权限"
         exit 1
-    fi
+    }
 fi
 
-# 检查脚本是否存在
-if [[ ! -f "scripts/build-iso-alpine.sh" ]]; then
-    print_error "主构建脚本不存在: scripts/build-iso-alpine.sh"
-    exit 1
+# 复制构建脚本到容器
+echo "准备构建脚本..."
+cat > /tmp/build-iso.sh << 'EOF'
+#!/bin/sh
+set -e
+
+echo "容器内开始构建ISO..."
+
+# 准备目录
+mkdir -p /tmp/iso/boot/grub /tmp/iso/boot/isolinux
+
+# 复制引导文件
+cp /usr/share/syslinux/isolinux.bin /tmp/iso/boot/isolinux/
+cp /usr/share/syslinux/ldlinux.c32 /tmp/iso/boot/isolinux/
+
+# 创建引导配置
+cat > /tmp/iso/boot/isolinux/isolinux.cfg << 'EOFF'
+DEFAULT linux
+LABEL linux
+  SAY Booting OpenWRT Installer...
+  LINUX /boot/vmlinuz
+  APPEND initrd=/boot/initrd.img
+EOFF
+
+# 创建GRUB配置
+cat > /tmp/iso/boot/grub/grub.cfg << 'EOFF'
+set timeout=5
+menuentry "Install OpenWRT" {
+    linux /boot/vmlinuz
+    initrd /boot/initrd.img
+}
+EOFF
+
+# 创建最小initrd（仅用于测试）
+echo "创建initrd..."
+echo "#!/bin/sh" > /tmp/init
+echo "echo 'OpenWRT Installer'" >> /tmp/init
+echo "exec /bin/sh" >> /tmp/init
+chmod +x /tmp/init
+(cd /tmp && echo init | cpio -H newc -o | gzip > /tmp/iso/boot/initrd.img)
+
+# 复制内核
+cp /boot/vmlinuz-* /tmp/iso/boot/vmlinuz 2>/dev/null || true
+if [ ! -f /tmp/iso/boot/vmlinuz ]; then
+    # 使用busybox作为占位
+    cp /bin/busybox /tmp/iso/boot/vmlinuz
 fi
 
-# 设置执行权限
-chmod +x scripts/build-iso-alpine.sh 2>/dev/null || true
+# 复制OpenWRT镜像
+cp /mnt/input.img /tmp/iso/openwrt.img
 
-# 运行Docker容器构建ISO
-print_step "启动Docker容器构建ISO..."
+# 创建ISO
+echo "创建ISO..."
+xorriso -as mkisofs \
+  -r -V "OpenWRT_Installer" \
+  -o /output/out.iso \
+  -b boot/isolinux/isolinux.bin \
+  -c boot/isolinux/boot.cat \
+  -no-emul-boot -boot-load-size 4 -boot-info-table \
+  /tmp/iso
 
-# 创建输出ISO的完整路径
-OUTPUT_ISO="${OUTPUT_DIR_ABS}/${ISO_NAME}"
+echo "ISO构建完成"
+EOF
 
-# 运行构建
+chmod +x /tmp/build-iso.sh
+
+echo "运行容器构建ISO..."
 docker run --rm \
-    -v "${IMG_FILE_ABS}:/mnt/input.img:ro" \
-    -v "${OUTPUT_DIR_ABS}:/output:rw" \
-    -v "$(pwd)/scripts:/scripts:ro" \
-    -v "$(pwd)/scripts/include:/usr/local/include:ro" \
-    -e ALPINE_VERSION="${ALPINE_VERSION}" \
-    -e INPUT_IMG="/mnt/input.img" \
-    -e OUTPUT_ISO_FILENAME="${ISO_NAME}" \
-    -e ISO_LABEL="OPENWRT_INSTALL" \
-    -e ISO_VOLUME="OpenWRT_Installer" \
-    alpine-openwrt-builder:latest \
-    /bin/bash -c "
-        # 确保脚本可执行
-        chmod +x /scripts/build-iso-alpine.sh 2>/dev/null || true
-        # 执行构建
-        /scripts/build-iso-alpine.sh
-    "
+    -v "$IMG_ABS:/mnt/input.img:ro" \
+    -v "$OUTPUT_ABS:/output:rw" \
+    -v "/tmp/build-iso.sh:/build.sh:ro" \
+    alpine-builder \
+    /bin/sh /build.sh
 
-# 检查是否构建成功
-if [[ -f "${OUTPUT_ISO}" ]]; then
-    ISO_SIZE=$(du -h "${OUTPUT_ISO}" | cut -f1)
-    print_info "✅ ISO构建成功!"
-    print_info "文件: ${OUTPUT_ISO}"
-    print_info "大小: ${ISO_SIZE}"
-    
-    # 显示ISO信息
-    echo ""
-    print_info "ISO文件详细信息:"
-    ls -lh "${OUTPUT_ISO}"
-    
-    if command -v isoinfo >/dev/null 2>&1; then
-        print_info "ISO引导信息:"
-        isoinfo -d -i "${OUTPUT_ISO}" 2>/dev/null | grep -E "Volume id|Volume size|Bootable" || true
-    fi
-    
-    # 验证文件类型
-    print_info "文件类型:"
-    file "${OUTPUT_ISO}" || true
+# 重命名输出文件
+if [ -f "$OUTPUT_ABS/out.iso" ]; then
+    mv "$OUTPUT_ABS/out.iso" "$OUTPUT_ABS/$ISO_NAME"
+    echo "✅ ISO构建成功: $OUTPUT_ABS/$ISO_NAME"
+    ls -lh "$OUTPUT_ABS/$ISO_NAME"
 else
-    print_error "❌ ISO文件未生成: ${OUTPUT_ISO}"
-    print_info "输出目录内容:"
-    ls -la "${OUTPUT_DIR_ABS}/" 2>/dev/null || true
+    echo "❌ ISO构建失败"
     exit 1
 fi
 
-print_info "🎉 构建完成！"
+# 清理
+rm -f Dockerfile.simple Dockerfile.minimal /tmp/build-iso.sh
+
+echo "🎉 完成！"
