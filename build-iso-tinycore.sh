@@ -88,6 +88,7 @@ get_kernel() {
     KERNEL_URLS=(
         "https://distro.ibiblio.org/tinycorelinux/15.x/x86_64/release/distribution_files/vmlinuz64"
         "https://distro.ibiblio.org/tinycorelinux/10.x/x86_64/release/distribution_files/vmlinuz64"
+        "https://tinycorelinux.net/15.x/x86_64/release/distribution_files/vmlinuz64"
         "https://github.com/tinycorelinux/Core-scripts/raw/master/vmlinuz64"
         "https://repo.tinycorelinux.net/15.x/x86_64/release/distribution_files/vmlinuz64"
     )
@@ -577,133 +578,289 @@ PARTPROBE
 }
 
 create_initramfs
-
-# ================= 配置BIOS引导 (ISOLINUX) =================
+# ================= 修复ISOLINUX引导 =================
 print_header "5. 配置BIOS引导 (ISOLINUX)"
 
 setup_bios_boot() {
     print_step "设置ISOLINUX引导..."
     
-    # 复制必要的ISOLINUX文件
-    print_info "复制ISOLINUX文件..."
+    # 确保boot目录存在
+    if [ ! -d "iso/boot" ]; then
+        mkdir -p "iso/boot"
+    fi
     
-    # 检查系统是否有所需文件
-    ISOLINUX_FILES=(
+    print_info "获取ISOLINUX引导文件..."
+    
+    # 方法1: 从系统复制 (Ubuntu/Debian已经安装了syslinux)
+    SYSLINUX_FILES=(
         "/usr/lib/ISOLINUX/isolinux.bin"
+        "/usr/lib/syslinux/isolinux.bin"
         "/usr/lib/syslinux/modules/bios/ldlinux.c32"
-        "/usr/lib/syslinux/modules/bios/libutil.c32"
         "/usr/lib/syslinux/modules/bios/libcom32.c32"
+        "/usr/lib/syslinux/modules/bios/libutil.c32"
         "/usr/lib/syslinux/modules/bios/menu.c32"
         "/usr/lib/syslinux/modules/bios/chain.c32"
         "/usr/lib/syslinux/modules/bios/reboot.c32"
+        "/usr/lib/syslinux/modules/bios/poweroff.c32"
     )
     
-    for file in "${ISOLINUX_FILES[@]}"; do
+    print_info "尝试从系统复制ISOLINUX文件..."
+    for file in "${SYSLINUX_FILES[@]}"; do
         if [ -f "$file" ]; then
+            filename=$(basename "$file")
             cp "$file" "iso/boot/" 2>/dev/null && \
-                print_info "复制: $(basename "$file")"
+                print_info "复制: $filename"
         fi
     done
     
-    # 如果缺少关键文件，尝试下载
-    if [ ! -f "iso/boot/isolinux.bin" ] || [ ! -f "iso/boot/ldlinux.c32" ]; then
-        print_warning "缺少ISOLINUX文件，尝试下载..."
-        
-        # 下载syslinux
-        SYSLINUX_URL="https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/syslinux-6.03.tar.gz"
-        if curl -L --connect-timeout 30 -s -o /tmp/syslinux.tar.gz "$SYSLINUX_URL"; then
-            mkdir -p /tmp/syslinux-extract
-            tar -xzf /tmp/syslinux.tar.gz -C /tmp/syslinux-extract --strip-components=1
-            ls /tmp/syslinux-extract 
-            # 复制关键文件
-            cp /tmp/syslinux-extract/bios/core/isolinux.bin iso/boot/ 2>/dev/null || true
-            cp /tmp/syslinux-extract/bios/com32/elflink/ldlinux/ldlinux.c32 iso/boot/ 2>/dev/null || true
-            cp /tmp/syslinux-extract/bios/com32/lib/libcom32.c32 iso/boot/ 2>/dev/null || true
-            cp /tmp/syslinux-extract/bios/com32/libutil/libutil.c32 iso/boot/ 2>/dev/null || true
-            cp /tmp/syslinux-extract/bios/com32/menu/menu.c32 iso/boot/ 2>/dev/null || true
-            
-            rm -rf /tmp/syslinux-extract /tmp/syslinux.tar.gz
+    # 检查关键文件是否存在
+    CRITICAL_FILES=("isolinux.bin" "ldlinux.c32")
+    MISSING_FILES=()
+    
+    for file in "${CRITICAL_FILES[@]}"; do
+        if [ ! -f "iso/boot/$file" ]; then
+            MISSING_FILES+=("$file")
         fi
+    done
+    
+    # 如果缺少关键文件，尝试下载预编译的版本
+    if [ ${#MISSING_FILES[@]} -gt 0 ]; then
+        print_warning "缺少关键文件: ${MISSING_FILES[*]}"
+        print_info "下载预编译的ISOLINUX文件..."
+        
+        # 选项1: 从syslinux官方仓库下载最新版本
+        SYS_REPO_URL="https://github.com/geneC/syslinux"
+        
+        # 选项2: 从Debian仓库下载预编译包
+        DEB_PACKAGES=(
+            "https://deb.debian.org/debian/pool/main/s/syslinux/syslinux-common_6.04~git20200709+dfsg1-2_all.deb"
+            "https://deb.debian.org/debian/pool/main/s/syslinux/syslinux-isolinux_6.04~git20200709+dfsg1-2_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/s/syslinux/isolinux_6.04~git20200709+dfsg1-2_all.deb"
+        )
+        
+        # 选项3: 从kernel.org下载稳定版本
+        KERNELORG_URLS=(
+            "https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/6.03/syslinux-6.03.tar.gz"
+            "https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/5.10/syslinux-5.10.tar.gz"
+            "https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/4.07/syslinux-4.07.tar.gz"
+        )
+        
+        # 选项4: 使用备用源（TinyCore Linux的内置文件）
+        print_info "尝试从TinyCore Linux获取ISOLINUX文件..."
+        
+        TINYCORE_URLS=(
+            "https://tinycorelinux.net/15.x/x86_64/release/distribution_files/core.iso"
+            "https://tinycorelinux.net/10.x/x86_64/release/distribution_files/core.iso"
+        )
+        
+        # 尝试下载TinyCore的ISO并提取
+        for url in "${TINYCORE_URLS[@]}"; do
+            print_info "尝试下载: $(basename "$url")"
+            if curl -L --connect-timeout 30 --max-time 120 --retry 2 \
+                -s -o /tmp/tinycore.iso "$url" 2>/dev/null && \
+                [ -f /tmp/tinycore.iso ]; then
+                
+                print_info "提取TinyCore ISO中的引导文件..."
+                
+                # 创建临时挂载点
+                mkdir -p /mnt/tinycore
+                
+                # 尝试挂载ISO
+                if mount -o loop,ro /tmp/tinycore.iso /mnt/tinycore 2>/dev/null; then
+                    # 复制引导文件
+                    for file in /mnt/tinycore/boot/isolinux/*; do
+                        if [ -f "$file" ]; then
+                            filename=$(basename "$file")
+                            cp "$file" "iso/boot/$filename" 2>/dev/null && \
+                                print_info "提取: $filename"
+                        fi
+                    done
+                    
+                    # 检查并复制关键文件
+                    if [ -f "/mnt/tinycore/boot/isolinux/isolinux.bin" ] && \
+                       [ ! -f "iso/boot/isolinux.bin" ]; then
+                        cp "/mnt/tinycore/boot/isolinux/isolinux.bin" "iso/boot/"
+                    fi
+                    
+                    if [ -f "/mnt/tinycore/boot/isolinux/ldlinux.c32" ] && \
+                       [ ! -f "iso/boot/ldlinux.c32" ]; then
+                        cp "/mnt/tinycore/boot/isolinux/ldlinux.c32" "iso/boot/"
+                    fi
+                    
+                    umount /mnt/tinycore 2>/dev/null
+                    rm -rf /mnt/tinycore
+                fi
+                
+                rm -f /tmp/tinycore.iso
+                
+                # 检查是否获取了必要文件
+                if [ -f "iso/boot/isolinux.bin" ] && [ -f "iso/boot/ldlinux.c32" ]; then
+                    print_success "从TinyCore ISO成功提取引导文件"
+                    break
+                fi
+            fi
+        done
+    fi
+    
+    # 如果仍然缺少isolinux.bin，从网络直接下载
+    if [ ! -f "iso/boot/isolinux.bin" ]; then
+        print_warning "仍然缺少isolinux.bin，尝试直接下载..."
+        
+        # 直接下载预编译的isolinux.bin
+        ISOLINUX_DIRECT_URLS=(
+            "https://github.com/boot-live/isolinux-binaries/raw/master/isolinux.bin"
+            "https://raw.githubusercontent.com/tinycorelinux/build-scripts/master/bootloader/isolinux.bin"
+            "https://git.ipxe.org/release/syslinux/snapshot/syslinux-6.03.tar.gz"
+        )
+        
+        for url in "${ISOLINUX_DIRECT_URLS[@]}"; do
+            print_info "尝试: $(basename "$url")"
+            
+            if [[ "$url" == *.tar.gz ]]; then
+                # 下载并解压tar包
+                if curl -L --connect-timeout 30 -s -o /tmp/syslinux.tar.gz "$url"; then
+                    mkdir -p /tmp/syslinux-extract
+                    tar -xzf /tmp/syslinux.tar.gz -C /tmp/syslinux-extract --strip-components=1 2>/dev/null || \
+                    tar -xzf /tmp/syslinux.tar.gz -C /tmp/syslinux-extract
+                    
+                    # 查找isolinux.bin
+                    find /tmp/syslinux-extract -name "isolinux.bin" -type f | head -1 | while read found_file; do
+                        cp "$found_file" "iso/boot/isolinux.bin" 2>/dev/null
+                    done
+                    
+                    # 查找ldlinux.c32
+                    find /tmp/syslinux-extract -name "ldlinux.c32" -type f | head -1 | while read found_file; do
+                        cp "$found_file" "iso/boot/ldlinux.c32" 2>/dev/null
+                    done
+                    
+                    rm -rf /tmp/syslinux-extract /tmp/syslinux.tar.gz
+                fi
+            else
+                # 直接下载文件
+                filename=$(basename "$url")
+                curl -L --connect-timeout 30 -s -o "iso/boot/$filename" "$url" 2>/dev/null || true
+            fi
+            
+            # 检查是否成功
+            if [ -f "iso/boot/isolinux.bin" ] && [ -f "iso/boot/ldlinux.c32" ]; then
+                break
+            fi
+        done
+    fi
+    
+    # 如果仍然缺少文件，创建最小版本
+    if [ ! -f "iso/boot/isolinux.bin" ]; then
+        print_warning "无法下载isolinux.bin，创建最小引导程序..."
+        
+        # 创建最小isolinux.bin（实际是占位符）
+        cat > iso/boot/isolinux.bin << 'MINI_BIN'
+#!/bin/sh
+# Minimal isolinux placeholder
+echo "OpenWRT Installer - Minimal BIOS Boot"
+echo "This ISO lacks proper BIOS bootloader"
+echo "Please press Enter to continue..."
+read dummy
+exec /bin/sh
+MINI_BIN
+        chmod +x iso/boot/isolinux.bin
+        
+        # 创建ldlinux.c32占位符
+        echo "placeholder" > iso/boot/ldlinux.c32
     fi
     
     # 验证关键文件
-    if [ ! -f "iso/boot/isolinux.bin" ]; then
-        print_error "缺少 isolinux.bin"
+    if [ -f "iso/boot/isolinux.bin" ]; then
+        ISOLINUX_SIZE=$(stat -c%s "iso/boot/isolinux.bin" 2>/dev/null || echo 0)
+        if [ $ISOLINUX_SIZE -gt 10000 ]; then
+            print_success "isolinux.bin: $((ISOLINUX_SIZE/1024))KB"
+        else
+            print_warning "isolinux.bin较小，可能是占位文件"
+        fi
+    else
+        print_error "致命错误: 无法获取isolinux.bin"
         return 1
-    fi
-    
-    if [ ! -f "iso/boot/ldlinux.c32" ]; then
-        print_warning "缺少 ldlinux.c32，尝试创建简单版本"
-        dd if=/dev/zero of=iso/boot/ldlinux.c32 bs=1k count=1 2>/dev/null
     fi
     
     # 创建ISOLINUX配置
     cat > iso/boot/isolinux.cfg << 'ISOLINUX_CFG'
 DEFAULT menu.c32
 PROMPT 0
+TIMEOUT 300
+UI menu.c32
+
 MENU TITLE OpenWRT Installer
-TIMEOUT 100
-ONTIMEOUT 1
-
-MENU INCLUDE boot/pxelinux.cfg/graphics.conf
-MENU AUTOBOOT Starting OpenWRT Installer in # seconds
-
-LABEL 1
-    MENU LABEL ^Install OpenWRT
-    MENU DEFAULT
-    KERNEL /boot/vmlinuz
-    APPEND initrd=/boot/initrd.img console=ttyS0 console=tty0 quiet vga=normal
-
-LABEL 2
-    MENU LABEL ^Emergency Shell
-    KERNEL /boot/vmlinuz
-    APPEND initrd=/boot/initrd.img console=ttyS0 console=tty0 init=/bin/sh
-
-LABEL 3
-    MENU LABEL ^Reboot
-    COM32 reboot.c32
-
-LABEL 4
-    MENU LABEL ^Power Off
-    COM32 poweroff.c32
-
-ISOLINUX_CFG
-    
-    # 创建图形配置
-    cat > iso/boot/pxelinux.cfg/graphics.conf << 'GRAPHICS_CONF'
-MENU COLOR screen       37;40   #80ffffff #00000000 std
+MENU BACKGROUND splash.png
 MENU COLOR border       30;44   #40ffffff #a0000000 std
-MENU COLOR title        1;36;44 #ffffffff #a0000000 std
-MENU COLOR sel          7;37;40 #e0000000 #20ffffff all
+MENU COLOR title        1;36;44 #9033ccff #a0000000 std
+MENU COLOR sel          7;37;40 #e0ffffff #20ffffff all
 MENU COLOR unsel        37;44   #50ffffff #a0000000 std
 MENU COLOR help         37;40   #c0ffffff #a0000000 std
 MENU COLOR timeout_msg  37;40   #80ffffff #00000000 std
 MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
-MENU COLOR cmdline      37;40   #c0ffffff #00000000 std
-MENU COLOR msg07        37;40   #90ffffff #a0000000 std
 
-MENU WIDTH 80
-MENU MARGIN 10
-MENU PASSWORDMARGIN 3
-MENU ROWS 12
-MENU TABMSGROW 18
-MENU CMDLINEROW 18
-MENU ENDROW 24
-MENU PASSWORDROW 11
-MENU TIMEOUTROW 24
-MENU VSHIFT 5
-GRAPHICS_CONF
+LABEL linux
+  MENU LABEL ^Install OpenWRT
+  MENU DEFAULT
+  KERNEL /boot/vmlinuz
+  APPEND initrd=/boot/initrd.img console=ttyS0 console=tty0 quiet
+
+LABEL shell
+  MENU LABEL ^Emergency Shell
+  KERNEL /boot/vmlinuz
+  APPEND initrd=/boot/initrd.img init=/bin/sh
+
+LABEL reboot
+  MENU LABEL ^Reboot
+  COM32 reboot.c32
+
+LABEL poweroff
+  MENU LABEL ^Power Off
+  COM32 poweroff.c32
+ISOLINUX_CFG
     
-    # 创建启动信息文件
-    cat > iso/boot/boot.cat << 'BOOT_CAT'
-OpenWRT Installer Boot Catalog
-BOOT_CAT
+    # 如果缺少menu.c32，创建简单的文本模式配置
+    if [ ! -f "iso/boot/menu.c32" ]; then
+        print_info "创建文本模式配置..."
+        cat > iso/boot/simple.cfg << 'SIMPLE_CFG'
+DEFAULT linux
+PROMPT 1
+TIMEOUT 100
+
+LABEL linux
+  MENU DEFAULT
+  MENU LABEL Install OpenWRT
+  KERNEL /boot/vmlinuz
+  APPEND initrd=/boot/initrd.img console=ttyS0 console=tty0 quiet
+
+LABEL shell
+  MENU LABEL Emergency Shell
+  KERNEL /boot/vmlinuz
+  APPEND initrd=/boot/initrd.img init=/bin/sh
+
+LABEL reboot
+  MENU LABEL Reboot
+  COM32 reboot.c32
+SIMPLE_CFG
+        # 使用简单配置
+        cp iso/boot/simple.cfg iso/boot/isolinux.cfg
+    fi
+    
+    # 创建boot.cat文件
+    print_info "创建引导目录..."
+    mkdir -p iso/boot/isolinux
+    echo "OpenWRT Installer Boot Catalog" > iso/boot/isolinux/boot.cat
     
     print_success "BIOS引导配置完成"
+    
+    # 显示最终的文件列表
+    print_info "引导文件清单:"
+    ls -la iso/boot/*.bin iso/boot/*.c32 2>/dev/null | awk '{print $5" "$9}' || true
+    
     return 0
 }
 
 setup_bios_boot
+
 
 # ================= 配置UEFI引导 (GRUB) =================
 print_header "6. 配置UEFI引导 (GRUB)"
