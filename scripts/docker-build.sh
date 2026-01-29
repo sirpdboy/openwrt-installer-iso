@@ -75,19 +75,19 @@ RUN apk update
 RUN apk add --no-cache bash curl wget ca-certificates
 
 # 第2组：ISO构建工具
-RUN apk add --no-cache xorriso syslinux
+RUN apk add --no-cache xorriso syslinux linux-lts
 
 # 第3组：引导工具
-RUN apk add --no-cache grub grub-efi
+RUN apk add --no-cache grub grub-efi grub-bios
 
 # 第4组：文件系统工具
 RUN apk add --no-cache e2fsprogs dosfstools mtools
 
 # 5. 分区工具（注意：fdisk 包含在 util-linux 中）
-RUN apk add --no-cache parted util-linux
+RUN apk add --no-cache parted util-linux util-linux-misc
 
 # 6. 压缩和打包工具
-RUN apk add --no-cache gzip tar cpio squashfs-tools cdrtools
+RUN apk add --no-cache gzip tar cpio squashfs-tools
 
 # 7. 其他必要工具
 RUN apk add --no-cache coreutils findutils grep gawk file pv
