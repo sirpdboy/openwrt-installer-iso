@@ -176,14 +176,16 @@ KERNEL_PATHS=(
     "/lib/modules/*/vmlinuz"
     "/usr/lib/modules/*/vmlinuz"
 )
+find /boot -name "vmlinuz*" 2>/dev/null | head -5
 
 for path_pattern in "${KERNEL_PATHS[@]}"; do
     for kernel in $path_pattern; do
         if [ -f "$kernel" ]; then
             cp "$kernel" "$STAGING_DIR/live/vmlinuz"
             KERNEL_FOUND=true
+            echo "✅ 找到内核: "$kernel"
             KERNEL_SIZE=$(du -h "$STAGING_DIR/live/vmlinuz" | cut -f1)
-            echo "✅ 找到内核: $(basename "$kernel") ($KERNEL_SIZE)"
+            echo "✅ 找到内核:  $(basename "$kernel") ($KERNEL_SIZE)"
             break 2
         fi
     done
