@@ -129,9 +129,6 @@ RUN chmod +x /build-with-kernel.sh
 ENTRYPOINT ["/build-with-kernel.sh"]
 DOCKERFILE_EOF
 
-# 更新版本号
-sed -i "s/v3.20/v$(echo $ALPINE_VERSION | cut -d. -f1-2)/g" "$DOCKERFILE_PATH"
-sed -i "s/ARG ALPINE_VERSION=3.20/ARG ALPINE_VERSION=$ALPINE_VERSION/" "$DOCKERFILE_PATH"
 
 # 创建包含内核处理的构建脚本
 mkdir -p scripts
@@ -393,72 +390,6 @@ echo "╔═══════════════════════�
 echo "         OpenWRT Installation System"
 echo "╚══════════════════════════════════════════════╝"
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 echo "✅ OpenWRT image found: $(ls -lh /openwrt.img | awk '{print $5}')"
 echo ""
 
@@ -553,8 +484,8 @@ echo "复制其他系统工具..."
 TOOLS_TO_COPY=(
     "lsblk" "fdisk" "blkid" "dd" "mount" "umount" "sync" "cp" "mv" "rm"
     "mkdir" "rmdir" "cat" "echo" "grep" "awk" "sed" "cut" "du" "head" "tail"
-    "readlink" "basename" "dirname" "chmod" "chown" "ln" "ls" "ps"
-    "pv" "modprobe" "reboot" "poweroff" "halt" "sh" "bash" "dash"
+    "readlink" "basename" "dirname" "ln" "ls" "ps"
+    "pv" "modprobe" "halt" "sh" "bash" 
 )
 
 for tool in "${TOOLS_TO_COPY[@]}"; do
@@ -668,28 +599,7 @@ if [ -f "$ISO_DIR/boot/initrd.img" ]; then
     else
         echo "⚠ initrd格式可能有问题"
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     fi
-
-
-
-
-
 
 else
     echo "❌ initrd创建失败"
@@ -823,29 +733,10 @@ xorriso -as mkisofs \
     -quiet \
     "$ISO_DIR"
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # 检查是否成功
 if [ -f "/output/openwrt.iso" ]; then
     echo "✅ ISO创建成功"
 
-    
     # 详细验证
     echo ""
     echo "🔍 ISO详细信息:"
@@ -865,10 +756,6 @@ if [ -f "/output/openwrt.iso" ]; then
     echo "调试模式: 选择 'Debug Mode' (直接进入shell)"
     echo ""
     echo "如果卡住，尝试调试模式检查问题"
-
-
-
-    
     exit 0
 else
     echo "❌ ISO创建失败，尝试替代方法..."
