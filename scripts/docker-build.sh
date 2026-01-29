@@ -148,7 +148,7 @@ echo ""
 # 从环境变量获取参数
 INPUT_IMG="${INPUT_IMG:-/mnt/input.img}"
 OUTPUT_DIR="${OUTPUT_DIR:-/output}"
-ISO_NAME="${ISO_NAME:-openwrt-installer.iso}"
+ISO_NAME="${ISO_NAME:-openwrt.iso}"
 ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
 
 # 颜色定义
@@ -862,7 +862,7 @@ set -e
 echo "容器退出代码: $CONTAINER_EXIT"
 
 # ========== 检查结果 ==========
-OUTPUT_ISO="/output/openwrt-installer.iso"
+OUTPUT_ISO="$OUTPUT_ABS/openwrt.iso"
 FINAL_ISO="$OUTPUT_ABS/$ISO_NAME"
 if [ -f "$OUTPUT_ISO" ]; then
     # 重命名
