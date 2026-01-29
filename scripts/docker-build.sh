@@ -63,49 +63,60 @@ echo "✅ Docker可用"
 # 创建优化的Dockerfile
 DOCKERFILE_PATH="Dockerfile.alpine-iso"
 cat > "$DOCKERFILE_PATH" << 'DOCKERFILE_EOF'
-FROM alpine:3.20
+ARG ALPINE_VERSION=3.20
+FROM alpine:${ALPINE_VERSION}
 
 RUN echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > /etc/apk/repositories && \
     echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> /etc/apk/repositories
 
-RUN apk update
+# 安装完整的ISO构建工具链和内核
+RUN apk update && apk add --no-cache \
+    bash \
+    xorriso \
+    syslinux \
+    mtools \
+    dosfstools \
+    grub \
+    grub-efi \
+    grub-bios \
+    e2fsprogs \
+    parted \
+    util-linux \
+    util-linux-misc \
+    coreutils \
+    gzip \
+    tar \
+    cpio \
+    findutils \
+    grep \
+    gawk \
+    file \
+    curl \
+    wget \
+    linux-lts \
+    linux-firmware-none \
+    && rm -rf /var/cache/apk/*
+# 创建必要的设备节点
+RUN mknod -m 0660 /dev/loop0 b 7 0 2>/dev/null || true && \
+    mknod -m 0660 /dev/loop1 b 7 1 2>/dev/null || true
 
-# 安装构建工具（分组安装，避免单个包失败）
-# 第1组：基础工具
-RUN apk add --no-cache bash curl wget ca-certificates
+# 下载备用内核（如果Alpine内核安装失败）
+RUN echo "下载备用内核..." && \
+    mkdir -p /tmp/kernel && cd /tmp/kernel && \
+    curl -L -o kernel.tar.xz https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.30.tar.xz 2>/dev/null || \
+    curl -L -o kernel.tar.xz https://mirrors.edge.kernel.org/pub/linux/kernel/v6.x/linux-6.6.30.tar.xz 2>/dev/null || \
+    echo "内核下载失败，继续..."
 
-# 第2组：ISO构建工具
-RUN apk add --no-cache xorriso syslinux linux-lts
-
-# 第3组：引导工具
-RUN apk add --no-cache grub grub-efi grub-bios
-
-# 第4组：文件系统工具
-RUN apk add --no-cache e2fsprogs dosfstools mtools
-
-# 5. 分区工具（注意：fdisk 包含在 util-linux 中）
-RUN apk add --no-cache parted util-linux util-linux-misc
-
-# 6. 压缩和打包工具
-RUN apk add --no-cache gzip tar cpio squashfs-tools
-
-# 7. 其他必要工具
-RUN apk add --no-cache coreutils findutils grep gawk file pv
-
-# 清理缓存
-RUN rm -rf /var/cache/apk/*
-
-# 验证工具安装
-RUN echo "=== 验证安装的工具 ===" && \
-    echo "xorriso: $(xorriso --version 2>/dev/null | head -1 || echo '未安装')" && \
-    echo "syslinux: $(which syslinux 2>/dev/null || echo '未安装')" && \
-    echo "grub: $(which grub-mkstandalone 2>/dev/null || echo '未安装')" && \
-    echo "parted: $(which parted 2>/dev/null || echo '未安装')" && \
-    echo "mkisofs: $(which mkisofs 2>/dev/null || which genisoimage 2>/dev/null || echo '使用xorriso')" && \
-    echo "=== 验证完成 ==="
-
-
-# 创建工作目录
+# 验证工具和内核
+RUN echo "🔧 验证安装:" && \
+    echo "内核位置:" && \
+    ls -la /boot/ 2>/dev/null || echo "无/boot目录" && \
+    echo "" && \
+    echo "可用内核:" && \
+    find /boot -name "vmlinuz*" 2>/dev/null | head -5 || echo "未找到内核" && \
+    echo "" && \
+    echo "xorriso: $(which xorriso)" && \
+    echo "mkfs.fat: $(which mkfs.fat 2>/dev/null || which mkfs.vfat 2>/dev/null || echo '未找到')"
 WORKDIR /work
 
 # 复制构建脚本
@@ -837,7 +848,8 @@ else
     cat /tmp/docker-build.log | tail -20
     exit 1
 fi
-@@ -566,12 +622,13 @@
+
+# ========== 运行Docker容器 ==========
 echo "🚀 运行Docker容器构建ISO..."
 
 set +e
@@ -851,7 +863,22 @@ docker run --rm \
     "$IMAGE_NAME"
 
 CONTAINER_EXIT=$?
-@@ -594,46 +651,39 @@
+set -e
+
+echo "容器退出代码: $CONTAINER_EXIT"
+
+# ========== 检查结果 ==========
+OUTPUT_ISO="$OUTPUT_ABS/openwrt.iso"
+if [ -f "$OUTPUT_ISO" ]; then
+    # 重命名
+    FINAL_ISO="$OUTPUT_ABS/$ISO_NAME"
+    mv "$OUTPUT_ISO" "$FINAL_ISO"
+    
+    echo ""
+    echo "🎉🎉🎉 ISO构建成功! 🎉🎉🎉"
+    echo ""
+    echo "📁 ISO文件: $FINAL_ISO"
+    ISO_SIZE=$(du -h "$FINAL_ISO" | cut -f1)
     echo "📊 大小: $ISO_SIZE"
     echo ""
 
@@ -863,7 +890,8 @@ CONTAINER_EXIT=$?
 
         if echo "$FILE_INFO" | grep -q "bootable\|DOS/MBR"; then
             echo "✅ ISO可引导"
-
+        else
+            echo "⚠ ISO可能不可引导（数据ISO）"
         fi
     fi
 
@@ -881,13 +909,13 @@ else
     echo "❌ ISO构建失败"
 
     # 显示容器日志
-    echo "📋 容器日志:"
-    docker logs --tail 100 openwrt-alpine-builder 2>/dev/null || echo "无法获取容器日志"
-
-
-
-
-
-
+    echo "📋 容器日志 (最后50行):"
+    docker logs --tail 50 openwrt-kernel-builder 2>/dev/null || echo "无法获取容器日志"
+    
+    # 检查输出目录
+    echo ""
+    echo "📁 输出目录内容:"
+    ls -la "$OUTPUT_ABS/" 2>/dev/null || echo "输出目录不存在"
+    
     exit 1
 fi
