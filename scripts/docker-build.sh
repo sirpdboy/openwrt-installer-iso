@@ -863,9 +863,9 @@ echo "容器退出代码: $CONTAINER_EXIT"
 
 # ========== 检查结果 ==========
 OUTPUT_ISO="$OUTPUT_ABS/$ISO_NAME"
-if [ -f "$OUTPUT_ISO" ]; then
+FINAL_ISO="$OUTPUT_ABS/$ISO_NAME"
+if [ -f "$ISO_PATH" ]; then
     # 重命名
-    FINAL_ISO="$OUTPUT_ABS/$ISO_NAME"
     mv "$OUTPUT_ISO" "$FINAL_ISO"
     
     echo ""
