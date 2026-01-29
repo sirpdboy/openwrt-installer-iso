@@ -215,13 +215,17 @@ mkdir -p "$INITRD_DIR"
 echo "创建init脚本..."
 cat > "$INITRD_DIR/init" << 'INIT_EOF'
 #!/bin/busybox sh
-# OpenWRT安装系统init脚本
-# 注意：第一行必须是#!/bin/busybox sh
+
 
 # 挂载必要的文件系统
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || mdev -s
+# 创建设备节点（关键！）
+mknod /dev/console c 5 1
+mknod /dev/null c 1 3
+mknod /dev/zero c 1 5
+mknod /dev/tty c 5 0
 
 # 设置控制台
 exec 0</dev/console
@@ -271,7 +275,7 @@ elif [ -f "/openwrt.img" ]; then
 else
     echo "❌ 错误: 未找到OpenWRT镜像!"
     echo "进入救援模式..."
-    exec /bin/sh
+    exec /bin/busybox sh
 fi
 
 # 显示可用磁盘
@@ -290,18 +294,6 @@ echo "=========="
 
 # 安装菜单
 while true; do
-    echo ""
-    echo "请选择:"
-    echo "  1) 安装OpenWRT到磁盘"
-    echo "  2) 查看磁盘详情"
-    echo "  3) 进入Shell"
-    echo "  4) 重启"
-    echo ""
-    read -p "选择 [1-4]: " choice
-    
-    case "$choice" in
-        1)
-            echo ""
             read -p "输入目标磁盘 (例如: sda): " target_disk
             
             if [ -z "$target_disk" ]; then
@@ -338,48 +330,36 @@ while true; do
             sleep 10
             reboot -f
             ;;
-        2)
-            echo ""
-            echo "磁盘详情:"
-            fdisk -l 2>/dev/null || echo "无法显示详情"
-            ;;
-        3)
-            echo ""
-            echo "进入shell..."
-            exec /bin/sh
-            ;;
-        4)
-            echo "重启..."
-            reboot -f
-            ;;
-        *)
-            echo "无效选择"
-            ;;
-    esac
+        
 done
 INIT_EOF
 
 # 确保init文件可执行
 chmod 755 "$INITRD_DIR/init"
 
+# 复制busybox并创建符号链接
 echo "设置busybox..."
-# 获取busybox
-if ! command -v busybox >/dev/null 2>&1; then
-    echo "安装busybox..."
-    apk add --no-cache busybox 2>/dev/null || true
-fi
-
-BUSYBOX_PATH=$(which busybox 2>/dev/null)
+BUSYBOX_PATH=$(which busybox)
 if [ -f "$BUSYBOX_PATH" ]; then
     mkdir -p "$INITRD_DIR/bin"
     cp "$BUSYBOX_PATH" "$INITRD_DIR/bin/busybox"
     chmod 755 "$INITRD_DIR/bin/busybox"
     
-    # 创建符号链接
+    # 创建必要的符号链接
     cd "$INITRD_DIR/bin"
-    ./busybox --list | while read app; do
-        ln -s busybox "$app" 2>/dev/null || true
+    
+    # 创建所有busybox命令的符号链接
+    echo "创建busybox符号链接..."
+    ./busybox --list | while read cmd; do
+        ln -sf /bin/busybox "$cmd" 2>/dev/null || true
     done
+    
+    # 额外创建一些关键命令到sbin
+    mkdir -p ../sbin
+    for cmd in init halt reboot poweroff; do
+        ln -sf /bin/busybox ../sbin/"$cmd" 2>/dev/null || true
+    done
+    
     cd - >/dev/null
     echo "✅ busybox配置完成"
 else
@@ -387,22 +367,49 @@ else
     exit 1
 fi
 
+# 创建设备节点
 echo "创建设备节点..."
 mkdir -p "$INITRD_DIR/dev"
-mknod "$INITRD_DIR/dev/console" c 5 1 2>/dev/null || true
-mknod "$INITRD_DIR/dev/null" c 1 3 2>/dev/null || true
-mknod "$INITRD_DIR/dev/zero" c 1 5 2>/dev/null || true
+mknod "$INITRD_DIR/dev/console" c 5 1
+mknod "$INITRD_DIR/dev/null" c 1 3
+mknod "$INITRD_DIR/dev/zero" c 1 5
+mknod "$INITRD_DIR/dev/tty" c 5 0
 
-# 创建必要目录
-mkdir -p "$INITRD_DIR"/{proc,sys,tmp,mnt}
+# 创建必要的目录
+mkdir -p "$INITRD_DIR"/{proc,sys,tmp,mnt,images}
 
+# 复制OpenWRT镜像到initrd（可选）
+if [ -f "$INPUT_IMG" ]; then
+    cp "$INPUT_IMG" "$INITRD_DIR/images/openwrt.img"
+    echo "✅ 复制OpenWRT镜像到initrd"
+fi
+
+# 打包initrd
 echo "打包initrd..."
 cd "$INITRD_DIR"
+echo "initrd目录结构:"
+ls -la
+
+# 使用cpio打包（确保包含所有文件）
 find . -print0 | cpio --null -ov --format=newc 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd.img"
 
+# 验证initrd
 if [ -f "$STAGING_DIR/live/initrd.img" ]; then
-    INITRD_SIZE=$(du -h "$STAGING_DIR/live/initrd.img" 2>/dev/null | cut -f1 || echo "未知")
+    INITRD_SIZE=$(du -h "$STAGING_DIR/live/initrd.img" | cut -f1)
     echo "✅ initrd创建成功 ($INITRD_SIZE)"
+    
+    # 测试initrd内容
+    echo "测试initrd内容..."
+    if gzip -cd "$STAGING_DIR/live/initrd.img" 2>/dev/null | cpio -t 2>/dev/null | head -10; then
+        echo "✅ initrd格式正确"
+        
+        # 检查是否包含init
+        if gzip -cd "$STAGING_DIR/live/initrd.img" 2>/dev/null | cpio -t 2>/dev/null | grep -q "^init$"; then
+            echo "✅ initrd包含init文件"
+        else
+            echo "❌ initrd不包含init文件"
+        fi
+    fi
 else
     echo "❌ initrd创建失败"
     exit 1
@@ -411,6 +418,7 @@ fi
 cd - >/dev/null
 rm -rf "$INITRD_DIR"
 echo ""
+
 
 # ========== 第4步：复制OpenWRT镜像 ==========
 echo "[4/8] 📦 复制OpenWRT镜像..."
@@ -443,27 +451,19 @@ done
 
 # 创建ISOLINUX配置
 cat > "$STAGING_DIR/isolinux/isolinux.cfg" << 'ISOLINUX_CFG_EOF'
-DEFAULT vesamenu.c32
+DEFAULT linux
 PROMPT 0
 TIMEOUT 50
-ONTIMEOUT install
+UI menu.c32
 
 MENU TITLE OpenWRT Installer
 
-LABEL install
+LABEL linux
   MENU LABEL Install OpenWRT
   MENU DEFAULT
   KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd.img console=tty0
+  APPEND initrd=/live/initrd.img console=tty0 console=ttyS0,115200n8 rw quiet
 
-LABEL shell
-  MENU LABEL Emergency Shell
-  KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd.img console=tty0 init=/bin/sh
-
-LABEL local
-  MENU LABEL Boot from local disk
-  LOCALBOOT 0x80
 ISOLINUX_CFG_EOF
 
 echo "✅ BIOS引导配置完成"
@@ -478,18 +478,10 @@ set timeout=10
 set default=0
 
 menuentry "Install OpenWRT" {
-    linux /live/vmlinuz console=tty0
+    linux /live/vmlinuz console=tty0 console=ttyS0,115200n8 rw quiet
     initrd /live/initrd.img
 }
 
-menuentry "Emergency Shell" {
-    linux /live/vmlinuz console=tty0 init=/bin/sh
-    initrd /live/initrd.img
-}
-
-menuentry "Boot from local disk" {
-    exit
-}
 GRUB_CFG_EOF
 
 # 生成GRUB EFI文件
