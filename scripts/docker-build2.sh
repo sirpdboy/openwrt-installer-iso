@@ -172,7 +172,6 @@ for kernel in /boot/vmlinuz-lts /boot/vmlinuz; do
     fi
 done
 
-
 # 如果还没找到，尝试直接下载
 if [ "$KERNEL_FOUND" = false ]; then
     echo "尝试下载内核..."
@@ -275,7 +274,6 @@ show_disks() {
 # 主安装循环
 while true; do
     show_disks
-    
             echo ""
             read -p "请输入目标磁盘名称 (例如: sda, nvme0n1): " target_disk
             
@@ -465,7 +463,7 @@ echo "[5/8] 🔧 创建BIOS引导配置..."
 
 # 复制syslinux文件
 for file in isolinux.bin ldlinux.c32 libutil.c32 menu.c32 vesamenu.c32; do
-    for dir in /usr/share/syslinux /usr/lib/syslinux /usr/lib/ISOLINUX; do
+    for dir in /usr/share/syslinux /usr/lib/syslinux; do
         if [ -f "$dir/$file" ]; then
             cp "$dir/$file" "$STAGING_DIR/isolinux/"
             break
@@ -474,7 +472,7 @@ for file in isolinux.bin ldlinux.c32 libutil.c32 menu.c32 vesamenu.c32; do
 done
 
 # 查找isohdpfx.bin
-for dir in /usr/share/syslinux /usr/lib/syslinux /usr/lib/ISOLINUX; do
+for dir in /usr/share/syslinux /usr/lib/syslinux; do
     if [ -f "$dir/isohdpfx.bin" ]; then
         cp "$dir/isohdpfx.bin" "$WORK_DIR/isohdpfx.bin"
         echo "✅ 找到isohdpfx.bin"
@@ -607,59 +605,35 @@ else
         "$STAGING_DIR" 2>&1 | grep -E "written|sectors" || true
 fi
 
+echo ""
+
 # ========== 第8步：验证结果 ==========
-echo "[8/8] 🔍 验证结果..."
+echo "[8/8] 🔍 验证构建结果..."
 
 if [ -f "/output/openwrt.iso" ]; then
     ISO_SIZE=$(du -h "/output/openwrt.iso" | cut -f1)
-    echo ""
-    echo "🎉🎉🎉 ISO构建成功! 🎉🎉🎉"
-    echo ""
-    echo "📊 构建摘要:"
-    echo "  ISO文件: /output/openwrt.iso"
-    echo "  ISO大小: $ISO_SIZE"
-    echo "  内核大小: $KERNEL_SIZE"
-    echo "  initrd大小: $INITRD_SIZE"
-    echo "  刷机镜像: $IMG_SIZE"
-    echo ""
+    echo "✅ ISO创建成功! ($ISO_SIZE)"
     
-    # 创建构建信息
-    cat > "/output/build-info.txt" << EOF
-OpenWRT刷机安装系统ISO
-=======================
-构建时间: $(date)
-ISO大小:  $ISO_SIZE
-内核:     $KERNEL_SIZE
-initrd:   $INITRD_SIZE
-刷机镜像: $IMG_SIZE
-
-包含工具:
-  - fdisk, lsblk, blkid (磁盘工具)
-  - dd, pv (刷机工具)
-  - parted (分区工具)
-  - busybox (核心工具集)
-
-引导支持:
-  - BIOS (ISOLINUX): 是
-  - UEFI (GRUB): 是
-
-使用方法:
-  1. 制作USB启动盘:
-     sudo dd if=openwrt.iso of=/dev/sdX bs=4M status=progress oflag=sync
-  2. 从USB启动
-  3. 选择目标磁盘刷机
-  4. 输入YES确认刷机
-
-注意: 刷机会完全擦除目标磁盘!
-EOF
-    
-    echo "✅ 构建信息保存到: /output/build-info.txt"
+    # 显示ISO信息
     echo ""
-    echo "🚀 刷机ISO准备就绪!"
+    echo "📊 ISO信息:"
+    echo "  文件: /output/openwrt.iso"
+    echo "  大小: $ISO_SIZE"
+    
+    if which file >/dev/null 2>&1; then
+        file "/output/openwrt.iso"
+    fi
+    
+    # 测试ISO结构
+    echo ""
+    echo "📁 ISO内容:"
+    isoinfo -f -i "/output/openwrt.iso" 2>/dev/null | head -20 || \
+    xorriso -indev "/output/openwrt.iso" -ls 2>/dev/null | head -20 || \
+    echo "无法列出ISO内容"
     
     exit 0
 else
-    echo "❌ ISO构建失败"
+    echo "❌ ISO创建失败"
     exit 1
 fi
 
@@ -720,30 +694,32 @@ if [ -f "$OUTPUT_ISO" ]; then
     echo "📊 大小: $ISO_SIZE"
     echo ""
     
-    # 验证ISO
-    echo "🔍 验证信息:"
-    if command -v file >/dev/null 2>&1; then
+    # 验证引导能力
+    echo "🔍 引导验证:"
+    if which file >/dev/null 2>&1; then
         FILE_INFO=$(file "$FINAL_ISO")
         echo "文件类型: $FILE_INFO"
         
-        if echo "$FILE_INFO" | grep -q "bootable\|DOS/MBR"; then
-            echo "✅ ISO可引导"
+        # 检查引导标记
+        if echo "$FILE_INFO" | grep -q "bootable" || echo "$FILE_INFO" | grep -q "ISO 9660"; then
+            echo "✅ 看起来是可引导ISO"
         fi
     fi
     
     # 检查是否为混合ISO
-    echo ""
-    echo "💻 引导支持:"
-    if command -v xorriso >/dev/null 2>&1; then
-        xorriso -indev "$FINAL_ISO" -check_media 2>&1 | grep -i "efi\|uefi" && \
-            echo "✅ 支持UEFI引导" || echo "⚠ 仅支持BIOS引导"
+    if which dd >/dev/null 2>&1; then
+        echo ""
+        echo "检查引导扇区:"
+        dd if="$FINAL_ISO" bs=1 count=64 2>/dev/null | xxd | grep -q "55 AA" && \
+            echo "✅ 检测到BIOS引导扇区"
     fi
     
     echo ""
     echo "🚀 使用方法:"
     echo "   1. 虚拟机测试: qemu-system-x86_64 -cdrom '$FINAL_ISO' -m 512M"
     echo "   2. 制作USB: sudo dd if='$FINAL_ISO' of=/dev/sdX bs=4M status=progress oflag=sync"
-    echo "   3. 直接引导: 从USB或CD/DVD启动"
+    echo "   3. 刻录光盘: burn '$FINAL_ISO'"
+    echo "   4. 直接使用: 将openwrt.img放在/images/目录下"
     
     exit 0
 else
@@ -751,8 +727,13 @@ else
     echo "❌ ISO构建失败"
     
     # 显示容器日志
-    echo "📋 容器日志:"
-    docker logs --tail 100 openwrt-alpine-builder 2>/dev/null || echo "无法获取容器日志"
+    echo "📋 容器日志 (最后50行):"
+    docker logs --tail 50 openwrt-iso-builder 2>/dev/null || echo "无法获取容器日志"
+    
+    # 检查输出目录
+    echo ""
+    echo "📁 输出目录内容:"
+    ls -la "$OUTPUT_ABS/" 2>/dev/null || echo "输出目录不存在"
     
     exit 1
 fi
