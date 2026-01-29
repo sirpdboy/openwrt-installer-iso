@@ -160,17 +160,16 @@ KERNEL_FOUND=false
 echo "搜索内核文件..."
 find /boot -name "vmlinuz*" 2>/dev/null | head -5
 
-for kernel_path in /boot/vmlinuz-lts /boot/vmlinuz-generic /boot/vmlinuz; do
-    if [ -f "$kernel_path" ]; then
-        cp "$kernel_path" "$STAGING_DIR/live/vmlinuz"
-        KERNEL_FOUND=true
-        echo "✅ 找到内核: "$kernel_path"
-        # 验证内核文件
+echo "[2/7] 获取内核..."
+for kernel in /boot/vmlinuz-lts /boot/vmlinuz; do
+    if [ -f "$kernel" ]; then
+        cp "$kernel" "$STAGING_DIR/live/vmlinuz"
         KERNEL_SIZE=$(du -h "$STAGING_DIR/live/vmlinuz" | cut -f1)
-        echo "✅ 使用内核: $kernel_path -> $STAGING_DIR/live/vmlinuz ($KERNEL_SIZE)"
+        echo "✅ 使用内核: $(basename "$kernel") ($KERNEL_SIZE)"
         break
     fi
 done
+
 
 # 如果还没找到，尝试直接下载
 if [ "$KERNEL_FOUND" = false ]; then
