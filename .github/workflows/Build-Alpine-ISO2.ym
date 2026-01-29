@@ -1,0 +1,172 @@
+name: Build-Alpine-ISO
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'scripts/docker-build2.sh'
+      - '.github/workflows/Build-Alpine-ISO2.yml'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      alpine_version:
+        description: 'Alpine版本 (3.18-3.23)'
+        required: true
+        default: '3.20'
+
+env:
+  ALPINE_VERSION: ${{ github.event.inputs.alpine_version || '3.20' }}
+
+jobs:
+  build-iso:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+    
+    - name: 设置执行权限
+      run: |
+        chmod +x scripts/*.sh
+        find scripts -name "*.sh" -exec chmod +x {} \;
+    
+    - name: 获取OpenWRT镜像
+      run: |
+        mkdir -p assets
+        
+        # 下载OpenWRT镜像
+        echo "下载OpenWRT镜像..."
+        
+        # 方法1: 尝试下载最新版本
+        REPO="sirpdboy/openwrt"
+        echo "获取最新版本..."
+        
+        # 获取最新版本
+        LATEST_RELEASE=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.tag_name // empty')
+        
+        if [ -z "$LATEST_RELEASE" ]; then
+            echo "无法获取最新版本，使用硬编码版本"
+            LATEST_RELEASE="v2024.09.01"
+        fi
+        
+        echo "最新版本: $LATEST_RELEASE"
+        
+        # 获取下载URL
+        DOWNLOAD_URLS=$(curl -sL "https://api.github.com/repos/$REPO/releases/tags/$LATEST_RELEASE" | \
+              jq -r '.assets[] | select(.name | endswith("img.gz")) | .browser_download_url' 2>/dev/null || echo "")
+        
+        if [ -z "$DOWNLOAD_URLS" ]; then
+            echo "无法获取下载URL，使用备用方法"
+            # 备用URL
+            DOWNLOAD_URLS="https://github.com/sirpdboy/openwrt/releases/download/v2024.09.01/2024.09.01-x86-64-generic-squashfs-combined.img.gz"
+        fi
+        
+        FIRST_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
+        echo "下载URL: $FIRST_URL"
+        
+        # 下载镜像
+        wget --tries=3 --timeout=60 -q "$FIRST_URL" -O assets/openwrt.img.gz
+        
+        # 如果wget失败，尝试curl
+        if [ ! -f "assets/openwrt.img.gz" ] || [ ! -s "assets/openwrt.img.gz" ]; then
+            echo "wget下载失败，尝试curl..."
+            curl -L -o "assets/openwrt.img.gz" --connect-timeout 30 --retry 3 "$FIRST_URL"
+        fi
+        
+        if [ -f "assets/openwrt.img.gz" ] && [ -s "assets/openwrt.img.gz" ]; then
+            echo "✅ 下载完成"
+            echo "压缩文件大小: $(ls -lh assets/openwrt.img.gz | awk '{print $5}')"
+            
+            # 解压
+            echo "解压镜像..."
+            gzip -d assets/openwrt.img.gz
+            
+            if [ -f "assets/openwrt.img" ]; then
+                echo "✅ 解压成功"
+                echo "镜像大小: $(ls -lh assets/openwrt.img | awk '{print $5}')"
+            else
+                echo "❌ 解压失败"
+                exit 1
+          fi
+        else
+          echo "❌ 下载失败"
+            exit
+        fi
+    
+    - name: 构建ISO
+      run: |
+        INPUT_IMG="assets/openwrt.img"
+        OUTPUT_DIR="output"
+        ISO_NAME="openwrt-installer-alpine-${{ env.ALPINE_VERSION }}-$(date +%Y%m%d).iso"
+        
+        echo "构建参数:"
+        echo "  Alpine版本: ${{ env.ALPINE_VERSION }}"
+        echo "  输入镜像: $INPUT_IMG"
+        echo "  输出目录: $OUTPUT_DIR"
+        echo "  ISO名称: $ISO_NAME"
+        
+        mkdir -p "$OUTPUT_DIR"
+        
+        # 运行构建脚本
+        ./scripts/docker-build2.sh "$INPUT_IMG" "$OUTPUT_DIR" "$ISO_NAME" "${{ env.ALPINE_VERSION }}" "true"
+        
+        # 验证ISO
+        if [ -f "$OUTPUT_DIR/$ISO_NAME" ]; then
+          echo "✅ ISO构建成功"
+          echo "ISO信息:"
+          ls -lh "$OUTPUT_DIR/$ISO_NAME"
+          
+          # 显示ISO内容
+          echo ""
+          echo "ISO内容摘要:"
+          if command -v isoinfo >/dev/null 2>&1; then
+            isoinfo -d -i "$OUTPUT_DIR/$ISO_NAME" 2>/dev/null | head -10
+          fi
+        else
+          echo "❌ ISO构建失败"
+          exit 1
+        fi
+    
+    - name: 验证ISO引导
+      run: |
+        ISO_FILE="$(ls output/*.iso 2>/dev/null | head -1)"
+        
+        if [ -f "$ISO_FILE" ]; then
+          echo "验证ISO: $ISO_FILE"
+          echo "大小: $(ls -lh "$ISO_FILE" | awk '{print $5}')"
+          
+          # 检查是否为可引导ISO
+          if file "$ISO_FILE" | grep -q "bootable\|DOS/MBR\|ISO 9660"; then
+            echo "✅ ISO看起来可引导"
+          else
+            echo "⚠ ISO可能不可引导"
+          fi
+          
+          # 检查内容
+          echo ""
+          echo "ISO文件列表 (前10个):"
+          if command -v xorriso >/dev/null 2>&1; then
+            xorriso -indev "$ISO_FILE" -ls 2>/dev/null | head -10
+          elif command -v isoinfo >/dev/null 2>&1; then
+            isoinfo -f -i "$ISO_FILE" 2>/dev/null | head -10
+          fi
+        else
+          echo "❌ 未找到ISO文件"
+          exit 1
+        fi
+    
+    - name: 上传ISO文件
+      uses: actions/upload-artifact@v4
+      with:
+        name: openwrt-installer-iso
+        path: output/*.iso
+        retention-days: 7
+        if-no-files-found: error
+    
+    - name: 清理临时文件
+      if: always()
+      run: |
+        rm -rf assets output/tmp-*
