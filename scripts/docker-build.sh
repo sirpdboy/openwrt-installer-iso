@@ -164,6 +164,8 @@ echo "[2/7] 获取内核..."
 for kernel in /boot/vmlinuz-lts /boot/vmlinuz; do
     if [ -f "$kernel" ]; then
         cp "$kernel" "$STAGING_DIR/live/vmlinuz"
+
+        KERNEL_FOUND=true
         KERNEL_SIZE=$(du -h "$STAGING_DIR/live/vmlinuz" | cut -f1)
         echo "✅ 使用内核: $(basename "$kernel") ($KERNEL_SIZE)"
         break
@@ -418,8 +420,9 @@ mknod "$INITRD_DIR/dev/zero" c 1 5
 mknod "$INITRD_DIR/dev/tty" c 5 0
 mknod "$INITRD_DIR/dev/tty0" c 4 0
 
+mkdir -p "$INITRD_DIR"/{proc,sys,tmp,mnt,images}
 # 5. 复制OpenWRT镜像到initrd（可选，如果要从initrd直接访问）
-# cp "$INPUT_IMG" "$INITRD_DIR/images/openwrt.img" 2>/dev/null || true
+cp "$INPUT_IMG" "$INITRD_DIR/images/openwrt.img" 2>/dev/null || true
 
 # 清理不需要的文件
 echo "清理不需要的文件..."
