@@ -607,59 +607,55 @@ else
         "$STAGING_DIR" 2>&1 | grep -E "written|sectors" || true
 fi
 
+echo ""
+
 # ========== 第8步：验证结果 ==========
-echo "[8/8] 🔍 验证结果..."
+echo "[8/8] 🔍 验证构建结果..."
 
 if [ -f "/output/openwrt.iso" ]; then
-    ISO_SIZE=$(du -h "/output/openwrt.iso" | cut -f1)
+    ISO_SIZE=$(du -h "/output/openwrt.iso" 2>/dev/null | cut -f1 || echo "未知")
+    echo "✅ ✅ ✅ ISO构建成功! ✅ ✅ ✅"
     echo ""
-    echo "🎉🎉🎉 ISO构建成功! 🎉🎉🎉"
+    echo "📊 ISO信息:"
+    echo "  文件: /output/openwrt.iso"
+    echo "  大小: $ISO_SIZE"
     echo ""
-    echo "📊 构建摘要:"
-    echo "  ISO文件: /output/openwrt.iso"
-    echo "  ISO大小: $ISO_SIZE"
-    echo "  内核大小: $KERNEL_SIZE"
-    echo "  initrd大小: $INITRD_SIZE"
-    echo "  刷机镜像: $IMG_SIZE"
-    echo ""
+    
+    # 检查ISO
+    if command -v file >/dev/null 2>&1; then
+        FILE_INFO=$(file "/output/openwrt.iso" 2>/dev/null || echo "无法获取文件信息")
+        echo "类型: $FILE_INFO"
+    fi
     
     # 创建构建信息
     cat > "/output/build-info.txt" << EOF
-OpenWRT刷机安装系统ISO
+OpenWRT Alpine Installer
 =======================
 构建时间: $(date)
 ISO大小:  $ISO_SIZE
-内核:     $KERNEL_SIZE
-initrd:   $INITRD_SIZE
-刷机镜像: $IMG_SIZE
+引导支持: $( [ -f "$EFI_IMG_PATH" ] && echo "BIOS + UEFI" || echo "BIOS only" )
 
-包含工具:
-  - fdisk, lsblk, blkid (磁盘工具)
-  - dd, pv (刷机工具)
-  - parted (分区工具)
-  - busybox (核心工具集)
-
-引导支持:
-  - BIOS (ISOLINUX): 是
-  - UEFI (GRUB): 是
+包含:
+  - OpenWRT镜像: images/openwrt.img
+  - Linux内核:   live/vmlinuz
+  - Initramfs:   live/initrd.img
 
 使用方法:
-  1. 制作USB启动盘:
-     sudo dd if=openwrt.iso of=/dev/sdX bs=4M status=progress oflag=sync
+  1. sudo dd if=openwrt.iso of=/dev/sdX bs=4M status=progress
   2. 从USB启动
-  3. 选择目标磁盘刷机
-  4. 输入YES确认刷机
+  3. 选择安装目标
 
-注意: 刷机会完全擦除目标磁盘!
+注意: 安装会完全擦除目标磁盘!
 EOF
     
     echo "✅ 构建信息保存到: /output/build-info.txt"
-    echo ""
-    echo "🚀 刷机ISO准备就绪!"
+    
+    # 清理
+    rm -rf "$WORK_DIR"
     
     exit 0
 else
-    echo "❌ ISO构建失败"
+    echo "❌ ISO创建失败"
     exit 1
 fi
 
