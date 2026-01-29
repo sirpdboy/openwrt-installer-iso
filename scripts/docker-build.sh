@@ -63,78 +63,47 @@ echo "✅ Docker可用"
 # 创建优化的Dockerfile
 DOCKERFILE_PATH="Dockerfile.alpine-iso"
 cat > "$DOCKERFILE_PATH" << 'DOCKERFILE_EOF'
-ARG ALPINE_VERSION=3.20
-FROM alpine:${ALPINE_VERSION} as builder
+FROM alpine:3.20
 
-# 设置镜像源
-RUN echo "http://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main" > /etc/apk/repositories && \
-    echo "http://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community" >> /etc/apk/repositories
+RUN echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > /etc/apk/repositories && \
+    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> /etc/apk/repositories
 
-# 更新并安装基础工具
-RUN apk update && apk upgrade
+RUN apk update
 
-# 安装第一阶段：基本工具
-RUN apk add --no-cache \
-    bash \
-    curl \
-    wget \
-    git \
-    sudo \
-    nano \
-    tree \
-    && rm -rf /var/cache/apk/*
+# 安装构建工具（分组安装，避免单个包失败）
+# 第1组：基础工具
+RUN apk add --no-cache bash curl wget ca-certificates
 
-# 安装第二阶段：ISO构建工具
-RUN apk add --no-cache \
-    xorriso \
-    syslinux \
-    grub \
-    grub-efi \
-    grub-bios \
-    e2fsprogs \
-    parted \
-    util-linux \
-    coreutils \
-    gzip \
-    tar \
-    cpio \
-    findutils \
-    grep \
-    gawk \
-    file \
-    pv \
-    squashfs-tools \
-    cdrtools \
-    linux-lts \
-    musl-dev \
-    gcc \
-    make \
-    binutils \
-    dosfstools \
-    mtools \
-    lsblk \
-    fdisk \
-    eudev \
-    busybox \
-    && rm -rf /var/cache/apk/*
+# 第2组：ISO构建工具
+RUN apk add --no-cache xorriso syslinux
 
-# 安装第三阶段：额外工具
-RUN apk add --no-cache \
-    libisoburn \
-    syslinux-efi \
-    grub-efi-bin \
-    grub-bios-bin \
-    sfdisk \
-    blkid \
-    hdparm \
-    lvm2 \
-    mdadm \
-    cryptsetup \
-    && rm -rf /var/cache/apk/*
+# 第3组：引导工具
+RUN apk add --no-cache grub grub-efi
 
-# 创建必要目录
-RUN mkdir -p /work/scripts
+# 第4组：文件系统工具
+RUN apk add --no-cache e2fsprogs dosfstools mtools
 
+# 第5组：分区和系统工具
+RUN apk add --no-cache parted util-linux fdisk lsblk
+
+# 第6组：压缩和打包工具
+RUN apk add --no-cache gzip tar cpio squashfs-tools cdrtools
+
+# 第7组：其他必要工具
+RUN apk add --no-cache coreutils findutils grep gawk file pv
+
+# 清理缓存
+RUN rm -rf /var/cache/apk/*
+
+# 验证安装
+RUN echo "=== 验证工具安装 ===" && \
+    echo "xorriso: $(xorriso --version 2>/dev/null | head -1)" && \
+    echo "grub-mkstandalone: $(which grub-mkstandalone)" && \
+    echo "syslinux: $(which syslinux)" && \
+    echo "mkisofs: $(which mkisofs 2>/dev/null || echo '使用xorriso替代')" && \
+    echo "=== 验证完成 ==="
+
+# 创建工作目录
 WORKDIR /work
 
 # 复制构建脚本
@@ -143,6 +112,7 @@ RUN chmod +x /work/build-iso.sh
 
 
 ENTRYPOINT ["/work/build-iso.sh"]
+
 
 DOCKERFILE_EOF
 
