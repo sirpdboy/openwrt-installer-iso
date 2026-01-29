@@ -107,6 +107,7 @@ ENTRYPOINT ["/build.sh"]
 
 
 DOCKERFILE_EOF
+docker system prune -a -f
 
 # 更新版本号
 # sed -i "s/ARG ALPINE_VERSION=3.20/ARG ALPINE_VERSION=$ALPINE_VERSION/g" "$DOCKERFILE_PATH"
@@ -121,6 +122,8 @@ echo "=== OpenWRT ISO Builder (Alpine 3.20) ==="
 
 # 输入文件
 INPUT_IMG="${INPUT_IMG:-/mnt/input.img}"
+OUTPUT_DIR="/output"
+ISO_NAME="${ISO_NAME:-openwrt-installer.iso}"
 
 # 检查输入文件
 if [ ! -f "$INPUT_IMG" ]; then
@@ -375,11 +378,11 @@ mknod "$INITRD_DIR/dev/tty" c 5 0
 # 创建必要的目录
 mkdir -p "$INITRD_DIR"/{proc,sys,tmp,mnt,images}
 
-# 复制OpenWRT镜像到initrd（可选）
-if [ -f "$INPUT_IMG" ]; then
-    cp "$INPUT_IMG" "$INITRD_DIR/images/openwrt.img"
-    echo "✅ 复制OpenWRT镜像到initrd"
-fi
+# 复制OpenWRT镜像
+echo "复制OpenWRT镜像..."
+cp "$INPUT_IMG" "$WORK_DIR/iso/images/openwrt.img"
+IMG_SIZE=$(du -h "$INPUT_IMG" | cut -f1)
+echo "✅ 刷机镜像已复制 ($IMG_SIZE)"
 
 # 打包initrd
 echo "打包initrd..."
