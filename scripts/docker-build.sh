@@ -77,9 +77,7 @@ RUN apk update && \
     syslinux \
     mtools \
     dosfstools \
-    grub \
-    grub-efi \
-    e2fsprogs-extra \
+    e2fsprogs \
     parted \
     util-linux \
     util-linux-misc \
@@ -93,14 +91,9 @@ RUN apk update && \
     file \
     curl \
     wget \
-    squashfs-tools \
-    cdrtools \
     linux-firmware-none \
-    musl-dev \
-    gcc \
-    make \
-    binutils \
     && rm -rf /var/cache/apk/*
+
 
 # 尝试安装linux-lts，如果失败则跳过
 RUN apk add --no-cache linux-lts 2>/dev/null || echo "linux-lts not available, will use alternative kernel"
