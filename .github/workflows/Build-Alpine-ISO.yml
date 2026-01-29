@@ -4,24 +4,19 @@ on:
   push:
     branches: [ main, master ]
     paths:
-      - ./scripts/docker-build.sh
+      - 'scripts/docker-build.sh'
       - '.github/workflows/Build-Alpine-ISO.yml'
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
     inputs:
       alpine_version:
-        description: 'Alpine版本 (3.18-3.20)'
+        description: 'Alpine版本 (3.18-3.23)'
         required: true
         default: '3.20'
-      openwrt_url:
-        description: 'OpenWRT镜像URL (可选)'
-        required: false
-        default: ''
 
 env:
   ALPINE_VERSION: ${{ github.event.inputs.alpine_version || '3.20' }}
-  OPENWRT_URL: ${{ github.event.inputs.openwrt_url || '' }}
 
 jobs:
   build-iso:
@@ -103,8 +98,8 @@ jobs:
     
     - name: 构建ISO
       run: |
-        INPUT_IMG="$(pwd)/assets/openwrt.img"
-        OUTPUT_DIR="$(pwd)/output"
+        INPUT_IMG="assets/openwrt.img"
+        OUTPUT_DIR="output"
         ISO_NAME="openwrt-installer-alpine-${{ env.ALPINE_VERSION }}-$(date +%Y%m%d).iso"
         
         echo "构建参数:"
@@ -170,40 +165,6 @@ jobs:
         path: output/*.iso
         retention-days: 7
         if-no-files-found: error
-    
-    - name: 创建Release信息
-      if: github.event_name == 'workflow_dispatch'
-      run: |
-        ISO_FILE="$(ls output/*.iso 2>/dev/null | head -1)"
-        if [ -f "$ISO_FILE" ]; then
-          echo "ISO_FILE=$ISO_FILE" >> $GITHUB_ENV
-          echo "ISO_SIZE=$(ls -lh "$ISO_FILE" | awk '{print $5}')" >> $GITHUB_ENV
-          echo "ISO_NAME=$(basename "$ISO_FILE")" >> $GITHUB_ENV
-          
-          cat << EOF > release-info.md
-          # OpenWRT安装ISO
-          
-          构建时间: $(date)
-          Alpine版本: ${{ env.ALPINE_VERSION }}
-          ISO文件: $(basename "$ISO_FILE")
-          文件大小: $(ls -lh "$ISO_FILE" | awk '{print $5}')
-          
-          ## 功能
-          - 支持BIOS和UEFI双重引导
-          - 极简安装界面
-          - 包含完整的OpenWRT系统
-          
-          ## 使用方法
-          1. 刻录到USB: \`dd if=$ISO_FILE of=/dev/sdX bs=4M status=progress\`
-          2. 虚拟机测试: \`qemu-system-x86_64 -cdrom $ISO_FILE -m 512M\`
-          3. 直接从ISO启动安装
-          
-          ## 验证
-          \`\`\`
-          sha256sum $(basename "$ISO_FILE")
-          \`\`\`
-          EOF
-        fi
     
     - name: 清理临时文件
       if: always()
