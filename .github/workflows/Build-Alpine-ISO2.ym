@@ -1,4 +1,4 @@
-name: Build-Alpine-ISO
+name: Build-Alpine-ISO2
 
 on:
   push:
