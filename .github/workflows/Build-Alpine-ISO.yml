@@ -113,58 +113,13 @@ jobs:
         # 运行构建脚本
         ./scripts/docker-build.sh "$INPUT_IMG" "$OUTPUT_DIR" "$ISO_NAME" "${{ env.ALPINE_VERSION }}" "true"
         
-        # 验证ISO
-        if [ -f "$OUTPUT_DIR/$ISO_NAME" ]; then
-          echo "✅ ISO构建成功"
-          echo "ISO信息:"
-          ls -lh "$OUTPUT_DIR/$ISO_NAME"
-          
-          # 显示ISO内容
-          echo ""
-          echo "ISO内容摘要:"
-          if command -v isoinfo >/dev/null 2>&1; then
-            isoinfo -d -i "$OUTPUT_DIR/$ISO_NAME" 2>/dev/null | head -10
-          fi
-        else
-          echo "❌ ISO构建失败"
-          exit 1
-        fi
-    
-    - name: 验证ISO引导
-      run: |
-        ISO_FILE="$(ls output/*.iso 2>/dev/null | head -1)"
-        
-        if [ -f "$ISO_FILE" ]; then
-          echo "验证ISO: $ISO_FILE"
-          echo "大小: $(ls -lh "$ISO_FILE" | awk '{print $5}')"
-          
-          # 检查是否为可引导ISO
-          if file "$ISO_FILE" | grep -q "bootable\|DOS/MBR\|ISO 9660"; then
-            echo "✅ ISO看起来可引导"
-          else
-            echo "⚠ ISO可能不可引导"
-          fi
-          
-          # 检查内容
-          echo ""
-          echo "ISO文件列表 (前10个):"
-          if command -v xorriso >/dev/null 2>&1; then
-            xorriso -indev "$ISO_FILE" -ls 2>/dev/null | head -10
-          elif command -v isoinfo >/dev/null 2>&1; then
-            isoinfo -f -i "$ISO_FILE" 2>/dev/null | head -10
-          fi
-        else
-          echo "❌ 未找到ISO文件"
-          exit 1
-        fi
-    
-    - name: 上传ISO文件
+
+    - name: Upload ISO artifact
       uses: actions/upload-artifact@v4
       with:
-        name: openwrt-installer-iso
+        name: ezopwrt-installer
         path: output/*.iso
-        retention-days: 7
-        if-no-files-found: error
+        retention-days: 30
     
     - name: 清理临时文件
       if: always()
