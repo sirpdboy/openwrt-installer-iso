@@ -172,7 +172,6 @@ for kernel in /boot/vmlinuz-lts /boot/vmlinuz; do
     fi
 done
 
-
 # 如果还没找到，尝试直接下载
 if [ "$KERNEL_FOUND" = false ]; then
     echo "尝试下载内核..."
@@ -275,7 +274,6 @@ show_disks() {
 # 主安装循环
 while true; do
     show_disks
-    
             echo ""
             read -p "请输入目标磁盘名称 (例如: sda, nvme0n1): " target_disk
             
@@ -465,7 +463,7 @@ echo "[5/8] 🔧 创建BIOS引导配置..."
 
 # 复制syslinux文件
 for file in isolinux.bin ldlinux.c32 libutil.c32 menu.c32 vesamenu.c32; do
-    for dir in /usr/share/syslinux /usr/lib/syslinux /usr/lib/ISOLINUX; do
+    for dir in /usr/share/syslinux /usr/lib/syslinux; do
         if [ -f "$dir/$file" ]; then
             cp "$dir/$file" "$STAGING_DIR/isolinux/"
             break
@@ -474,7 +472,7 @@ for file in isolinux.bin ldlinux.c32 libutil.c32 menu.c32 vesamenu.c32; do
 done
 
 # 查找isohdpfx.bin
-for dir in /usr/share/syslinux /usr/lib/syslinux /usr/lib/ISOLINUX; do
+for dir in /usr/share/syslinux /usr/lib/syslinux; do
     if [ -f "$dir/isohdpfx.bin" ]; then
         cp "$dir/isohdpfx.bin" "$WORK_DIR/isohdpfx.bin"
         echo "✅ 找到isohdpfx.bin"
@@ -638,29 +636,27 @@ else
     echo "❌ ISO创建失败"
     exit 1
 fi
+
+
 BUILD_SCRIPT_EOF
 
-chmod +x scripts/build-iso.sh
+chmod +x scripts/build-iso-alpine.sh
 
 # ========== 构建Docker镜像 ==========
 echo "🔨 构建Docker镜像..."
-IMAGE_NAME="openwrt-iso-builder:latest"
+IMAGE_NAME="openwrt-alpine-builder:latest"
 
-if docker build \
+echo "构建镜像..."
+docker build \
     -f "$DOCKERFILE_PATH" \
     --build-arg ALPINE_VERSION="$ALPINE_VERSION" \
     -t "$IMAGE_NAME" \
-    . 2>&1 | tee /tmp/docker-build.log; then
-    
-    if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
-        echo "✅ Docker镜像构建成功: $IMAGE_NAME"
-    else
-        echo "❌ Docker镜像构建失败"
-        cat /tmp/docker-build.log | tail -20
-        exit 1
-    fi
+    . 2>&1 | tee /tmp/docker-build.log
+
+if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+    echo "✅ Docker镜像构建成功: $IMAGE_NAME"
 else
-    echo "❌ Docker构建过程失败"
+    echo "❌ Docker镜像构建失败"
     cat /tmp/docker-build.log | tail -20
     exit 1
 fi
@@ -669,12 +665,13 @@ fi
 echo "🚀 运行Docker容器构建ISO..."
 
 set +e
+echo "启动构建容器..."
 docker run --rm \
-    --name openwrt-iso-builder \
+    --name openwrt-alpine-builder \
+    --privileged \
     -v "$IMG_ABS:/mnt/input.img:ro" \
     -v "$OUTPUT_ABS:/output:rw" \
     -e INPUT_IMG="/mnt/input.img" \
-    -e MINIMAL="$MINIMAL" \
     "$IMAGE_NAME"
 
 CONTAINER_EXIT=$?
