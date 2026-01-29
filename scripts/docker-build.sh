@@ -201,8 +201,8 @@ if [ "$KERNEL_FOUND" = false ]; then
 fi
 echo ""
 
-# ========== 第3步：创建功能完整的最小化initrd ==========
-echo "[3/8] 🔧 创建功能完整的最小化initrd..."
+# ========== 第3步：创建initrd ==========
+echo "[3/8] 🔧 创建initrd..."
 
 INITRD_DIR="/tmp/initrd_complete_$(date +%s)"
 rm -rf "$INITRD_DIR"
@@ -211,7 +211,7 @@ mkdir -p "$INITRD_DIR"
 echo "创建完整的init脚本..."
 cat > "$INITRD_DIR/init" << 'INIT_EOF'
 #!/bin/busybox sh
-# OpenWRT刷机系统init - 完整功能版
+
 
 # 挂载必要的文件系统
 mount -t proc proc /proc
@@ -234,8 +234,8 @@ clear
 cat << "HEADER"
 
 ╔══════════════════════════════════════════════════╗
-║           OpenWRT 刷机安装系统                   ║
-║         (功能完整版 - 最小化initrd)              ║
+║         OpenWRT Installation System              ║
+║             (Alpine 3.20 based)                  ║
 ╚══════════════════════════════════════════════════╝
 
 HEADER
@@ -275,27 +275,6 @@ show_disks() {
 while true; do
     show_disks
     
-    echo ""
-    echo "🔧 安装菜单:"
-    echo "  1) 查看磁盘详细信息 (fdisk -l)"
-    echo "  2) 刷写OpenWRT到磁盘"
-    echo "  3) 进入Shell (调试)"
-    echo "  4) 重启系统"
-    echo ""
-    read -p "请选择 [1-4]: " choice
-    
-    case "$choice" in
-        1)
-            echo ""
-            echo "📋 磁盘详细信息:"
-            echo "----------------"
-            if command -v fdisk >/dev/null 2>&1; then
-                fdisk -l 2>/dev/null | head -30
-            else
-                echo "fdisk不可用"
-            fi
-            ;;
-        2)
             echo ""
             read -p "请输入目标磁盘名称 (例如: sda, nvme0n1): " target_disk
             
@@ -356,24 +335,7 @@ while true; do
             echo "正在重启..."
             reboot -f
             ;;
-        3)
-            echo ""
-            echo "进入shell..."
-            echo "可用命令: fdisk, lsblk, dd, pv, mount, ls, cat, echo等"
-            echo "输入 'exit' 返回安装菜单"
-            echo ""
-            exec /bin/sh
-            ;;
-        4)
-            echo ""
-            echo "重启系统..."
-            reboot -f
-            ;;
-        *)
-            echo ""
-            echo "❌ 无效选择"
-            ;;
-    esac
+        
 done
 INIT_EOF
 
@@ -429,7 +391,7 @@ for tool in "${TOOLS_TO_COPY[@]}"; do
     fi
 done
 
-# 3. 复制必要的库文件（最小化）
+# 3. 复制必要的库文件
 echo "复制必要的库文件..."
 mkdir -p "$INITRD_DIR/lib"
 # 只复制必要的库
@@ -501,7 +463,7 @@ echo "[5/8] 🔧 创建BIOS引导配置..."
 
 # 复制syslinux文件
 for file in isolinux.bin ldlinux.c32 libutil.c32 menu.c32 vesamenu.c32; do
-    for dir in /usr/share/syslinux /usr/lib/syslinux; do
+    for dir in /usr/share/syslinux /usr/lib/syslinux /usr/lib/ISOLINUX; do
         if [ -f "$dir/$file" ]; then
             cp "$dir/$file" "$STAGING_DIR/isolinux/"
             break
@@ -510,7 +472,7 @@ for file in isolinux.bin ldlinux.c32 libutil.c32 menu.c32 vesamenu.c32; do
 done
 
 # 查找isohdpfx.bin
-for dir in /usr/share/syslinux /usr/lib/syslinux; do
+for dir in /usr/share/syslinux /usr/lib/syslinux /usr/lib/ISOLINUX; do
     if [ -f "$dir/isohdpfx.bin" ]; then
         cp "$dir/isohdpfx.bin" "$WORK_DIR/isohdpfx.bin"
         echo "✅ 找到isohdpfx.bin"
@@ -522,7 +484,7 @@ done
 cat > "$STAGING_DIR/isolinux/isolinux.cfg" << 'ISOLINUX_CFG_EOF'
 DEFAULT vesamenu.c32
 PROMPT 0
-TIMEOUT 100
+TIMEOUT 10
 ONTIMEOUT install
 
 MENU TITLE OpenWRT刷机安装系统
@@ -536,24 +498,11 @@ MENU COLOR timeout_msg  37;40   #80ffffff #00000000 std
 MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
 
 LABEL install
-  MENU LABEL ^刷写OpenWRT系统
+  MENU LABEL Install OpenWRT
   MENU DEFAULT
   KERNEL /live/vmlinuz
   APPEND initrd=/live/initrd.img console=tty0 console=ttyS0,115200n8 rw quiet
 
-LABEL debug
-  MENU LABEL ^调试模式
-  KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd.img console=tty0 console=ttyS0,115200n8 rw init=/bin/sh
-
-LABEL shell
-  MENU LABEL ^应急Shell
-  KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd.img console=tty0 init=/bin/sh
-
-LABEL local
-  MENU LABEL 从本地磁盘启动
-  LOCALBOOT 0x80
 ISOLINUX_CFG_EOF
 
 echo "✅ BIOS引导配置完成"
@@ -566,24 +515,11 @@ cat > "$STAGING_DIR/boot/grub/grub.cfg" << 'GRUB_CFG_EOF'
 set timeout=10
 set default=0
 
-menuentry "刷写OpenWRT系统 (UEFI模式)" {
+menuentry "Install OpenWRT" {
     linux /live/vmlinuz console=tty0 console=ttyS0,115200n8 rw quiet
     initrd /live/initrd.img
 }
 
-menuentry "调试模式" {
-    linux /live/vmlinuz console=tty0 console=ttyS0,115200n8 rw init=/bin/sh
-    initrd /live/initrd.img
-}
-
-menuentry "应急Shell" {
-    linux /live/vmlinuz console=tty0 init=/bin/sh
-    initrd /live/initrd.img
-}
-
-menuentry "从本地磁盘启动" {
-    exit
-}
 GRUB_CFG_EOF
 
 # 生成GRUB EFI文件（如果可用）
