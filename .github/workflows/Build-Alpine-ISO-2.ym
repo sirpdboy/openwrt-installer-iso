@@ -1,11 +1,11 @@
-name: Build-Alpine-ISO2
+name: Build-Alpine-ISO-2
 
 on:
   push:
     branches: [ main, master ]
     paths:
       - 'scripts/docker-build2.sh'
-      - '.github/workflows/Build-Alpine-ISO2.yml'
+      - '.github/workflows/Build-Alpine-ISO-2.yml'
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
