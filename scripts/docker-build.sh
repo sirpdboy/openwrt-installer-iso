@@ -167,7 +167,6 @@ for kernel_path in /boot/vmlinuz-lts /boot/vmlinuz-generic /boot/vmlinuz; do
         cp "$kernel_path" "$STAGING_DIR/live/vmlinuz"
         KERNEL_FOUND=true
         echo "✅ 找到内核: "$kernel_path"
-        # 验证内核文件
         KERNEL_SIZE=$(du -h "$STAGING_DIR/live/vmlinuz" | cut -f1)
         echo "✅ 使用内核: $(basename "$kernel_path") ($KERNEL_SIZE)"
         break
