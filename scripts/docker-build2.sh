@@ -520,9 +520,6 @@ if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
     fi
     
     rm -rf "$INITRD_DIR"
-    
-    umount "$MOUNT_DIR" 2>/dev/null || true
-    rm -rf "$MOUNT_DIR"
 fi
 	
         umount "$MOUNT_DIR"
