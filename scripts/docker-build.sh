@@ -613,72 +613,54 @@ echo ""
 echo "[8/8] 🔍 验证构建结果..."
 
 if [ -f "/output/openwrt.iso" ]; then
-    ISO_SIZE=$(du -h "/output/openwrt.iso" 2>/dev/null | cut -f1 || echo "未知")
-    echo "✅ ✅ ✅ ISO构建成功! ✅ ✅ ✅"
+    ISO_SIZE=$(du -h "/output/openwrt.iso" | cut -f1)
+    echo "✅ ISO创建成功! ($ISO_SIZE)"
+    
+    # 显示ISO信息
     echo ""
     echo "📊 ISO信息:"
     echo "  文件: /output/openwrt.iso"
     echo "  大小: $ISO_SIZE"
-    echo ""
     
-    # 检查ISO
-    if command -v file >/dev/null 2>&1; then
-        FILE_INFO=$(file "/output/openwrt.iso" 2>/dev/null || echo "无法获取文件信息")
-        echo "类型: $FILE_INFO"
+    if which file >/dev/null 2>&1; then
+        file "/output/openwrt.iso"
     fi
     
-    # 创建构建信息
-    cat > "/output/build-info.txt" << EOF
-OpenWRT Alpine Installer
-=======================
-构建时间: $(date)
-ISO大小:  $ISO_SIZE
-引导支持: $( [ -f "$EFI_IMG_PATH" ] && echo "BIOS + UEFI" || echo "BIOS only" )
-
-包含:
-  - OpenWRT镜像: images/openwrt.img
-  - Linux内核:   live/vmlinuz
-  - Initramfs:   live/initrd.img
-
-使用方法:
-  1. sudo dd if=openwrt.iso of=/dev/sdX bs=4M status=progress
-  2. 从USB启动
-  3. 选择安装目标
-
-注意: 安装会完全擦除目标磁盘!
-EOF
-    
-    echo "✅ 构建信息保存到: /output/build-info.txt"
-    
-    # 清理
-    rm -rf "$WORK_DIR"
+    # 测试ISO结构
+    echo ""
+    echo "📁 ISO内容:"
+    isoinfo -f -i "/output/openwrt.iso" 2>/dev/null | head -20 || \
+    xorriso -indev "/output/openwrt.iso" -ls 2>/dev/null | head -20 || \
+    echo "无法列出ISO内容"
     
     exit 0
 else
     echo "❌ ISO创建失败"
     exit 1
 fi
-
-
 BUILD_SCRIPT_EOF
 
-chmod +x scripts/build-iso-alpine.sh
+chmod +x scripts/build-iso.sh
 
 # ========== 构建Docker镜像 ==========
 echo "🔨 构建Docker镜像..."
-IMAGE_NAME="openwrt-alpine-builder:latest"
+IMAGE_NAME="openwrt-iso-builder:latest"
 
-echo "构建镜像..."
-docker build \
+if docker build \
     -f "$DOCKERFILE_PATH" \
     --build-arg ALPINE_VERSION="$ALPINE_VERSION" \
     -t "$IMAGE_NAME" \
-    . 2>&1 | tee /tmp/docker-build.log
-
-if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
-    echo "✅ Docker镜像构建成功: $IMAGE_NAME"
+    . 2>&1 | tee /tmp/docker-build.log; then
+    
+    if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+        echo "✅ Docker镜像构建成功: $IMAGE_NAME"
+    else
+        echo "❌ Docker镜像构建失败"
+        cat /tmp/docker-build.log | tail -20
+        exit 1
+    fi
 else
-    echo "❌ Docker镜像构建失败"
+    echo "❌ Docker构建过程失败"
     cat /tmp/docker-build.log | tail -20
     exit 1
 fi
@@ -687,13 +669,12 @@ fi
 echo "🚀 运行Docker容器构建ISO..."
 
 set +e
-echo "启动构建容器..."
 docker run --rm \
-    --name openwrt-alpine-builder \
-    --privileged \
+    --name openwrt-iso-builder \
     -v "$IMG_ABS:/mnt/input.img:ro" \
     -v "$OUTPUT_ABS:/output:rw" \
     -e INPUT_IMG="/mnt/input.img" \
+    -e MINIMAL="$MINIMAL" \
     "$IMAGE_NAME"
 
 CONTAINER_EXIT=$?
@@ -716,30 +697,32 @@ if [ -f "$OUTPUT_ISO" ]; then
     echo "📊 大小: $ISO_SIZE"
     echo ""
     
-    # 验证ISO
-    echo "🔍 验证信息:"
-    if command -v file >/dev/null 2>&1; then
+    # 验证引导能力
+    echo "🔍 引导验证:"
+    if which file >/dev/null 2>&1; then
         FILE_INFO=$(file "$FINAL_ISO")
         echo "文件类型: $FILE_INFO"
         
-        if echo "$FILE_INFO" | grep -q "bootable\|DOS/MBR"; then
-            echo "✅ ISO可引导"
+        # 检查引导标记
+        if echo "$FILE_INFO" | grep -q "bootable" || echo "$FILE_INFO" | grep -q "ISO 9660"; then
+            echo "✅ 看起来是可引导ISO"
         fi
     fi
     
     # 检查是否为混合ISO
-    echo ""
-    echo "💻 引导支持:"
-    if command -v xorriso >/dev/null 2>&1; then
-        xorriso -indev "$FINAL_ISO" -check_media 2>&1 | grep -i "efi\|uefi" && \
-            echo "✅ 支持UEFI引导" || echo "⚠ 仅支持BIOS引导"
+    if which dd >/dev/null 2>&1; then
+        echo ""
+        echo "检查引导扇区:"
+        dd if="$FINAL_ISO" bs=1 count=64 2>/dev/null | xxd | grep -q "55 AA" && \
+            echo "✅ 检测到BIOS引导扇区"
     fi
     
     echo ""
     echo "🚀 使用方法:"
     echo "   1. 虚拟机测试: qemu-system-x86_64 -cdrom '$FINAL_ISO' -m 512M"
     echo "   2. 制作USB: sudo dd if='$FINAL_ISO' of=/dev/sdX bs=4M status=progress oflag=sync"
-    echo "   3. 直接引导: 从USB或CD/DVD启动"
+    echo "   3. 刻录光盘: burn '$FINAL_ISO'"
+    echo "   4. 直接使用: 将openwrt.img放在/images/目录下"
     
     exit 0
 else
@@ -747,8 +730,13 @@ else
     echo "❌ ISO构建失败"
     
     # 显示容器日志
-    echo "📋 容器日志:"
-    docker logs --tail 100 openwrt-alpine-builder 2>/dev/null || echo "无法获取容器日志"
+    echo "📋 容器日志 (最后50行):"
+    docker logs --tail 50 openwrt-iso-builder 2>/dev/null || echo "无法获取容器日志"
+    
+    # 检查输出目录
+    echo ""
+    echo "📁 输出目录内容:"
+    ls -la "$OUTPUT_ABS/" 2>/dev/null || echo "输出目录不存在"
     
     exit 1
 fi
