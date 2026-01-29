@@ -197,15 +197,17 @@ mkdir -p "$OUTPUT_DIR"
 mkdir -p "$STAGING_DIR"/{EFI/boot,boot/grub,isolinux,live,images}
 echo ""
 
-
 create_initrd() {
+    local initrd_dir="$1"
+    
     # 创建极简的 init 脚本
-    cat > "$1/init" << 'INIT_EOF'
-#!/bin/busybox sh
+    cat > "$initrd_dir/init" << 'INIT_EOF'
+#!/bin/sh
+# OpenWRT 极简安装程序
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
-# 挂载虚拟文件系统
+# 基本初始化
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || mdev -s
@@ -214,13 +216,12 @@ mount -t tmpfs tmpfs /run
 
 # 设置控制台
 exec >/dev/console 2>&1 </dev/console
-setconsole
 
 # 加载必要模块
+echo "加载必要模块..."
 for mod in isofs cdrom sr_mod loop fat vfat; do
-    modprobe -q $mod 2>/dev/null || true
+    modprobe $mod 2>/dev/null || true
 done
-
 
 # 挂载安装介质
 echo "挂载安装介质..."
@@ -232,7 +233,7 @@ done
 
 # 查找 OpenWRT 镜像
 find_image() {
-    for path in /mnt/images/openwrt.img /mnt/openwrt.img; do
+    for path in /mnt/images/openwrt.img /mnt/openwrt.img /images/openwrt.img; do
         if [ -f "$path" ]; then
             echo "$path"
             return 0
@@ -241,12 +242,12 @@ find_image() {
     return 1
 }
 
-# 显示中文界面（使用基本ASCII字符）
+# 显示界面
 show_header() {
     clear
-    echo "================================================"
-    echo "            OpenWRT 系统安装程序"
-    echo "================================================"
+    echo "========================================"
+    echo "      OpenWRT 系统安装程序"
+    echo "========================================"
     echo ""
 }
 
@@ -257,22 +258,16 @@ main_install() {
     show_header
     
     # 第一步：输入目标磁盘
-    echo "输入目标磁盘"
+    echo "第一步：输入目标磁盘"
     echo "-------------------"
     echo ""
     echo "可用磁盘列表:"
     echo "-------------"
     
     # 简单列出磁盘
-    for dev in /dev/sd[a-z] /dev/nvme[0-9]n[0-9] /dev/vd[a-z]; do
+    for dev in /dev/sd[a-z] /dev/nvme[0-9]n[0-9]; do
         if [ -b "$dev" ]; then
-            size=$(blockdev --getsize64 "$dev" 2>/dev/null || echo "未知")
-            if [ "$size" != "未知" ]; then
-                size=$((size/1024/1024/1024))
-                echo "  $dev - ${size}GB"
-            else
-                echo "  $dev"
-            fi
+            echo "  $dev"
         fi
     done
     
@@ -300,6 +295,7 @@ main_install() {
     
     # 第二步：确认安装
     show_header
+    echo "第二步：确认安装"
     echo "---------------"
     echo ""
     echo "您选择了磁盘：$disk_name"
@@ -329,7 +325,8 @@ main_install() {
     if command -v pv >/dev/null 2>&1; then
         pv "$img_path" | dd of="$disk_name" bs=4M
     else
-        dd if="$img_path" of="$disk_name" bs=4M status=progress
+        dd if="$img_path" of="$disk_name" bs=4M status=progress 2>/dev/null || \
+        dd if="$img_path" of="$disk_name" bs=4M
     fi
     
     if [ $? -eq 0 ]; then
@@ -390,9 +387,8 @@ main() {
 main
 INIT_EOF
 
-    chmod +x "$1/init"
+    chmod +x "$initrd_dir/init"
 }
-
 
 # ========== 步骤3: 获取Alpine内核和initramfs ==========
 log_info "[3/10] 获取Alpine内核和initramfs..."
@@ -459,30 +455,75 @@ if [ -f "$ISO_TMP" ] && [ -s "$ISO_TMP" ]; then
             log_success "提取内核: vmlinuz"
         fi
         
-        # 复制initramfs
-        if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
-            cp "$MOUNT_DIR/boot/initramfs-lts" "$STAGING_DIR/live/initrd"
-            log_success "提取initramfs: initramfs-lts"
-        elif [ -f "$MOUNT_DIR/boot/initramfs" ]; then
-            cp "$MOUNT_DIR/boot/initramfs" "$STAGING_DIR/live/initrd"
-            log_success "提取initramfs: initramfs"
-        fi
-        # 解压 initramfs
-        INITRD_DIR="$WORK_DIR/initrd_extract"
-        rm -rf "$INITRD_DIR"
-        mkdir -p "$INITRD_DIR"
+        
+	# 提取 initramfs
+if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
+    log_info "使用 Alpine initramfs 并修改..."
     
-        cd "$INITRD_DIR"
-        gzip -dc "$STAGING_DIR/live/initrd" | cpio -id
+    # 解压 initramfs
+    INITRD_DIR="$WORK_DIR/initrd_extract"
+    rm -rf "$INITRD_DIR"
+    mkdir -p "$INITRD_DIR"
+    
+    log_info "解压 initramfs..."
+    cd "$INITRD_DIR"
+    
+    # 尝试解压
+    if gzip -dc "$MOUNT_DIR/boot/initramfs-lts" 2>/dev/null | cpio -id 2>/dev/null; then
+        log_success "解压成功"
+    else
+        log_warning "标准解压失败，尝试其他方法..."
+        # 尝试直接复制
+        cp "$MOUNT_DIR/boot/initramfs-lts" "$STAGING_DIR/live/initrd"
+        # 使用 create_minimal_initrd 创建
+        create_minimal_initrd "$STAGING_DIR/live/initrd"
         cd - >/dev/null
-
-        create_initrd $INITRD_DIR
-        # 重新打包 initrd
-        cd "$INITRD_DIR"
-        find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
-        cd - >/dev/null
-        rm -rf "$INITRD_DIR"
-        log_success "使用修改后的 Alpine initramfs"
+        umount "$MOUNT_DIR" 2>/dev/null || true
+        rm -rf "$MOUNT_DIR"
+        continue
+    fi
+    
+    cd - >/dev/null
+    
+    # 备份原来的 init
+    if [ -f "$INITRD_DIR/init" ]; then
+        mv "$INITRD_DIR/init" "$INITRD_DIR/init.alpine"
+        log_info "备份原 init 脚本"
+    fi
+    
+    # 写入我们简化的 init 脚本
+    create_initrd "$INITRD_DIR"
+    
+    # 确保有必要的工具
+    if [ ! -f "$INITRD_DIR/busybox" ] && command -v busybox >/dev/null 2>&1; then
+        cp $(which busybox) "$INITRD_DIR/busybox"
+    fi
+    
+    # 确保有设备节点
+    if [ ! -c "$INITRD_DIR/dev/console" ]; then
+        mkdir -p "$INITRD_DIR/dev"
+        mknod "$INITRD_DIR/dev/console" c 5 1 2>/dev/null || true
+        mknod "$INITRD_DIR/dev/null" c 1 3 2>/dev/null || true
+    fi
+    
+    log_info "重新打包 initrd..."
+    cd "$INITRD_DIR"
+    find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
+    cd - >/dev/null
+    
+    # 验证
+    if [ -f "$STAGING_DIR/live/initrd" ] && [ -s "$STAGING_DIR/live/initrd" ]; then
+        log_success "修改后的 initrd 创建成功"
+    else
+        log_warning "修改失败，使用简单 initrd"
+        create_minimal_initrd "$STAGING_DIR/live/initrd"
+    fi
+    
+    rm -rf "$INITRD_DIR"
+    
+    umount "$MOUNT_DIR" 2>/dev/null || true
+    rm -rf "$MOUNT_DIR"
+fi
 	
         umount "$MOUNT_DIR"
         rm -rf "$MOUNT_DIR"
@@ -517,50 +558,60 @@ create_minimal_initrd() {
     
     rm -rf "$initrd_dir"
     mkdir -p "$initrd_dir"
-        # 复制 busybox
-
-        create_initrd $initrd_dir
+    
+    # 创建 init 脚本
+    create_initrd "$initrd_dir"
+    
+    # 复制必要的工具
     if command -v busybox >/dev/null 2>&1; then
         cp $(which busybox) "$initrd_dir/busybox"
         cd "$initrd_dir"
         
         # 创建必要的符号链接
-        ln -s busybox sh
-        ln -s busybox mount
-        ln -s busybox umount
-        ln -s busybox dd
-        ln -s busybox sync
-        ln -s busybox reboot
-        ln -s busybox modprobe
-        ln -s busybox sleep
-        ln -s busybox echo
-        ln -s busybox cat
-        ln -s busybox clear
+        for app in sh mount umount dd sync reboot poweroff modprobe \
+                   mdev sleep echo cat clear ls read; do
+            ln -s busybox "$app" 2>/dev/null || true
+        done
         
         cd - >/dev/null
     fi
-    for tool in fdisk lsblk blockdev pv; do
-        if command -v "$tool" >/dev/null 2>&1; then
-            cp $(which "$tool") "$initrd_dir/" 2>/dev/null || true
-        fi
-    done 
-    # 创建必要的设备节点
-    mknod "$initrd_dir/dev/console" c 5 1
-    mknod "$initrd_dir/dev/null" c 1 3
-    mknod "$initrd_dir/dev/zero" c 1 5
-    mknod "$initrd_dir/dev/random" c 1 8
-    mknod "$initrd_dir/dev/urandom" c 1 9
     
-    # 创建目录结构
-    mkdir -p "$initrd_dir"/{proc,sys,dev,tmp,run,mnt,bin,sbin}
-   
+    # 复制其他必要工具
+    if command -v pv >/dev/null 2>&1; then
+        cp $(which pv) "$initrd_dir/" 2>/dev/null || true
+    fi
+    
+    # 创建设备节点（更完整）
+    mkdir -p "$initrd_dir/dev"
+    mknod "$initrd_dir/dev/console" c 5 1 2>/dev/null || true
+    mknod "$initrd_dir/dev/null" c 1 3 2>/dev/null || true
+    mknod "$initrd_dir/dev/zero" c 1 5 2>/dev/null || true
+    mknod "$initrd_dir/dev/tty" c 5 0 2>/dev/null || true
+    mknod "$initrd_dir/dev/tty0" c 4 0 2>/dev/null || true
+    mknod "$initrd_dir/dev/tty1" c 4 1 2>/dev/null || true
+    
+    # 创建设备目录
+    mkdir -p "$initrd_dir/dev/shm"
+    mkdir -p "$initrd_dir/dev/pts"
+    
+    # 创建必要的目录结构
+    mkdir -p "$initrd_dir"/{proc,sys,dev,tmp,run,mnt,bin,sbin,usr/bin,usr/sbin}
+    
     # 打包 initrd
     cd "$initrd_dir"
     find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$initrd_path"
     cd - >/dev/null
     
+    # 检查 initrd 是否创建成功
+    if [ -f "$initrd_path" ] && [ -s "$initrd_path" ]; then
+        log_success "initrd 创建成功: $(du -h "$initrd_path" | cut -f1)"
+    else
+        log_error "initrd 创建失败"
+        exit 1
+    fi
+    
+    # 清理
     rm -rf "$initrd_dir"
-    log_success "极简 initrd 创建完成: $(du -h "$initrd_path" | cut -f1)"
 }
 
 # ========== 步骤5: 复制OpenWRT镜像 ==========
