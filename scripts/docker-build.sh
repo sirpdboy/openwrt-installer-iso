@@ -197,97 +197,6 @@ mkdir -p "$OUTPUT_DIR"
 mkdir -p "$STAGING_DIR"/{EFI/boot,boot/grub,isolinux,live,images}
 echo ""
 
-# ========== 步骤3: 获取Alpine内核和initramfs ==========
-log_info "[3/10] 获取Alpine内核和initramfs..."
-
-# 下载Alpine内核和initramfs
-log_info "下载Alpine内核和initramfs..."
-ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
-ALPINE_BRANCH="v${ALPINE_VERSION}"
-ALPINE_ARCH="x86_64"
-
-# 下载内核
-KERNEL_URL="${ALPINE_MIRROR}/${ALPINE_BRANCH}/releases/${ALPINE_ARCH}/latest-releases.yaml"
-log_info "获取最新版本信息..."
-
-# 尝试多种方式获取最新版本
-if command -v curl >/dev/null 2>&1; then
-    LATEST_ISO=$(curl -s "$KERNEL_URL" | grep -o "alpine-standard-.*-x86_64.iso" | head -1)
-    if [ -z "$LATEST_ISO" ]; then
-        LATEST_ISO="alpine-standard-${ALPINE_VERSION}.9-x86_64.iso"
-    fi
-    LATEST_VERSION=$(echo "$LATEST_ISO" | sed 's/alpine-standard-//' | sed 's/-x86_64.iso//')
-else
-    LATEST_VERSION="${ALPINE_VERSION}.9"
-    LATEST_ISO="alpine-standard-${LATEST_VERSION}-x86_64.iso"
-fi
-
-log_info "使用Alpine版本: $LATEST_VERSION"
-
-# 下载mini ISO来提取内核
-MINI_ISO_URL="${ALPINE_MIRROR}/${ALPINE_BRANCH}/releases/${ALPINE_ARCH}/${LATEST_ISO}"
-log_info "下载Alpine mini ISO: $MINI_ISO_URL"
-
-ISO_TMP="$WORK_DIR/alpine-mini.iso"
-if command -v curl >/dev/null 2>&1; then
-    curl -L -o "$ISO_TMP" "$MINI_ISO_URL" || {
-        log_warning "下载mini ISO失败，使用本地内核..."
-        ISO_TMP=""
-    }
-elif command -v wget >/dev/null 2>&1; then
-    wget -O "$ISO_TMP" "$MINI_ISO_URL" || {
-        log_warning "下载mini ISO失败，使用本地内核..."
-        ISO_TMP=""
-    }
-else
-    log_warning "没有找到curl或wget，使用本地内核..."
-    ISO_TMP=""
-fi
-
-# 提取内核和initramfs
-if [ -f "$ISO_TMP" ] && [ -s "$ISO_TMP" ]; then
-    log_info "从mini ISO提取内核..."
-    
-    # 挂载ISO
-    MOUNT_DIR="$WORK_DIR/iso_mount"
-    mkdir -p "$MOUNT_DIR"
-    
-    if mount -o loop "$ISO_TMP" "$MOUNT_DIR" 2>/dev/null; then
-        # 复制内核
-        if [ -f "$MOUNT_DIR/boot/vmlinuz-lts" ]; then
-            cp "$MOUNT_DIR/boot/vmlinuz-lts" "$STAGING_DIR/live/vmlinuz"
-            log_success "提取内核: vmlinuz-lts"
-        elif [ -f "$MOUNT_DIR/boot/vmlinuz" ]; then
-            cp "$MOUNT_DIR/boot/vmlinuz" "$STAGING_DIR/live/vmlinuz"
-            log_success "提取内核: vmlinuz"
-        fi
-        
-
-        umount "$MOUNT_DIR"
-        rm -rf "$MOUNT_DIR"
-    else
-        log_warning "无法挂载ISO，使用备用方法..."
-    fi
-fi
-
-# 如果提取失败，使用本地内核或创建简单initrd
-if [ ! -f "$STAGING_DIR/live/vmlinuz" ]; then
-    log_info "使用本地内核..."
-    # 查找本地内核
-    if [ -f /boot/vmlinuz-lts ]; then
-        cp /boot/vmlinuz-lts "$STAGING_DIR/live/vmlinuz"
-    elif [ -f /boot/vmlinuz ]; then
-        cp /boot/vmlinuz "$STAGING_DIR/live/vmlinuz"
-    else
-        log_error "未找到内核文件"
-        exit 1
-    fi
-fi
-
-if [ ! -f "$STAGING_DIR/live/initrd" ]; then
-    log_info "创建最小initrd..."
-    create_minimal_initrd "$STAGING_DIR/live/initrd"
-fi
 
 # ========== 步骤4: 创建最小initrd函数 ==========
 create_minimal_initrd() {
@@ -694,6 +603,97 @@ INIT_EOF
     rm -rf "$initrd_dir"
     log_success "中文 initrd 创建完成"
 }
+# ========== 步骤3: 获取Alpine内核和initramfs ==========
+log_info "[3/10] 获取Alpine内核和initramfs..."
+
+# 下载Alpine内核和initramfs
+log_info "下载Alpine内核和initramfs..."
+ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
+ALPINE_BRANCH="v${ALPINE_VERSION}"
+ALPINE_ARCH="x86_64"
+
+# 下载内核
+KERNEL_URL="${ALPINE_MIRROR}/${ALPINE_BRANCH}/releases/${ALPINE_ARCH}/latest-releases.yaml"
+log_info "获取最新版本信息..."
+
+# 尝试多种方式获取最新版本
+if command -v curl >/dev/null 2>&1; then
+    LATEST_ISO=$(curl -s "$KERNEL_URL" | grep -o "alpine-standard-.*-x86_64.iso" | head -1)
+    if [ -z "$LATEST_ISO" ]; then
+        LATEST_ISO="alpine-standard-${ALPINE_VERSION}.9-x86_64.iso"
+    fi
+    LATEST_VERSION=$(echo "$LATEST_ISO" | sed 's/alpine-standard-//' | sed 's/-x86_64.iso//')
+else
+    LATEST_VERSION="${ALPINE_VERSION}.9"
+    LATEST_ISO="alpine-standard-${LATEST_VERSION}-x86_64.iso"
+fi
+
+log_info "使用Alpine版本: $LATEST_VERSION"
+
+# 下载mini ISO来提取内核
+MINI_ISO_URL="${ALPINE_MIRROR}/${ALPINE_BRANCH}/releases/${ALPINE_ARCH}/${LATEST_ISO}"
+log_info "下载Alpine mini ISO: $MINI_ISO_URL"
+
+ISO_TMP="$WORK_DIR/alpine-mini.iso"
+if command -v curl >/dev/null 2>&1; then
+    curl -L -o "$ISO_TMP" "$MINI_ISO_URL" || {
+        log_warning "下载mini ISO失败，使用本地内核..."
+        ISO_TMP=""
+    }
+elif command -v wget >/dev/null 2>&1; then
+    wget -O "$ISO_TMP" "$MINI_ISO_URL" || {
+        log_warning "下载mini ISO失败，使用本地内核..."
+        ISO_TMP=""
+    }
+else
+    log_warning "没有找到curl或wget，使用本地内核..."
+    ISO_TMP=""
+fi
+
+# 提取内核和initramfs
+if [ -f "$ISO_TMP" ] && [ -s "$ISO_TMP" ]; then
+    log_info "从mini ISO提取内核..."
+    
+    # 挂载ISO
+    MOUNT_DIR="$WORK_DIR/iso_mount"
+    mkdir -p "$MOUNT_DIR"
+    
+    if mount -o loop "$ISO_TMP" "$MOUNT_DIR" 2>/dev/null; then
+        # 复制内核
+        if [ -f "$MOUNT_DIR/boot/vmlinuz-lts" ]; then
+            cp "$MOUNT_DIR/boot/vmlinuz-lts" "$STAGING_DIR/live/vmlinuz"
+            log_success "提取内核: vmlinuz-lts"
+        elif [ -f "$MOUNT_DIR/boot/vmlinuz" ]; then
+            cp "$MOUNT_DIR/boot/vmlinuz" "$STAGING_DIR/live/vmlinuz"
+            log_success "提取内核: vmlinuz"
+        fi
+        
+
+        umount "$MOUNT_DIR"
+        rm -rf "$MOUNT_DIR"
+    else
+        log_warning "无法挂载ISO，使用备用方法..."
+    fi
+fi
+
+# 如果提取失败，使用本地内核或创建简单initrd
+if [ ! -f "$STAGING_DIR/live/vmlinuz" ]; then
+    log_info "使用本地内核..."
+    # 查找本地内核
+    if [ -f /boot/vmlinuz-lts ]; then
+        cp /boot/vmlinuz-lts "$STAGING_DIR/live/vmlinuz"
+    elif [ -f /boot/vmlinuz ]; then
+        cp /boot/vmlinuz "$STAGING_DIR/live/vmlinuz"
+    else
+        log_error "未找到内核文件"
+        exit 1
+    fi
+fi
+
+if [ ! -f "$STAGING_DIR/live/initrd" ]; then
+    log_info "创建最小initrd..."
+    create_minimal_initrd "$STAGING_DIR/live/initrd"
+fi
 
 # ========== 步骤5: 复制OpenWRT镜像 ==========
 log_info "[4/10] 复制OpenWRT镜像..."
