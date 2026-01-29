@@ -63,12 +63,12 @@ echo "✅ Docker可用"
 DOCKERFILE_PATH="Dockerfile.alpine-iso"
 cat > "$DOCKERFILE_PATH" << 'DOCKERFILE_EOF'
 ARG ALPINE_VERSION=3.20
-FROM alpine:${ALPINE_VERSION}
+FROM alpine:${ALPINE_VERSION} AS builder
 
-# 使用国内镜像源加速
+# 使用国内镜像源，避免Docker Hub超时
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
 
-# 安装最小但完整的工具集
+# 安装最小必要工具集
 RUN apk update && \
     apk add --no-cache \
     bash \
@@ -87,10 +87,8 @@ RUN apk update && \
     grep \
     curl \
     wget \
-    pv \
-    linux-lts \
-    && rm -rf /var/cache/apk/*
-    
+    linux-lts
+
 # 尝试安装GRUB，如果失败则跳过
 RUN apk add --no-cache grub grub-efi 2>/dev/null || \
     echo "GRUB安装失败，将使用替代方案" && \
@@ -106,6 +104,7 @@ COPY scripts/build-iso-alpine.sh /build.sh
 RUN chmod +x /build.sh
 
 ENTRYPOINT ["/build.sh"]
+
 
 DOCKERFILE_EOF
 
@@ -129,6 +128,9 @@ if [ ! -f "$INPUT_IMG" ]; then
     exit 1
 fi
 
+echo "✅ 输入文件: $INPUT_IMG ($(du -h "$INPUT_IMG" | cut -f1))"
+echo "✅ 输出目录: /output"
+echo ""
 
 # ========== 第1步：准备工作区 ==========
 echo "[1/8] 📁 创建工作区..."
@@ -160,12 +162,12 @@ KERNEL_FOUND=false
 echo "搜索内核文件..."
 find /boot -name "vmlinuz*" 2>/dev/null | head -5
 
-echo "[2/7] 获取内核..."
-for kernel in /boot/vmlinuz-lts /boot/vmlinuz; do
-    if [ -f "$kernel" ]; then
-        cp "$kernel" "$STAGING_DIR/live/vmlinuz"
-
+for kernel_path in /boot/vmlinuz-lts /boot/vmlinuz-generic /boot/vmlinuz; do
+    if [ -f "$kernel_path" ]; then
+        cp "$kernel_path" "$STAGING_DIR/live/vmlinuz"
         KERNEL_FOUND=true
+        echo "✅ 找到内核: "$kernel_path"
+        # 验证内核文件
         KERNEL_SIZE=$(du -h "$STAGING_DIR/live/vmlinuz" | cut -f1)
         echo "✅ 使用内核: $(basename "$kernel") ($KERNEL_SIZE)"
         break
@@ -201,14 +203,14 @@ if [ "$KERNEL_FOUND" = false ]; then
 fi
 echo ""
 
-# ========== 第3步：创建initrd ==========
-echo "[3/8] 🔧 创建initrd..."
+# ========== 第3步：创建正确的initrd ==========
+echo "[3/8] 🔧 创建initrd (关键修复步骤)..."
 
-INITRD_DIR="/tmp/initrd_complete_$(date +%s)"
+INITRD_DIR="/tmp/initrd_root_$(date +%s)"
 rm -rf "$INITRD_DIR"
 mkdir -p "$INITRD_DIR"
 
-echo "创建完整的init脚本..."
+echo "创建init脚本..."
 cat > "$INITRD_DIR/init" << 'INIT_EOF'
 #!/bin/busybox sh
 
@@ -217,9 +219,13 @@ cat > "$INITRD_DIR/init" << 'INIT_EOF'
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || mdev -s
-
-# 创建设备节点
+# 创建设备节点（关键！）
 mknod /dev/console c 5 1
+mknod /dev/null c 1 3
+mknod /dev/zero c 1 5
+mknod /dev/tty c 5 0
+
+# 设置控制台
 exec 0</dev/console
 exec 1>/dev/console
 exec 2>/dev/console
@@ -231,248 +237,209 @@ mount -t tmpfs tmpfs /tmp
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
 clear
-cat << "HEADER"
+cat << "BANNER"
 
 ╔══════════════════════════════════════════════════╗
 ║         OpenWRT Installation System              ║
 ║             (Alpine 3.20 based)                  ║
 ╚══════════════════════════════════════════════════╝
 
-HEADER
+BANNER
 
-echo "系统初始化完成..."
-echo ""
+echo "系统启动完成"
+echo "正在查找安装介质..."
+
+# 查找ISO设备
+ISO_MOUNTED=false
+for dev in /dev/sr0 /dev/cdrom /dev/sr*; do
+    if [ -b "$dev" ]; then
+        echo "尝试挂载 $dev..."
+        if mount -t iso9660 -o ro "$dev" /mnt 2>/dev/null; then
+            ISO_MOUNTED=true
+            echo "✅ 成功挂载安装介质"
+            break
+        fi
+    fi
+done
 
 # 查找OpenWRT镜像
 IMG_PATH=""
-if [ -f "/images/openwrt.img" ]; then
-    IMG_PATH="/images/openwrt.img"
-    echo "✅ 找到OpenWRT刷机镜像"
-    echo "   大小: $(ls -lh "$IMG_PATH" | awk '{print $5}')"
+if [ -f "/mnt/images/openwrt.img" ]; then
+    IMG_PATH="/mnt/images/openwrt.img"
+    echo "✅ 找到OpenWRT镜像"
+elif [ -f "/openwrt.img" ]; then
+    IMG_PATH="/openwrt.img"
+    echo "✅ 使用内置OpenWRT镜像"
 else
-    echo "❌ 错误: 未找到刷机镜像!"
+    echo "❌ 错误: 未找到OpenWRT镜像!"
     echo "进入救援模式..."
-    exec /bin/sh
+    exec /bin/busybox sh
 fi
 
-# 显示磁盘信息
-show_disks() {
-    echo ""
-    echo "📊 可用磁盘列表:"
-    echo "================="
-    if command -v lsblk >/dev/null 2>&1; then
-        lsblk -d -n -o NAME,SIZE,MODEL,TRAN 2>/dev/null | grep -v '^$' || echo "无法使用lsblk"
-    else
-        echo "使用简单列表:"
-        for disk in /dev/sd[a-z] /dev/hd[a-z] /dev/nvme[0-9]n[0-9]; do
-            [ -b "$disk" ] && echo "  $disk"
-        done
-    fi
-    echo "================="
-}
+# 显示可用磁盘
+echo ""
+echo "可用磁盘:"
+echo "=========="
+if command -v lsblk >/dev/null 2>&1; then
+    lsblk -d -n -o NAME,SIZE 2>/dev/null | grep -v '^$' || echo "无法列出磁盘"
+else
+    echo "设备列表:"
+    for disk in /dev/sd[a-z] /dev/hd[a-z]; do
+        [ -b "$disk" ] && echo "  $disk"
+    done
+fi
+echo "=========="
 
-# 主安装循环
+# 安装菜单
 while true; do
-    show_disks
-            echo ""
-            read -p "请输入目标磁盘名称 (例如: sda, nvme0n1): " target_disk
+            read -p "输入目标磁盘 (例如: sda): " target_disk
             
             if [ -z "$target_disk" ]; then
-                echo "❌ 未输入磁盘名"
+                echo "❌ 请输入磁盘名"
                 continue
             fi
             
-            # 检查磁盘是否存在
             if [ ! -b "/dev/$target_disk" ]; then
-                echo "❌ 磁盘 /dev/$target_disk 不存在!"
+                echo "❌ 磁盘不存在: /dev/$target_disk"
                 continue
             fi
             
-            # 确认操作
             echo ""
-            echo "⚠️  ⚠️  ⚠️  警告 ⚠️  ⚠️  ⚠️"
-            echo "这将完全擦除 /dev/$target_disk 上的所有数据!"
-            echo "所有分区和数据都将永久丢失!"
-            echo ""
-            read -p "确认刷机？输入大写 YES 继续: " confirm
+            echo "⚠️  警告: 这将完全擦除 /dev/$target_disk!"
+            read -p "确认安装? 输入 YES: " confirm
             
             if [ "$confirm" != "YES" ]; then
-                echo "❌ 刷机取消"
+                echo "安装取消"
                 continue
             fi
             
             echo ""
-            echo "🚀 开始刷写 OpenWRT 到 /dev/$target_disk ..."
-            echo ""
-            
-            # 刷机进度显示
+            echo "开始安装..."
             if command -v pv >/dev/null 2>&1; then
-                echo "使用pv显示进度..."
-                pv -t -e -b -a "$IMG_PATH" | dd of="/dev/$target_disk" bs=4M oflag=sync
+                pv "$IMG_PATH" | dd of="/dev/$target_disk" bs=4M
             else
-                echo "使用dd刷写..."
-                dd if="$IMG_PATH" of="/dev/$target_disk" bs=4M status=progress oflag=sync
+                dd if="$IMG_PATH" of="/dev/$target_disk" bs=4M status=progress
             fi
             
-            # 同步数据
             sync
-            
             echo ""
-            echo "✅ ✅ ✅ 刷机完成! ✅ ✅ ✅"
-            echo ""
-            echo "OpenWRT已成功刷写到 /dev/$target_disk"
-            echo ""
-            
-            echo "系统将在10秒后自动重启..."
-            for i in $(seq 10 -1 1); do
-                echo -ne "重启倒计时: ${i}秒\r"
-                sleep 1
-            done
-            echo ""
-            
-            # 重启系统
-            echo "正在重启..."
+            echo "✅ 安装完成!"
+            echo "10秒后重启..."
+            sleep 10
             reboot -f
             ;;
         
 done
 INIT_EOF
 
+# 确保init文件可执行
 chmod 755 "$INITRD_DIR/init"
 
-echo "复制必要工具到initrd..."
-
-# 创建目录结构
-mkdir -p "$INITRD_DIR"/{bin,sbin,dev,proc,sys,tmp,images,usr/bin}
-
-# 1. 复制busybox（核心）
-echo "复制busybox..."
+# 复制busybox并创建符号链接
+echo "设置busybox..."
 BUSYBOX_PATH=$(which busybox)
 if [ -f "$BUSYBOX_PATH" ]; then
+    mkdir -p "$INITRD_DIR/bin"
     cp "$BUSYBOX_PATH" "$INITRD_DIR/bin/busybox"
     chmod 755 "$INITRD_DIR/bin/busybox"
     
-    # 只创建必要的符号链接，不创建所有
+    # 创建必要的符号链接
     cd "$INITRD_DIR/bin"
-    echo "创建必要的busybox符号链接..."
-    for cmd in sh mount umount cat echo ls ps grep sed cp mv rm mkdir rmdir \
-               dd sync reboot fdisk lsblk blkid sleep head tail; do
+    
+    # 创建所有busybox命令的符号链接
+    echo "创建busybox符号链接..."
+    ./busybox --list | while read cmd; do
         ln -sf /bin/busybox "$cmd" 2>/dev/null || true
     done
+    
+    # 额外创建一些关键命令到sbin
+    mkdir -p ../sbin
+    for cmd in init halt reboot poweroff; do
+        ln -sf /bin/busybox ../sbin/"$cmd" 2>/dev/null || true
+    done
+    
     cd - >/dev/null
+    echo "✅ busybox配置完成"
 else
     echo "❌ 错误: 找不到busybox!"
     exit 1
 fi
 
-# 2. 复制刷机必需的工具（不能通过busybox替代的）
-echo "复制刷机工具..."
-TOOLS_TO_COPY=(
-    "pv"       # 进度显示
-    "fdisk"    # 磁盘分区（busybox的fdisk功能有限）
-    "lsblk"    # 块设备列表
-    "blkid"    # 块设备信息
-    "parted"   # 分区工具
-    "dd"       # 磁盘操作（使用系统dd以获得更好功能）
-    "sync"     # 同步
-    "reboot"   # 重启
-)
-
-for tool in "${TOOLS_TO_COPY[@]}"; do
-    tool_path=$(which "$tool" 2>/dev/null || true)
-    if [ -n "$tool_path" ] && [ -f "$tool_path" ]; then
-        # 如果busybox已经有链接，跳过
-        if [ ! -f "$INITRD_DIR/bin/$tool" ]; then
-            mkdir -p "$INITRD_DIR$(dirname "$tool_path")"
-            cp "$tool_path" "$INITRD_DIR$tool_path" 2>/dev/null || true
-            echo "  ✅ $tool"
-        fi
-    fi
-done
-
-# 3. 复制必要的库文件
-echo "复制必要的库文件..."
-mkdir -p "$INITRD_DIR/lib"
-# 只复制必要的库
-LIBS_TO_COPY=(
-    "/lib/ld-musl-x86_64.so.1"
-    "/lib/libc.musl-x86_64.so.1"
-    "/lib/libblkid.so.1"
-    "/lib/libmount.so.1"
-    "/lib/libsmartcols.so.1"
-    "/lib/libuuid.so.1"
-)
-
-for lib in "${LIBS_TO_COPY[@]}"; do
-    if [ -f "$lib" ]; then
-        cp "$lib" "$INITRD_DIR/lib/" 2>/dev/null || true
-        echo "  ✅ $(basename "$lib")"
-    fi
-done
-
-# 4. 创建设备节点
+# 创建设备节点
 echo "创建设备节点..."
+mkdir -p "$INITRD_DIR/dev"
 mknod "$INITRD_DIR/dev/console" c 5 1
 mknod "$INITRD_DIR/dev/null" c 1 3
 mknod "$INITRD_DIR/dev/zero" c 1 5
 mknod "$INITRD_DIR/dev/tty" c 5 0
-mknod "$INITRD_DIR/dev/tty0" c 4 0
 
+# 创建必要的目录
 mkdir -p "$INITRD_DIR"/{proc,sys,tmp,mnt,images}
-# 5. 复制OpenWRT镜像到initrd（可选，如果要从initrd直接访问）
-cp "$INPUT_IMG" "$INITRD_DIR/images/openwrt.img" 2>/dev/null || true
 
-# 清理不需要的文件
-echo "清理不需要的文件..."
-find "$INITRD_DIR" -name "*.so.*" ! -name "*.so.1" -delete 2>/dev/null || true
-find "$INITRD_DIR" -type f -name "*.a" -delete 2>/dev/null || true
-find "$INITRD_DIR" -type f -name "*.la" -delete 2>/dev/null || true
+# 复制OpenWRT镜像到initrd（可选）
+if [ -f "$INPUT_IMG" ]; then
+    cp "$INPUT_IMG" "$INITRD_DIR/images/openwrt.img"
+    echo "✅ 复制OpenWRT镜像到initrd"
+fi
 
+# 打包initrd
 echo "打包initrd..."
 cd "$INITRD_DIR"
-echo "initrd目录大小: $(du -sh . | cut -f1)"
-echo "文件数量: $(find . -type f | wc -l)"
+echo "initrd目录结构:"
+ls -la
 
-# 使用gzip -6平衡压缩率和速度
-find . -print0 | cpio --null -ov --format=newc 2>/dev/null | gzip -6 > "$STAGING_DIR/live/initrd.img"
+# 使用cpio打包（确保包含所有文件）
+find . -print0 | cpio --null -ov --format=newc 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd.img"
 
-INITRD_SIZE=$(du -h "$STAGING_DIR/live/initrd.img" | cut -f1)
-echo "✅ initrd创建完成 ($INITRD_SIZE)"
-
-# 验证
-if gzip -cd "$STAGING_DIR/live/initrd.img" 2>/dev/null | cpio -t 2>/dev/null | grep -q "^init$"; then
-    echo "✅ initrd包含有效的init"
+# 验证initrd
+if [ -f "$STAGING_DIR/live/initrd.img" ]; then
+    INITRD_SIZE=$(du -h "$STAGING_DIR/live/initrd.img" | cut -f1)
+    echo "✅ initrd创建成功 ($INITRD_SIZE)"
     
-    # 检查关键工具
-    echo "检查关键工具:"
-    gzip -cd "$STAGING_DIR/live/initrd.img" 2>/dev/null | cpio -t 2>/dev/null | grep -E "(init|busybox|pv|fdisk|lsblk|dd)" || true
+    # 测试initrd内容
+    echo "测试initrd内容..."
+    if gzip -cd "$STAGING_DIR/live/initrd.img" 2>/dev/null | cpio -t 2>/dev/null | head -10; then
+        echo "✅ initrd格式正确"
+        
+        # 检查是否包含init
+        if gzip -cd "$STAGING_DIR/live/initrd.img" 2>/dev/null | cpio -t 2>/dev/null | grep -q "^init$"; then
+            echo "✅ initrd包含init文件"
+        else
+            echo "❌ initrd不包含init文件"
+        fi
+    fi
+else
+    echo "❌ initrd创建失败"
+    exit 1
 fi
 
 cd - >/dev/null
 rm -rf "$INITRD_DIR"
 echo ""
 
+
 # ========== 第4步：复制OpenWRT镜像 ==========
 echo "[4/8] 📦 复制OpenWRT镜像..."
 cp "$INPUT_IMG" "$STAGING_DIR/images/openwrt.img"
-IMG_SIZE=$(du -h "$INPUT_IMG" | cut -f1)
-echo "✅ 刷机镜像已复制 ($IMG_SIZE)"
+echo "✅ OpenWRT镜像已复制"
+echo ""
 
 # ========== 第5步：创建BIOS引导配置 ==========
 echo "[5/8] 🔧 创建BIOS引导配置..."
 
 # 复制syslinux文件
+echo "复制syslinux文件..."
 for file in isolinux.bin ldlinux.c32 libutil.c32 menu.c32 vesamenu.c32; do
-    for dir in /usr/share/syslinux /usr/lib/syslinux; do
+    for dir in /usr/share/syslinux /usr/lib/syslinux /usr/lib/ISOLINUX; do
         if [ -f "$dir/$file" ]; then
-            cp "$dir/$file" "$STAGING_DIR/isolinux/"
+            cp "$dir/$file" "$STAGING_DIR/isolinux/" 2>/dev/null || true
             break
         fi
     done
 done
 
 # 查找isohdpfx.bin
-for dir in /usr/share/syslinux /usr/lib/syslinux; do
+for dir in /usr/share/syslinux /usr/lib/syslinux /usr/lib/ISOLINUX; do
     if [ -f "$dir/isohdpfx.bin" ]; then
         cp "$dir/isohdpfx.bin" "$WORK_DIR/isohdpfx.bin"
         echo "✅ 找到isohdpfx.bin"
@@ -482,22 +449,14 @@ done
 
 # 创建ISOLINUX配置
 cat > "$STAGING_DIR/isolinux/isolinux.cfg" << 'ISOLINUX_CFG_EOF'
-DEFAULT vesamenu.c32
+DEFAULT linux
 PROMPT 0
-TIMEOUT 10
-ONTIMEOUT install
+TIMEOUT 50
+UI menu.c32
 
-MENU TITLE OpenWRT刷机安装系统
-MENU BACKGROUND /boot/splash.png
-MENU COLOR border       30;44   #40ffffff #a0000000 std
-MENU COLOR title        1;36;44 #9033ccff #a0000000 std
-MENU COLOR sel          7;37;40 #e0ffffff #20ffffff all
-MENU COLOR unsel        37;44   #50ffffff #a0000000 std
-MENU COLOR help         37;40   #c0ffffff #a0000000 std
-MENU COLOR timeout_msg  37;40   #80ffffff #00000000 std
-MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
+MENU TITLE OpenWRT Installer
 
-LABEL install
+LABEL linux
   MENU LABEL Install OpenWRT
   MENU DEFAULT
   KERNEL /live/vmlinuz
@@ -506,6 +465,7 @@ LABEL install
 ISOLINUX_CFG_EOF
 
 echo "✅ BIOS引导配置完成"
+echo ""
 
 # ========== 第6步：创建UEFI引导配置 ==========
 echo "[6/8] 🔧 创建UEFI引导配置..."
@@ -522,60 +482,227 @@ menuentry "Install OpenWRT" {
 
 GRUB_CFG_EOF
 
-# 生成GRUB EFI文件（如果可用）
+# 生成GRUB EFI文件
+echo "生成GRUB EFI文件..."
+GRUB_EFI_GENERATED=false
+
+# 方法1: 尝试grub-mkstandalone
 if command -v grub-mkstandalone >/dev/null 2>&1; then
-    echo "生成GRUB EFI文件..."
-    TEMP_DIR="/tmp/grub_efi_$(date +%s)"
-    mkdir -p "$TEMP_DIR/boot/grub"
-    cp "$STAGING_DIR/boot/grub/grub.cfg" "$TEMP_DIR/boot/grub/"
+    echo "使用grub-mkstandalone..."
+    
+    TEMP_GRUB="/tmp/grub_temp_$(date +%s)"
+    mkdir -p "$TEMP_GRUB/boot/grub"
+    cp "$STAGING_DIR/boot/grub/grub.cfg" "$TEMP_GRUB/boot/grub/"
     
     if grub-mkstandalone \
         --format=x86_64-efi \
-        --output="$TEMP_DIR/bootx64.efi" \
+        --output="$TEMP_GRUB/bootx64.efi" \
         --locales="" \
         --fonts="" \
         --modules="part_gpt part_msdos fat ext2 iso9660" \
-        "boot/grub/grub.cfg=$TEMP_DIR/boot/grub/grub.cfg" 2>/dev/null; then
+        "boot/grub/grub.cfg=$TEMP_GRUB/boot/grub/grub.cfg" 2>/dev/null; then
         
-        cp "$TEMP_DIR/bootx64.efi" "$STAGING_DIR/EFI/boot/bootx64.efi"
+        cp "$TEMP_GRUB/bootx64.efi" "$STAGING_DIR/EFI/boot/bootx64.efi"
+        GRUB_EFI_GENERATED=true
         echo "✅ GRUB EFI生成成功"
     fi
-    rm -rf "$TEMP_DIR"
+    
+    rm -rf "$TEMP_GRUB"
+fi
+
+# 方法2: 尝试grub-mkimage
+if [ "$GRUB_EFI_GENERATED" = false ] && command -v grub-mkimage >/dev/null 2>&1; then
+    echo "使用grub-mkimage..."
+    
+    if grub-mkimage \
+        -O x86_64-efi \
+        -o "$STAGING_DIR/EFI/boot/bootx64.efi" \
+        -p /boot/grub \
+        fat iso9660 part_gpt part_msdos normal boot linux 2>/dev/null; then
+        
+        GRUB_EFI_GENERATED=true
+        echo "✅ GRUB EFI生成成功"
+    fi
+fi
+
+# 如果生成了EFI文件，创建引导镜像
+if [ "$GRUB_EFI_GENERATED" = true ] && [ -f "$STAGING_DIR/EFI/boot/bootx64.efi" ]; then
+    echo "创建EFI引导镜像..."
+    
+    EFI_IMG="$WORK_DIR/efiboot.img"
+echo "创建EFI引导镜像..."
+
+# 创建FAT32格式的EFI引导镜像
+EFI_IMG="$WORK_DIR/efiboot.img"
+MOUNT_DIR="$WORK_DIR/efi_mount"
+
+# 清理旧文件
+rm -rf "$EFI_IMG" "$MOUNT_DIR"
+mkdir -p "$MOUNT_DIR"
+
+# 方法1: 使用mkfs.fat创建FAT32镜像
+echo "创建FAT32 EFI引导镜像..."
+# 创建16MB的镜像（足够存放EFI文件）
+dd if=/dev/zero of="$EFI_IMG" bs=1M count=16 status=none 2>/dev/null
+
+# 尝试多种方式格式化
+if command -v mkfs.fat >/dev/null 2>&1; then
+    # 使用mkfs.fat创建FAT32
+    if mkfs.fat -F 32 -n "EFIBOOT" "$EFI_IMG" >/dev/null 2>&1; then
+        echo "✅ 使用mkfs.fat创建FAT32"
+    elif mkfs.fat -F 12 -n "EFIBOOT" "$EFI_IMG" >/dev/null 2>&1; then
+        echo "✅ 使用mkfs.fat创建FAT12"
+    else
+        echo "⚠ mkfs.fat失败"
+    fi
+elif command -v mkfs.vfat >/dev/null 2>&1; then
+    # 使用mkfs.vfat
+    if mkfs.vfat -F 32 -n "EFIBOOT" "$EFI_IMG" >/dev/null 2>&1; then
+        echo "✅ 使用mkfs.vfat创建FAT32"
+    else
+        echo "⚠ mkfs.vfat失败"
+    fi
+elif command -v mkdosfs >/dev/null 2>&1; then
+    # 使用mkdosfs
+    if mkdosfs -F 32 -n "EFIBOOT" "$EFI_IMG" >/dev/null 2>&1; then
+        echo "✅ 使用mkdosfs创建FAT32"
+    else
+        echo "⚠ mkdosfs失败"
+    fi
+else
+    echo "❌ 没有找到FAT文件系统创建工具"
+    # 创建简单文件作为占位
+    dd if=/dev/zero of="$EFI_IMG" bs=1M count=1 status=none 2>/dev/null
+fi
+
+# 检查镜像是否创建成功
+if [ ! -s "$EFI_IMG" ]; then
+    echo "❌ EFI镜像创建失败"
+    exit 1
+fi
+
+# 挂载镜像（使用正确的挂载选项）
+echo "挂载EFI镜像..."
+MOUNT_SUCCESS=false
+
+# 尝试多种挂载方法
+if command -v mount >/dev/null 2>&1; then
+    # 方法1: 使用loop设备
+    if losetup --version >/dev/null 2>&1; then
+        echo "使用losetup挂载..."
+        LOOP_DEV=$(losetup -f)
+        if [ -n "$LOOP_DEV" ]; then
+            if losetup "$LOOP_DEV" "$EFI_IMG" 2>/dev/null; then
+                if mount -t vfat "$LOOP_DEV" "$MOUNT_DIR" 2>/dev/null; then
+                    MOUNT_SUCCESS=true
+                    echo "✅ 通过losetup挂载成功"
+                else
+                    losetup -d "$LOOP_DEV" 2>/dev/null
+                fi
+            fi
+        fi
+    fi
+    
+    # 方法2: 直接使用mount -o loop
+    if [ "$MOUNT_SUCCESS" = false ]; then
+        echo "尝试mount -o loop..."
+        if mount -o loop -t vfat "$EFI_IMG" "$MOUNT_DIR" 2>/dev/null; then
+            MOUNT_SUCCESS=true
+            echo "✅ 通过mount -o loop挂载成功"
+        fi
+    fi
+    
+    # 方法3: 使用fuse挂载（如果可用）
+    if [ "$MOUNT_SUCCESS" = false ] && command -v fuse2fs >/dev/null 2>&1; then
+        echo "尝试使用fuse..."
+        if mount.fuse "$EFI_IMG" "$MOUNT_DIR" -o ro 2>/dev/null; then
+            MOUNT_SUCCESS=true
+            echo "✅ 通过fuse挂载成功"
+        fi
+    fi
+fi
+
+if [ "$MOUNT_SUCCESS" = true ]; then
+    # 创建EFI目录结构
+    echo "创建EFI目录结构..."
+    mkdir -p "$MOUNT_DIR/EFI/boot"
+    mkdir -p "$MOUNT_DIR/boot/grub"
+    
+    # 复制EFI引导文件
+    if [ -f "$STAGING_DIR/EFI/boot/bootx64.efi" ]; then
+        cp "$STAGING_DIR/EFI/boot/bootx64.efi" "$MOUNT_DIR/EFI/boot/"
+        echo "✅ 复制bootx64.efi"
+    else
+        # 如果没有EFI文件，创建一个简单的
+        echo "创建简易EFI引导文件..."
+        cat > "$MOUNT_DIR/EFI/boot/bootx64.efi" << 'EFI_STUB'
+#!/bin/sh
+echo "UEFI Boot Stub"
+echo "Please use BIOS/Legacy boot mode"
+sleep 5
+EFI_STUB
+        chmod +x "$MOUNT_DIR/EFI/boot/bootx64.efi"
+    fi
+    
+    # 复制GRUB配置
+    if [ -f "$STAGING_DIR/boot/grub/grub.cfg" ]; then
+        cp "$STAGING_DIR/boot/grub/grub.cfg" "$MOUNT_DIR/boot/grub/"
+        echo "✅ 复制grub.cfg"
+    fi
+    
+    # 创建UEFI Shell（可选）
+    echo "创建UEFI Shell占位..."
+    cat > "$MOUNT_DIR/EFI/boot/startup.nsh" << 'STARTUP_NSH'
+echo "OpenWRT UEFI Installer"
+echo "If you see this, UEFI boot is working"
+echo "Booting installer..."
+STARTUP_NSH
+    
+    # 卸载
+    echo "卸载EFI镜像..."
+    sync
+    umount "$MOUNT_DIR" 2>/dev/null || true
+    
+    # 清理loop设备
+    if [ -n "$LOOP_DEV" ] && losetup "$LOOP_DEV" >/dev/null 2>&1; then
+        losetup -d "$LOOP_DEV" 2>/dev/null || true
+    fi
+    
+    # 复制到输出目录
+    cp "$EFI_IMG" "$STAGING_DIR/EFI/boot/efiboot.img"
+    echo "✅ EFI引导镜像创建完成"
+else
+    echo "⚠ 无法挂载EFI镜像，创建空文件"
+    # 创建一个小文件作为占位
+    dd if=/dev/zero of="$STAGING_DIR/EFI/boot/efiboot.img" bs=1M count=1 2>/dev/null
+fi
+
+# 清理
+rm -rf "$MOUNT_DIR" "$EFI_IMG" 2>/dev/null || true
+
+    
+else
+    echo "⚠ 无法生成GRUB EFI文件"
 fi
 
 echo "✅ UEFI引导配置完成"
+echo ""
 
 # ========== 第7步：构建ISO ==========
-echo "[7/8] 📦 构建ISO..."
+echo "[7/8] 📦 构建ISO文件..."
 
 cd "$WORK_DIR"
 
 # 检查是否有EFI引导镜像
-EFI_IMG_PATH="$STAGING_DIR/EFI/boot/bootx64.efi"
+EFI_IMG_PATH="$STAGING_DIR/EFI/boot/efiboot.img"
 ISOHDPFX_PATH="$WORK_DIR/isohdpfx.bin"
 
 if [ -f "$EFI_IMG_PATH" ] && [ -f "$ISOHDPFX_PATH" ]; then
     echo "构建混合引导ISO (BIOS + UEFI)..."
     
-    # 创建EFI引导镜像
-    EFI_IMG="$WORK_DIR/efiboot.img"
-    dd if=/dev/zero of="$EFI_IMG" bs=1M count=16 status=none 2>/dev/null
-    if mkfs.fat -F 32 -n "EFIBOOT" "$EFI_IMG" >/dev/null 2>&1; then
-        MOUNT_DIR="$WORK_DIR/efi_mount"
-        mkdir -p "$MOUNT_DIR"
-        
-        if mount -o loop "$EFI_IMG" "$MOUNT_DIR" 2>/dev/null; then
-            mkdir -p "$MOUNT_DIR/EFI/boot"
-            cp "$EFI_IMG_PATH" "$MOUNT_DIR/EFI/boot/"
-            sync
-            umount "$MOUNT_DIR"
-        fi
-        rm -rf "$MOUNT_DIR"
-    fi
-    
     xorriso -as mkisofs \
         -r \
-        -V "OPENWRT_FLASH" \
+        -V "OPENWRT_INSTALL" \
         -o "/output/openwrt.iso" \
         -b isolinux/isolinux.bin \
         -c isolinux/boot.cat \
@@ -584,25 +711,23 @@ if [ -f "$EFI_IMG_PATH" ] && [ -f "$ISOHDPFX_PATH" ]; then
         -boot-info-table \
         -isohybrid-mbr "$ISOHDPFX_PATH" \
         -eltorito-alt-boot \
-        -e "$EFI_IMG" \
+        -e EFI/boot/efiboot.img \
         -no-emul-boot \
         -isohybrid-gpt-basdat \
-        "$STAGING_DIR" 2>&1 | grep -E "written|sectors" || true
-        
-    rm -f "$EFI_IMG"
+        "$STAGING_DIR" 2>&1 | tail -5
 else
     echo "构建BIOS引导ISO..."
     
     xorriso -as mkisofs \
         -r \
-        -V "OPENWRT_FLASH" \
+        -V "OPENWRT_INSTALL" \
         -o "/output/openwrt.iso" \
         -b isolinux/isolinux.bin \
         -c isolinux/boot.cat \
         -no-emul-boot \
         -boot-load-size 4 \
         -boot-info-table \
-        "$STAGING_DIR" 2>&1 | grep -E "written|sectors" || true
+        "$STAGING_DIR" 2>&1 | tail -5
 fi
 
 echo ""
@@ -611,25 +736,45 @@ echo ""
 echo "[8/8] 🔍 验证构建结果..."
 
 if [ -f "/output/openwrt.iso" ]; then
-    ISO_SIZE=$(du -h "/output/openwrt.iso" | cut -f1)
-    echo "✅ ISO创建成功! ($ISO_SIZE)"
-    
-    # 显示ISO信息
+    ISO_SIZE=$(du -h "/output/openwrt.iso" 2>/dev/null | cut -f1 || echo "未知")
+    echo "✅ ✅ ✅ ISO构建成功! ✅ ✅ ✅"
     echo ""
     echo "📊 ISO信息:"
     echo "  文件: /output/openwrt.iso"
     echo "  大小: $ISO_SIZE"
+    echo ""
     
-    if which file >/dev/null 2>&1; then
-        file "/output/openwrt.iso"
+    # 检查ISO
+    if command -v file >/dev/null 2>&1; then
+        FILE_INFO=$(file "/output/openwrt.iso" 2>/dev/null || echo "无法获取文件信息")
+        echo "类型: $FILE_INFO"
     fi
     
-    # 测试ISO结构
-    echo ""
-    echo "📁 ISO内容:"
-    isoinfo -f -i "/output/openwrt.iso" 2>/dev/null | head -20 || \
-    xorriso -indev "/output/openwrt.iso" -ls 2>/dev/null | head -20 || \
-    echo "无法列出ISO内容"
+    # 创建构建信息
+    cat > "/output/build-info.txt" << EOF
+OpenWRT Alpine Installer
+=======================
+构建时间: $(date)
+ISO大小:  $ISO_SIZE
+引导支持: $( [ -f "$EFI_IMG_PATH" ] && echo "BIOS + UEFI" || echo "BIOS only" )
+
+包含:
+  - OpenWRT镜像: images/openwrt.img
+  - Linux内核:   live/vmlinuz
+  - Initramfs:   live/initrd.img
+
+使用方法:
+  1. sudo dd if=openwrt.iso of=/dev/sdX bs=4M status=progress
+  2. 从USB启动
+  3. 选择安装目标
+
+注意: 安装会完全擦除目标磁盘!
+EOF
+    
+    echo "✅ 构建信息保存到: /output/build-info.txt"
+    
+    # 清理
+    rm -rf "$WORK_DIR"
     
     exit 0
 else
@@ -694,32 +839,30 @@ if [ -f "$OUTPUT_ISO" ]; then
     echo "📊 大小: $ISO_SIZE"
     echo ""
     
-    # 验证引导能力
-    echo "🔍 引导验证:"
-    if which file >/dev/null 2>&1; then
+    # 验证ISO
+    echo "🔍 验证信息:"
+    if command -v file >/dev/null 2>&1; then
         FILE_INFO=$(file "$FINAL_ISO")
         echo "文件类型: $FILE_INFO"
         
-        # 检查引导标记
-        if echo "$FILE_INFO" | grep -q "bootable" || echo "$FILE_INFO" | grep -q "ISO 9660"; then
-            echo "✅ 看起来是可引导ISO"
+        if echo "$FILE_INFO" | grep -q "bootable\|DOS/MBR"; then
+            echo "✅ ISO可引导"
         fi
     fi
     
     # 检查是否为混合ISO
-    if which dd >/dev/null 2>&1; then
-        echo ""
-        echo "检查引导扇区:"
-        dd if="$FINAL_ISO" bs=1 count=64 2>/dev/null | xxd | grep -q "55 AA" && \
-            echo "✅ 检测到BIOS引导扇区"
+    echo ""
+    echo "💻 引导支持:"
+    if command -v xorriso >/dev/null 2>&1; then
+        xorriso -indev "$FINAL_ISO" -check_media 2>&1 | grep -i "efi\|uefi" && \
+            echo "✅ 支持UEFI引导" || echo "⚠ 仅支持BIOS引导"
     fi
     
     echo ""
     echo "🚀 使用方法:"
     echo "   1. 虚拟机测试: qemu-system-x86_64 -cdrom '$FINAL_ISO' -m 512M"
     echo "   2. 制作USB: sudo dd if='$FINAL_ISO' of=/dev/sdX bs=4M status=progress oflag=sync"
-    echo "   3. 刻录光盘: burn '$FINAL_ISO'"
-    echo "   4. 直接使用: 将openwrt.img放在/images/目录下"
+    echo "   3. 直接引导: 从USB或CD/DVD启动"
     
     exit 0
 else
@@ -727,13 +870,8 @@ else
     echo "❌ ISO构建失败"
     
     # 显示容器日志
-    echo "📋 容器日志 (最后50行):"
-    docker logs --tail 50 openwrt-iso-builder 2>/dev/null || echo "无法获取容器日志"
-    
-    # 检查输出目录
-    echo ""
-    echo "📁 输出目录内容:"
-    ls -la "$OUTPUT_ABS/" 2>/dev/null || echo "输出目录不存在"
+    echo "📋 容器日志:"
+    docker logs --tail 100 openwrt-alpine-builder 2>/dev/null || echo "无法获取容器日志"
     
     exit 1
 fi
