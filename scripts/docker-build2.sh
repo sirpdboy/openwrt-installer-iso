@@ -116,6 +116,7 @@ ENTRYPOINT ["/build.sh"]
 
 
 DOCKERFILE_EOF
+docker system prune -a -f
 
 # 更新版本号
 # sed -i "s/ARG ALPINE_VERSION=3.20/ARG ALPINE_VERSION=$ALPINE_VERSION/g" "$DOCKERFILE_PATH"
@@ -529,7 +530,7 @@ mknod "$INITRD_DIR/dev/tty0" c 4 0 2>/dev/null || true
 
 # 复制OpenWRT镜像
 echo "复制OpenWRT镜像..."
-cp "$INPUT_IMG" "$INITRD_DIR/images/openwrt.img"
+cp "$INPUT_IMG" "$WORK_DIR/iso/images/openwrt.img"
 IMG_SIZE=$(du -h "$INPUT_IMG" | cut -f1)
 echo "✅ 刷机镜像已复制 ($IMG_SIZE)"
 
