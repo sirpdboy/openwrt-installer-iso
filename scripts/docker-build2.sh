@@ -757,37 +757,38 @@ fi
 BUILD_SCRIPT_EOF
 
 chmod +x scripts/build-iso-alpine.sh
-
 # ========== 构建Docker镜像 ==========
 echo "🔨 构建Docker镜像..."
-IMAGE_NAME="openwrt-alpine-builder:latest"
+IMAGE_NAME="openwrt-alpine-builder:${ALPINE_VERSION}"
 
-echo "构建镜像..."
+echo "构建镜像 $IMAGE_NAME ..."
 docker build \
     -f "$DOCKERFILE_PATH" \
     --build-arg ALPINE_VERSION="$ALPINE_VERSION" \
     -t "$IMAGE_NAME" \
     . 2>&1 | tee /tmp/docker-build.log
-
 if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
     echo "✅ Docker镜像构建成功: $IMAGE_NAME"
 else
     echo "❌ Docker镜像构建失败"
-    cat /tmp/docker-build.log | tail -20
+    cat /tmp/docker-build.log | tail -30
     exit 1
 fi
 
 # ========== 运行Docker容器 ==========
 echo "🚀 运行Docker容器构建ISO..."
 
-set +e
+# 清理旧的输出
+rm -f "$OUTPUT_ABS"/*.iso "$OUTPUT_ABS"/build-info.txt 2>/dev/null || true
+
 echo "启动构建容器..."
+set +e
 docker run --rm \
-    --name openwrt-alpine-builder \
+    --name openwrt-iso-builder \
     --privileged \
     -v "$IMG_ABS:/mnt/input.img:ro" \
     -v "$OUTPUT_ABS:/output:rw" \
-    -e INPUT_IMG="/mnt/input.img" \
+    -e ISO_NAME="$ISO_NAME" \
     "$IMAGE_NAME"
 
 CONTAINER_EXIT=$?
@@ -796,12 +797,8 @@ set -e
 echo "容器退出代码: $CONTAINER_EXIT"
 
 # ========== 检查结果 ==========
-OUTPUT_ISO="$OUTPUT_ABS/openwrt.iso"
-if [ -f "$OUTPUT_ISO" ]; then
-    # 重命名
-    FINAL_ISO="$OUTPUT_ABS/$ISO_NAME"
-    mv "$OUTPUT_ISO" "$FINAL_ISO"
-    
+FINAL_ISO="$OUTPUT_ABS/$ISO_NAME"
+if [ -f "$FINAL_ISO" ]; then
     echo ""
     echo "🎉🎉🎉 ISO构建成功! 🎉🎉🎉"
     echo ""
@@ -810,46 +807,53 @@ if [ -f "$OUTPUT_ISO" ]; then
     echo "📊 大小: $ISO_SIZE"
     echo ""
     
-    # 验证引导能力
-    echo "🔍 引导验证:"
-    if which file >/dev/null 2>&1; then
+    # 验证ISO
+    echo "🔍 验证信息:"
+    
+    # 检查文件类型
+    if command -v file >/dev/null 2>&1; then
         FILE_INFO=$(file "$FINAL_ISO")
         echo "文件类型: $FILE_INFO"
         
-        # 检查引导标记
-        if echo "$FILE_INFO" | grep -q "bootable" || echo "$FILE_INFO" | grep -q "ISO 9660"; then
-            echo "✅ 看起来是可引导ISO"
+        if echo "$FILE_INFO" | grep -q "bootable\|DOS/MBR"; then
+            echo "✅ ISO可引导"
         fi
     fi
     
-    # 检查是否为混合ISO
-    if which dd >/dev/null 2>&1; then
+    # 检查是否支持UEFI
+    echo ""
+    echo "💻 引导支持检查:"
+    if command -v xorriso >/dev/null 2>&1; then
+        if xorriso -indev "$FINAL_ISO" -toc 2>&1 | grep -q "El Torito boot image: efi"; then
+            echo "✅ 支持UEFI引导"
+        else
+            echo "⚠️  仅支持BIOS引导"
+        fi
+    fi
+    
+    # 显示构建信息
+    if [ -f "$OUTPUT_ABS/build-info.txt" ]; then
         echo ""
-        echo "检查引导扇区:"
-        dd if="$FINAL_ISO" bs=1 count=64 2>/dev/null | xxd | grep -q "55 AA" && \
-            echo "✅ 检测到BIOS引导扇区"
+        echo "📋 构建信息:"
+        cat "$OUTPUT_ABS/build-info.txt"
     fi
     
     echo ""
     echo "🚀 使用方法:"
-    echo "   1. 虚拟机测试: qemu-system-x86_64 -cdrom '$FINAL_ISO' -m 512M"
-    echo "   2. 制作USB: sudo dd if='$FINAL_ISO' of=/dev/sdX bs=4M status=progress oflag=sync"
-    echo "   3. 刻录光盘: burn '$FINAL_ISO'"
-    echo "   4. 直接使用: 将openwrt.img放在/images/目录下"
+    echo "   1. 虚拟机测试:"
+    echo "      qemu-system-x86_64 -cdrom '$FINAL_ISO' -m 512M -enable-kvm"
+    echo "   2. 制作USB启动盘:"
+    echo "      sudo dd if='$FINAL_ISO' of=/dev/sdX bs=4M status=progress oflag=sync"
+    echo "   3. 从USB或CD/DVD启动"
     
     exit 0
 else
     echo ""
     echo "❌ ISO构建失败"
     
-    # 显示容器日志
-    echo "📋 容器日志 (最后50行):"
-    docker logs --tail 50 openwrt-iso-builder 2>/dev/null || echo "无法获取容器日志"
-    
-    # 检查输出目录
-    echo ""
-    echo "📁 输出目录内容:"
-    ls -la "$OUTPUT_ABS/" 2>/dev/null || echo "输出目录不存在"
+    # 显示可能的错误文件
+    echo "输出目录内容:"
+    ls -la "$OUTPUT_ABS/" 2>/dev/null || echo "输出目录为空"
     
     exit 1
 fi
