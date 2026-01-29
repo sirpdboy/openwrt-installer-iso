@@ -276,14 +276,14 @@ if [ -f "$ISO_TMP" ] && [ -s "$ISO_TMP" ]; then
         mkdir -p "$INITRD_DIR"
     
         cd "$INITRD_DIR"
-        gzip -dc "$STAGING_DIR/live/initrd.gz" | cpio -id
+        gzip -dc "$STAGING_DIR/live/initrd" | cpio -id
         cd - >/dev/null
-	
+
+    create_initrd $INITRD_DIR
     # 重新打包 initrd
     cd "$INITRD_DIR"
     find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
     cd - >/dev/null
-    create_initrd $INITRD_DIR
     rm -rf "$INITRD_DIR"
     log_success "使用修改后的 Alpine initramfs"
         umount "$MOUNT_DIR"
