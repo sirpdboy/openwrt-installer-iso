@@ -862,9 +862,9 @@ set -e
 echo "容器退出代码: $CONTAINER_EXIT"
 
 # ========== 检查结果 ==========
-OUTPUT_ISO="$OUTPUT_ABS/$ISO_NAME"
+OUTPUT_ISO="/output/openwrt-installer.iso"
 FINAL_ISO="$OUTPUT_ABS/$ISO_NAME"
-if [ -f "$ISO_PATH" ]; then
+if [ -f "$OUTPUT_ISO" ]; then
     # 重命名
     mv "$OUTPUT_ISO" "$FINAL_ISO"
     
