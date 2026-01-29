@@ -83,25 +83,27 @@ RUN apk add --no-cache grub grub-efi
 # 第4组：文件系统工具
 RUN apk add --no-cache e2fsprogs dosfstools mtools
 
-# 第5组：分区和系统工具
-RUN apk add --no-cache parted util-linux fdisk lsblk
+# 5. 分区工具（注意：fdisk 包含在 util-linux 中）
+RUN apk add --no-cache parted util-linux
 
-# 第6组：压缩和打包工具
+# 6. 压缩和打包工具
 RUN apk add --no-cache gzip tar cpio squashfs-tools cdrtools
 
-# 第7组：其他必要工具
+# 7. 其他必要工具
 RUN apk add --no-cache coreutils findutils grep gawk file pv
 
 # 清理缓存
 RUN rm -rf /var/cache/apk/*
 
-# 验证安装
-RUN echo "=== 验证工具安装 ===" && \
-    echo "xorriso: $(xorriso --version 2>/dev/null | head -1)" && \
-    echo "grub-mkstandalone: $(which grub-mkstandalone)" && \
-    echo "syslinux: $(which syslinux)" && \
-    echo "mkisofs: $(which mkisofs 2>/dev/null || echo '使用xorriso替代')" && \
+# 验证工具安装
+RUN echo "=== 验证安装的工具 ===" && \
+    echo "xorriso: $(xorriso --version 2>/dev/null | head -1 || echo '未安装')" && \
+    echo "syslinux: $(which syslinux 2>/dev/null || echo '未安装')" && \
+    echo "grub: $(which grub-mkstandalone 2>/dev/null || echo '未安装')" && \
+    echo "parted: $(which parted 2>/dev/null || echo '未安装')" && \
+    echo "mkisofs: $(which mkisofs 2>/dev/null || which genisoimage 2>/dev/null || echo '使用xorriso')" && \
     echo "=== 验证完成 ==="
+
 
 # 创建工作目录
 WORKDIR /work
