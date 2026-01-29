@@ -262,15 +262,7 @@ if [ -f "$ISO_TMP" ] && [ -s "$ISO_TMP" ]; then
             log_success "提取内核: vmlinuz"
         fi
         
-        # 复制initramfs
-        if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
-            cp "$MOUNT_DIR/boot/initramfs-lts" "$STAGING_DIR/live/initrd"
-            log_success "提取initramfs: initramfs-lts"
-        elif [ -f "$MOUNT_DIR/boot/initramfs" ]; then
-            cp "$MOUNT_DIR/boot/initramfs" "$STAGING_DIR/live/initrd"
-            log_success "提取initramfs: initramfs"
-        fi
-        
+
         umount "$MOUNT_DIR"
         rm -rf "$MOUNT_DIR"
     else
@@ -303,200 +295,404 @@ create_minimal_initrd() {
     local initrd_dir="$WORK_DIR/initrd_root"
     
     rm -rf "$initrd_dir"
-    mkdir -p "$INITRD_DIR"/{bin,dev,etc,lib,proc,sys,root,sbin,tmp,usr/bin,usr/sbin}
+    mkdir -p "$initrd_dir"
     
-    # 创建init脚本
+    # 创建支持中文的 init 脚本
     cat > "$initrd_dir/init" << 'INIT_EOF'
 #!/bin/sh
-# OpenWRT Alpine Installer initrd
+# OpenWRT Alpine Installer - 中文交互式安装
 
-PATH=/bin:/sbin:/usr/bin:/usr/sbin
-export PATH
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
-# 早期挂载
+# 设置中文环境（如果控制台支持）
+export LANG=zh_CN.UTF-8
+export LANGUAGE=zh_CN:zh
+export LC_ALL=zh_CN.UTF-8
+
+# 挂载虚拟文件系统
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || mdev -s
+mount -t tmpfs tmpfs /tmp
+mount -t tmpfs tmpfs /run
 
-# 创建必要的目录
-mkdir -p /tmp /mnt /root /proc /sys /dev /run
-
-# 加载必要的模块
-modprobe -q isofs 2>/dev/null || true
-modprobe -q cdrom 2>/dev/null || true
-modprobe -q sr_mod 2>/dev/null || true
-modprobe -q loop 2>/dev/null || true
-modprobe -q fat 2>/dev/null || true
-modprobe -q vfat 2>/dev/null || true
-
-# 寻找安装介质
-echo "寻找OpenWRT安装介质..."
-
-# 先尝试挂载光盘
-for dev in /dev/sr* /dev/cdrom* /dev/disk/by-label/*; do
-    if [ -b "$dev" ]; then
-        echo "尝试挂载 $dev..."
-        mount -t iso9660 -o ro "$dev" /mnt 2>/dev/null && break
-        mount -t udf -o ro "$dev" /mnt 2>/dev/null && break
+# 设置控制台支持中文
+setup_console() {
+    # 加载中文控制台字体
+    if [ -f /usr/share/consolefonts/UniCNS-16.psf.gz ]; then
+        gzip -dc /usr/share/consolefonts/UniCNS-16.psf.gz > /tmp/font.psf
+        setfont /tmp/font.psf 2>/dev/null || true
     fi
+    
+    # 设置控制台编码
+    echo -e '\033%G' > /dev/console  # UTF-8
+    chvt 1
+    
+    # 设置键盘布局（可选）
+    loadkeys us 2>/dev/null || true
+    loadkeys /usr/share/keymaps/i386/qwerty/us.kmap.gz 2>/dev/null || true
+}
+
+# 设置控制台
+exec >/dev/console 2>&1 </dev/console
+setup_console
+
+# 加载必要模块
+echo "正在加载内核模块..."
+for mod in isofs cdrom sr_mod loop fat vfat nls_cp437 nls_utf8 nls_iso8859-1; do
+    modprobe -q $mod 2>/dev/null || true
 done
 
-# 如果失败，尝试挂载USB
-if ! mountpoint -q /mnt; then
-    for dev in /dev/sd* /dev/mmcblk*; do
-        if [ -b "$dev" ] && [ "${dev##*/}" != "sda" ]; then
-            echo "尝试挂载 $dev..."
-            mount -t iso9660 -o ro "$dev" /mnt 2>/dev/null && break
-            mount -t vfat -o ro "$dev" /mnt 2>/dev/null && break
+# 挂载安装介质
+mount_iso() {
+    echo "正在寻找安装介质..."
+    
+    # 尝试各种设备
+    for dev in /dev/sr0 /dev/cdrom /dev/disk/by-label/OPENWRT_ALPINE; do
+        if [ -b "$dev" ]; then
+            echo "尝试挂载: $dev"
+            mount -t iso9660 -o ro,codepage=936,iocharset=utf8 "$dev" /mnt 2>/dev/null && return 0
+            mount -t udf -o ro "$dev" /mnt 2>/dev/null && return 0
         fi
     done
-fi
-
-# 检查OpenWRT镜像
-if [ -f "/mnt/images/openwrt.img" ]; then
-    echo "✅ 找到OpenWRT镜像: /mnt/images/openwrt.img"
-    IMG_PATH="/mnt/images/openwrt.img"
-elif [ -f "/mnt/openwrt.img" ]; then
-    echo "✅ 找到OpenWRT镜像: /mnt/openwrt.img"
-    IMG_PATH="/mnt/openwrt.img"
-else
-    echo "❌ 未找到OpenWRT镜像"
-    echo "挂载点内容:"
-    ls -la /mnt/ 2>/dev/null || true
-    echo "等待10秒后进入shell..."
-    sleep 10
-    exec /bin/sh
-fi
-
-# 安装菜单
-while true; do
-    clear
-    cat << 'MENU_EOF'
-
-╔══════════════════════════════════════╗
-║      OpenWRT Alpine Installer       ║
-╚══════════════════════════════════════╝
-
-1) 列出磁盘
-2) 安装OpenWRT
-3) 进入Shell
-4) 重启
-
-选择 [1-4]: 
-MENU_EOF
     
-    read -n 1 choice
+    # 尝试所有块设备
+    for dev in /dev/sd[a-z] /dev/nvme[0-9]n[0-9] /dev/mmcblk[0-9]; do
+        if [ -b "$dev" ] && [ "$dev" != "/dev/sda" ]; then
+            echo "尝试挂载: $dev"
+            mount -t iso9660 -o ro,codepage=936,iocharset=utf8 "$dev" /mnt 2>/dev/null && return 0
+            mount -t vfat -o ro,codepage=936,iocharset=utf8 "$dev" /mnt 2>/dev/null && return 0
+        fi
+    done
+    
+    echo "警告: 无法挂载安装介质，使用内置镜像"
+    return 1
+}
+
+# 中文界面函数
+show_welcome() {
+    clear
+    cat << '欢迎界面'
+
+╔═══════════════════════════════════════════════════════╗
+║              OpenWRT 路由器系统安装程序              ║
+╠═══════════════════════════════════════════════════════╣
+║                                                       ║
+║  欢迎使用 OpenWRT 安装向导                           ║
+║  本程序将帮助您安装 OpenWRT 到您的设备               ║
+║                                                       ║
+║  警告: 安装过程将会擦除目标磁盘上的所有数据!         ║
+║  请确保您已备份重要数据                              ║
+║                                                       ║
+╚═══════════════════════════════════════════════════════╝
+欢迎界面
+}
+
+show_main_menu() {
+    cat << '主菜单'
+
+╔═══════════════════════════════════════════════════════╗
+║                   OpenWRT 安装菜单                   ║
+╠═══════════════════════════════════════════════════════╣
+║                                                       ║
+║  请选择操作:                                         ║
+║                                                       ║
+║  1) 查看可用磁盘列表                                 ║
+║  2) 安装 OpenWRT 系统                                ║
+║  3) 进入命令行 (高级用户)                            ║
+║  4) 重新启动系统                                     ║
+║  5) 关闭计算机                                       ║
+║                                                       ║
+║  请输入选项 [1-5]:                                   ║
+║                                                       ║
+╚═══════════════════════════════════════════════════════╝
+主菜单
+}
+
+show_disk_list() {
+    echo ""
+    echo "可用磁盘列表:"
+    echo "=========================================="
+    
+    if command -v lsblk >/dev/null 2>&1; then
+        lsblk -d -n -o NAME,SIZE,MODEL,TYPE,TRAN | while read line; do
+            echo "  $line"
+        done
+    elif command -v fdisk >/dev/null 2>&1; then
+        fdisk -l 2>/dev/null | grep "^Disk /dev" | while read line; do
+            echo "  $line"
+        done
+    else
+        for dev in /dev/sd[a-z] /dev/nvme[0-9]n[0-9]; do
+            if [ -b "$dev" ]; then
+                size=$(blockdev --getsize64 "$dev" 2>/dev/null || echo "未知")
+                if [ "$size" != "未知" ]; then
+                    size=$((size/1024/1024/1024))
+                    echo "  $dev - ${size}GB"
+                else
+                    echo "  $dev"
+                fi
+            fi
+        done
+    fi
+    
+    echo "=========================================="
+}
+
+show_warning() {
+    local disk="$1"
+    cat << 警告信息
+
+╔═══════════════════════════════════════════════════════╗
+║                    ⚠️  严重警告 ⚠️                    ║
+╠═══════════════════════════════════════════════════════╣
+║                                                       ║
+║  您选择了磁盘: $disk                                ║
+║                                                       ║
+║  这将永久擦除该磁盘上的所有数据！                    ║
+║  包括:                                              ║
+║  • 所有分区                                         ║
+║  • 所有文件                                         ║
+║  • 操作系统                                         ║
+║  • 个人数据                                         ║
+║                                                       ║
+║  此操作不可撤销！                                    ║
+║                                                       ║
+╚═══════════════════════════════════════════════════════╝
+
+输入 '我确认安装' 继续，输入其他内容取消:
+警告信息
+}
+
+show_success() {
+    cat << 成功信息
+
+╔═══════════════════════════════════════════════════════╗
+║                   ✅ 安装成功 ✅                     ║
+╠═══════════════════════════════════════════════════════╣
+║                                                       ║
+║  OpenWRT 已成功安装！                                ║
+║                                                       ║
+║  下一步操作:                                         ║
+║  1. 取出安装介质 (U盘/光盘)                          ║
+║  2. 重新启动计算机                                    ║
+║  3. 从硬盘启动 OpenWRT                               ║
+║                                                       ║
+║  系统将在 30 秒后自动重启...                         ║
+║  按 Ctrl+C 可以取消重启                              ║
+║                                                       ║
+╚═══════════════════════════════════════════════════════╝
+成功信息
+}
+
+# 查找 OpenWRT 镜像
+find_openwrt_image() {
+    for path in \
+        /mnt/images/openwrt.img \
+        /mnt/openwrt.img \
+        /images/openwrt.img \
+        /openwrt.img \
+        /mnt/*.img; do
+        if [ -f "$path" ] && file "$path" | grep -q "DOS/MBR"; then
+            echo "找到系统镜像: $path ($(ls -lh "$path" | awk '{print $5}'))"
+            echo "$path"
+            return 0
+        fi
+    done
+    
+    echo "错误: 未找到 OpenWRT 系统镜像"
+    return 1
+}
+
+# 安装函数
+install_openwrt() {
+    local img_path="$1"
+    local target_disk="$2"
+    
+    # 显示警告
+    show_warning "$target_disk"
+    read confirm
+    
+    if [ "$confirm" != "我确认安装" ]; then
+        echo "安装已取消"
+        return 1
+    fi
+    
+    clear
+    echo "正在安装 OpenWRT..."
+    echo "目标磁盘: $target_disk"
+    echo "镜像文件: $(basename "$img_path")"
+    echo ""
+    echo "正在写入，这可能需要几分钟，请稍候..."
     echo ""
     
-    case $choice in
-        1)
-            echo "可用磁盘:"
-            echo "=========="
-            lsblk -d -n -o NAME,SIZE,MODEL,TYPE 2>/dev/null || \
-            fdisk -l 2>/dev/null || \
-            echo "无法列出磁盘"
-            echo "=========="
-            echo ""
-            echo "按Enter键继续..."
-            read
-            ;;
-        2)
-            echo "输入目标磁盘 (例如: sda, nvme0n1): "
-            read disk
-            
-            if [ -z "$disk" ]; then
-                echo "磁盘名称不能为空"
-                sleep 2
-                continue
-            fi
-            
-            # 添加/dev/前缀（如果未提供）
-            if [[ "$disk" != /dev/* ]]; then
-                disk="/dev/$disk"
-            fi
-            
-            if [ ! -b "$disk" ]; then
-                echo "❌ 磁盘不存在: $disk"
-                sleep 2
-                continue
-            fi
-            
-            # 显示磁盘信息
-            echo ""
-            echo "磁盘信息:"
-            if command -v fdisk >/dev/null 2>&1; then
-                fdisk -l "$disk" 2>/dev/null | head -20
-            fi
-            echo ""
-            
-            # 确认
-            echo "⚠️ 警告: 这将擦除 $disk 上的所有数据!"
-            echo "输入 'YES' 确认: "
-            read confirm
-            
-            if [ "$confirm" != "YES" ]; then
-                echo "操作取消"
-                sleep 2
-                continue
-            fi
-            
-            # 写入镜像
-            echo ""
-            echo "正在写入OpenWRT镜像到 $disk ..."
-            echo "这可能需要几分钟，请耐心等待..."
-            
-            # 使用dd写入
-            if command -v pv >/dev/null 2>&1; then
-                pv "$IMG_PATH" | dd of="$disk" bs=4M
-            else
-                dd if="$IMG_PATH" of="$disk" bs=4M status=progress
-            fi
-            
-            # 同步并等待
-            sync
-            echo ""
-            echo "✅ 安装完成!"
-            echo ""
-            echo "10秒后重启..."
-            sleep 10
-            reboot -f
-            ;;
-        3)
-            echo "进入shell..."
-            echo "输入 'exit' 返回菜单"
-            exec /bin/sh
-            ;;
-        4)
-            echo "重启系统..."
-            sleep 2
-            reboot -f
-            ;;
-        *)
-            echo "无效选择"
+    # 显示进度
+    if command -v pv >/dev/null 2>&1; then
+        pv -petr "$img_path" | dd of="$target_disk" bs=4M 2>/dev/null
+    else
+        dd if="$img_path" of="$target_disk" bs=4M status=progress 2>/dev/null
+    fi
+    
+    if [ $? -eq 0 ]; then
+        sync
+        echo ""
+        show_success
+        
+        # 倒计时重启
+        for i in $(seq 30 -1 1); do
+            echo -ne "\r重启倒计时: ${i} 秒 "
             sleep 1
-            ;;
-    esac
-done
+        done
+        echo ""
+        reboot -f
+    else
+        echo ""
+        echo "❌ 安装失败！"
+        echo "可能原因:"
+        echo "  1. 磁盘空间不足"
+        echo "  2. 磁盘有坏道"
+        echo "  3. 镜像文件损坏"
+        echo ""
+        echo "按 Enter 返回菜单..."
+        read
+    fi
+}
+
+# 主菜单循环
+main_menu() {
+    local img_path="$1"
+    
+    while true; do
+        show_main_menu
+        read -n 1 choice
+        echo ""
+        
+        case $choice in
+            1)
+                show_disk_list
+                echo ""
+                echo "按 Enter 键继续..."
+                read
+                ;;
+            2)
+                show_disk_list
+                echo ""
+                echo "请输入要安装的磁盘名称 (例如: sda, nvme0n1): "
+                read disk_name
+                
+                if [ -z "$disk_name" ]; then
+                    echo "错误: 磁盘名称不能为空"
+                    sleep 2
+                    continue
+                fi
+                
+                if [[ "$disk_name" != /dev/* ]]; then
+                    disk_name="/dev/$disk_name"
+                fi
+                
+                if [ ! -b "$disk_name" ]; then
+                    echo "错误: 磁盘 $disk_name 不存在"
+                    sleep 2
+                    continue
+                fi
+                
+                install_openwrt "$img_path" "$disk_name"
+                ;;
+            3)
+                echo ""
+                echo "进入命令行模式..."
+                echo "输入 'exit' 返回安装菜单"
+                echo ""
+                export PS1='(安装系统)# '
+                /bin/sh
+                ;;
+            4)
+                echo "正在重新启动..."
+                sleep 2
+                reboot -f
+                ;;
+            5)
+                echo "正在关闭计算机..."
+                sleep 2
+                poweroff -f
+                ;;
+            *)
+                echo "无效选项，请重新输入"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# 主程序
+main() {
+    # 显示欢迎界面
+    show_welcome
+    sleep 2
+    
+    echo "正在初始化系统..."
+    
+    # 挂载安装介质
+    mount_iso
+    
+    # 查找镜像
+    local img_path=$(find_openwrt_image)
+    if [ $? -ne 0 ]; then
+        echo "启动紧急命令行..."
+        export PS1='(紧急)# '
+        exec /bin/sh
+    fi
+    
+    sleep 1
+    main_menu "$img_path"
+}
+
+# 运行主程序
+main
 INIT_EOF
 
     chmod +x "$initrd_dir/init"
     
-    # 复制busybox
-    if which busybox >/dev/null 2>&1; then
+    # 复制 busybox 并创建中文相关文件
+    if command -v busybox >/dev/null 2>&1; then
         cp $(which busybox) "$initrd_dir/busybox"
         cd "$initrd_dir"
-        ./busybox --list | while read app; do
+        
+        # 创建必要的符号链接
+        for app in sh mount umount dd sync reboot poweroff modprobe \
+                   mdev lsblk fdisk cat echo grep sed awk sleep; do
             ln -s busybox "$app" 2>/dev/null || true
         done
+        
         cd - >/dev/null
     fi
     
-    # 打包initrd
+    # 复制其他工具
+    for tool in pv blockdev; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            cp $(which "$tool") "$initrd_dir/" 2>/dev/null || true
+        fi
+    done
+    
+    # 创建简单的中文字符支持
+    mkdir -p "$initrd_dir/usr/share/consolefonts"
+    # 创建一个简单的字体文件（可选）
+    
+    # 创建设备节点
+    mknod "$initrd_dir/dev/console" c 5 1
+    mknod "$initrd_dir/dev/null" c 1 3
+    mknod "$initrd_dir/dev/tty" c 5 0
+    
+    # 创建目录结构
+    mkdir -p "$initrd_dir"/{proc,sys,dev,tmp,mnt,usr/share}
+    
+    # 打包 initrd
     cd "$initrd_dir"
     find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$initrd_path"
     cd - >/dev/null
     
-    log_success "initrd创建完成: $(du -h "$initrd_path" | cut -f1)"
+    rm -rf "$initrd_dir"
+    log_success "中文 initrd 创建完成"
 }
 
 # ========== 步骤5: 复制OpenWRT镜像 ==========
@@ -531,19 +727,6 @@ LABEL install
   KERNEL /live/vmlinuz
   APPEND initrd=/live/initrd console=tty0 console=ttyS0,115200
 
-LABEL shell
-  MENU LABEL ^Emergency Shell
-  KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd console=tty0 init=/bin/sh
-
-LABEL memtest
-  MENU LABEL ^Memory Test
-  KERNEL /boot/memtest
-
-LABEL local
-  MENU LABEL Boot from ^local disk
-  LOCALBOOT 0x80
-  TIMEOUT 30
 ISOLINUX_CFG
 
 # 复制ISOLINUX文件
@@ -593,22 +776,6 @@ menuentry "Install OpenWRT (UEFI)" {
     initrd /live/initrd
 }
 
-menuentry "Emergency Shell" {
-    linux /live/vmlinuz console=tty0 init=/bin/sh
-    initrd /live/initrd
-}
-
-menuentry "Boot from local disk" {
-    exit
-}
-
-menuentry "Reboot" {
-    reboot
-}
-
-menuentry "Shutdown" {
-    halt
-}
 GRUB_CFG
 
 # ========== 步骤8: 创建UEFI引导文件 ==========
