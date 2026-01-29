@@ -213,8 +213,6 @@ log_info "获取最新版本信息..."
 # 尝试多种方式获取最新版本
 if command -v curl >/dev/null 2>&1; then
     LATEST_ISO=$(curl -s "$KERNEL_URL" | grep -o "alpine-standard-.*-x86_64.iso" | head -1)
-    
-log_info "使用Alpine版本LATEST_ISO: $LATEST_ISO"
     if [ -z "$LATEST_ISO" ]; then
         LATEST_ISO="alpine-standard-${ALPINE_VERSION}.9-x86_64.iso"
     fi
@@ -839,11 +837,6 @@ docker build \
 
 if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
     echo "✅ Docker镜像构建成功: $IMAGE_NAME"
-
-
-
-
-
 else
     echo "❌ Docker镜像构建失败"
     cat /tmp/docker-build.log | tail -20
@@ -869,7 +862,7 @@ set -e
 echo "容器退出代码: $CONTAINER_EXIT"
 
 # ========== 检查结果 ==========
-OUTPUT_ISO="$OUTPUT_ABS/openwrt.iso"
+OUTPUT_ISO="$OUTPUT_ABS/$ISO_NAME"
 if [ -f "$OUTPUT_ISO" ]; then
     # 重命名
     FINAL_ISO="$OUTPUT_ABS/$ISO_NAME"
