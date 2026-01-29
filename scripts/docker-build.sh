@@ -67,22 +67,33 @@ ARG ALPINE_VERSION=3.20
 FROM alpine:${ALPINE_VERSION} as builder
 
 # 设置镜像源
-RUN echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > /etc/apk/repositories && \
-    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> /etc/apk/repositories
+RUN echo "http://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main" > /etc/apk/repositories && \
+    echo "http://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community" >> /etc/apk/repositories
 
-# 安装完整的ISO构建工具链
-RUN apk update && apk add --no-cache \
+# 更新并安装基础工具
+RUN apk update && apk upgrade
+
+# 安装第一阶段：基本工具
+RUN apk add --no-cache \
     bash \
+    curl \
+    wget \
+    git \
+    sudo \
+    nano \
+    tree \
+    && rm -rf /var/cache/apk/*
+
+# 安装第二阶段：ISO构建工具
+RUN apk add --no-cache \
     xorriso \
     syslinux \
     grub \
     grub-efi \
     grub-bios \
     e2fsprogs \
-    e2fsprogs-extra \
     parted \
     util-linux \
-    util-linux-misc \
     coreutils \
     gzip \
     tar \
@@ -91,13 +102,10 @@ RUN apk update && apk add --no-cache \
     grep \
     gawk \
     file \
-    curl \
-    wget \
     pv \
     squashfs-tools \
     cdrtools \
     linux-lts \
-    linux-firmware \
     musl-dev \
     gcc \
     make \
@@ -110,6 +118,20 @@ RUN apk update && apk add --no-cache \
     busybox \
     && rm -rf /var/cache/apk/*
 
+# 安装第三阶段：额外工具
+RUN apk add --no-cache \
+    libisoburn \
+    syslinux-efi \
+    grub-efi-bin \
+    grub-bios-bin \
+    sfdisk \
+    blkid \
+    hdparm \
+    lvm2 \
+    mdadm \
+    cryptsetup \
+    && rm -rf /var/cache/apk/*
+
 # 创建必要目录
 RUN mkdir -p /work/scripts
 
@@ -119,10 +141,6 @@ WORKDIR /work
 COPY scripts/build-iso-alpine.sh /work/build-iso.sh
 RUN chmod +x /work/build-iso.sh
 
-# 设置环境变量
-ENV INPUT_IMG=/mnt/input.img
-ENV OUTPUT_DIR=/output
-ENV ISO_NAME=openwrt-installer.iso
 
 ENTRYPOINT ["/work/build-iso.sh"]
 
