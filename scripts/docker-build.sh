@@ -66,8 +66,8 @@ cat > "$DOCKERFILE_PATH" << 'DOCKERFILE_EOF'
 ARG ALPINE_VERSION=3.20
 FROM alpine:${ALPINE_VERSION}
 
-# 使用国内镜像源，避免Docker Hub超时
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+RUN echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > /etc/apk/repositories && \
+    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> /etc/apk/repositories
 
 # 安装完整的ISO构建工具链和内核
 RUN apk update && apk add --no-cache \
@@ -202,7 +202,7 @@ log_info "[3/10] 获取Alpine内核和initramfs..."
 
 # 下载Alpine内核和initramfs
 log_info "下载Alpine内核和initramfs..."
-ALPINE_MIRROR="https://mirrors.aliyun.com/alpine"
+ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
 ALPINE_BRANCH="v${ALPINE_VERSION}"
 ALPINE_ARCH="x86_64"
 
@@ -212,14 +212,16 @@ log_info "获取最新版本信息..."
 
 # 尝试多种方式获取最新版本
 if command -v curl >/dev/null 2>&1; then
-    LATEST_ISO=$(curl -s "$KERNEL_URL" | grep -o "alpine-minirootfs-.*-x86_64.iso" | head -1)
+    LATEST_ISO=$(curl -s "$KERNEL_URL" | grep -o "alpine-standard-.*-x86_64.iso" | head -1)
+    
+log_info "使用Alpine版本LATEST_ISO: $LATEST_ISO"
     if [ -z "$LATEST_ISO" ]; then
-        LATEST_ISO="alpine-minirootfs-${ALPINE_VERSION}.9-x86_64.iso"
+        LATEST_ISO="alpine-standard-${ALPINE_VERSION}.9-x86_64.iso"
     fi
-    LATEST_VERSION=$(echo "$LATEST_ISO" | sed 's/alpine-minirootfs-//' | sed 's/-x86_64.iso//')
+    LATEST_VERSION=$(echo "$LATEST_ISO" | sed 's/alpine-standard-//' | sed 's/-x86_64.iso//')
 else
     LATEST_VERSION="${ALPINE_VERSION}.9"
-    LATEST_ISO="alpine-minirootfs-${LATEST_VERSION}-x86_64.iso"
+    LATEST_ISO="alpine-standard-${LATEST_VERSION}-x86_64.iso"
 fi
 
 log_info "使用Alpine版本: $LATEST_VERSION"
