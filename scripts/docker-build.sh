@@ -145,10 +145,10 @@ echo "================================================"
 echo ""
 
 # 参数处理
-INPUT_IMG="$1"
-OUTPUT_DIR="${2:-./output}"
-ISO_NAME="${3:-openwrt.iso}"
-ALPINE_VERSION="${4:-3.20}"
+INPUT_IMG="${INPUT_IMG:-/mnt/input.img}"
+OUTPUT_DIR="${OUTPUT_DIR:-/output}"
+ISO_NAME="${ISO_NAME:-openwrt.iso}"
+ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
 
 if [ ! -f "$INPUT_IMG" ]; then
     echo "错误: 找不到IMG文件: $INPUT_IMG"
