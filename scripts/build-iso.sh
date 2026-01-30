@@ -323,49 +323,35 @@ chmod +x scripts/genapkovl-openwrt.sh
 
 echo "✅ Profile创建完成"
 
-# 3. 创建临时密钥（或者直接禁用签名）
-echo "设置签名密钥..."
-
-# 方法1: 生成临时密钥（推荐）
-mkdir -p /tmp/keys
-if [ ! -f /tmp/keys/builder.rsa ]; then
-    echo "生成临时RSA密钥..."
-    openssl genrsa -out /tmp/keys/builder.rsa 2048 2>/dev/null
-    openssl rsa -in /tmp/keys/builder.rsa -pubout -out /tmp/keys/builder.rsa.pub 2>/dev/null
-    echo "✅ 密钥生成完成"
-fi
-
 # 2. 构建ISO
 echo ""
 echo "开始构建ISO..."
 
-# 构建ISO（支持BIOS和UEFI） - 禁用签名或使用临时密钥
+# 构建ISO（支持BIOS和UEFI）
 echo "运行mkimage.sh命令..."
 
-# 尝试使用临时密钥构建
-if [ -f /tmp/keys/builder.rsa ]; then
-    echo "使用临时密钥签名..."
+# 方法1: 尝试使用系统主机密钥（如果存在）
+echo "尝试使用--hostkeys参数..."
+./scripts/mkimage.sh \
+    --tag "$ALPINE_VERSION" \
+    --outdir "$OUTPUT_DIR" \
+    --arch x86_64 \
+    --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/main" \
+    --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/community" \
+    --profile openwrt \
+    --hostkeys 2>&1 || {
+    
+    echo "⚠️ 使用--hostkeys失败，尝试不使用--hostkeys..."
+    
+    # 方法2: 不使用hostkeys参数
     ./scripts/mkimage.sh \
         --tag "$ALPINE_VERSION" \
         --outdir "$OUTPUT_DIR" \
         --arch x86_64 \
         --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/main" \
         --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/community" \
-        --profile openwrt \
-        --hostkeys \
-        --sign-key /tmp/keys/builder.rsa 2>&1
-else
-    # 如果不生成密钥，尝试禁用签名
-    echo "尝试禁用签名..."
-    ./scripts/mkimage.sh \
-        --tag "$ALPINE_VERSION" \
-        --outdir "$OUTPUT_DIR" \
-        --arch x86_64 \
-        --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/main" \
-        --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/community" \
-        --profile openwrt \
-        --no-hostkeys 2>&1
-fi
+        --profile openwrt 2>&1
+}
 
 # 检查结果
 ISO_FILE=$(find "$OUTPUT_DIR" -name "*.iso" -type f | head -1)
