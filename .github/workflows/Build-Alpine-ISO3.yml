@@ -1,16 +1,16 @@
-name: Build-Alpine-ISO3
+name: Build OpenWRT ISO with Alpine
 
 on:
   workflow_dispatch:
     inputs:
-      openwrt_image_url:
-        description: 'OpenWRT镜像URL'
-        required: true
-        default: 'https://github.com/sirpdboy/openwrt/releases/download/v20260119-6.6.119-Vip_Super/EzOpWrt-v20260119-6.6.119-Vip_Super-x86_64-dev-efi.img.gz'
       alpine_version:
         description: 'Alpine版本'
         required: true
         default: '3.20'
+      openwrt_image_url:
+        description: 'OpenWRT镜像URL'
+        required: false
+        default: 'https://downloads.openwrt.org/releases/23.05.0/targets/x86/64/openwrt-23.05.0-x86-64-generic-ext4-combined.img.gz'
 
 env:
   ALPINE_VERSION: ${{ github.event.inputs.alpine_version || '3.20' }}
@@ -20,27 +20,23 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: 检查构建环境
+    - name: 检查环境
       run: |
         echo "Alpine版本: ${{ env.ALPINE_VERSION }}"
         echo "工作目录: $(pwd)"
-        df -h
         
-    - name: 准备构建目录
+    - name: 准备目录
       run: |
         mkdir -p iso-output
         mkdir -p build-scripts
-
-    - name: 创建优化的Dockerfile
+        
+    - name: 创建正确的Dockerfile
       run: |
         cat > Dockerfile.alpine-build << 'DOCKEREOF'
-        FROM alpine:${{ env.ALPINE_VERSION }}
+        # 使用基础镜像
+        FROM alpine:3.20
         
-        # 设置镜像源
-        RUN echo "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/main" > /etc/apk/repositories && \
-            echo "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/community" >> /etc/apk/repositories
-        
-        # 第一步：安装基础工具
+        # 安装基础工具（固定版本，不使用变量）
         RUN apk update && apk add --no-cache \
             bash \
             git \
@@ -48,7 +44,7 @@ jobs:
             wget \
             sudo
         
-        # 第二步：安装alpine-sdk和相关构建工具
+        # 安装Alpine构建工具
         RUN apk add --no-cache \
             alpine-sdk \
             alpine-conf \
@@ -63,21 +59,20 @@ jobs:
             parted \
             lsblk
         
-        # 第三步：创建构建用户
+        # 创建构建用户
         RUN adduser -D -g "Alpine Builder" builder && \
             echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
         
         USER builder
         WORKDIR /home/builder
         
-        # 第四步：设置环境并生成密钥
+        # 设置环境
         ENV HOME=/home/builder
-        RUN abuild-keygen -a -n -i
         
-        # 第五步：准备构建脚本目录
-        RUN mkdir -p /home/builder/build-scripts
+        # 复制构建脚本
+        COPY --chown=builder:builder build-scripts/ /home/builder/build-scripts/
         
-        # 设置容器入口
+        # 设置入口
         ENTRYPOINT ["/bin/bash", "/home/builder/build-scripts/build-iso.sh"]
         DOCKEREOF
         
@@ -94,21 +89,27 @@ jobs:
         echo "  OpenWRT ISO Builder"
         echo "================================================"
         echo ""
-        echo "工作目录: $(pwd)"
-        echo "用户: $(whoami)"
-        echo "Home目录: $HOME"
+        
+        # 获取Alpine版本（从环境变量或参数）
+        ALPINE_VERSION=${1:-"3.20"}
+        echo "使用 Alpine 版本: $ALPINE_VERSION"
         
         # 检查必要工具
         echo "检查工具..."
-        command -v abuild-keygen && echo "✅ abuild-keygen 可用"
-        command -v mkimage.sh || echo "❌ mkimage.sh 未找到"
+        for cmd in git mkimage.sh xorriso; do
+            if command -v $cmd >/dev/null 2>&1; then
+                echo "✅ $cmd 可用"
+            else
+                echo "⚠️  $cmd 未找到"
+            fi
+        done
         
-        # 设置临时目录
-        export TMPDIR=/tmp/mkimage-work
-        mkdir -p $TMPDIR
-        echo "TMPDIR设置为: $TMPDIR"
+        # 设置工作目录
+        WORKDIR=/home/builder/work
+        mkdir -p $WORKDIR
+        cd $WORKDIR
         
-        # 如果aports目录不存在，克隆它
+        # 克隆 aports 仓库
         if [ ! -d "aports" ]; then
             echo "克隆 aports 仓库..."
             git clone --depth 1 --branch v$ALPINE_VERSION \
@@ -116,69 +117,113 @@ jobs:
         fi
         
         cd aports
-        echo "进入目录: $(pwd)"
         
-        # 检查mkimage.sh是否存在
-        if [ ! -f "scripts/mkimage.sh" ]; then
-            echo "错误: scripts/mkimage.sh 不存在"
+        # 创建OpenWRT安装profile
+        echo "创建OpenWRT安装profile..."
+        
+        # 1. 创建profile文件
+        cat > scripts/mkimg.openwrt.sh << 'PROFILEEOF'
+        profile_openwrt() {
+            profile_standard
+            kernel_cmdline="console=tty0 console=ttyS0,115200"
+            syslinux_serial="0 115200"
+            
+            # 创建overlay脚本
+            cat > scripts/genapkovl-openwrt.sh << 'OVERLAYEOF'
+        #!/bin/sh
+        
+        set -e
+        
+        # 创建临时目录
+        tmp="${ROOT}/tmp/overlay"
+        mkdir -p "$tmp"/etc
+        mkdir -p "$tmp"/var
+        
+        # 创建欢迎信息
+        cat > "$tmp"/etc/issue << 'ISSUEEOF'
+        ========================================
+              OpenWRT Alpine Installer
+        ========================================
+        
+        从启动菜单中选择 "Install OpenWRT"
+        
+        ISSUEEOF
+        
+        # 打包overlay
+        ( cd "$tmp" && tar -c -f "${ROOT}"/tmp/overlay.tar . )
+        OVERLAYEOF
+            
+            chmod +x scripts/genapkovl-openwrt.sh
+            apkovl="genapkovl-openwrt.sh"
+        }
+        PROFILEEOF
+        
+        # 2. 构建ISO
+        echo "开始构建ISO..."
+        
+        # 创建输出目录
+        OUTPUT_DIR=/output
+        mkdir -p $OUTPUT_DIR
+        
+        # 运行mkimage
+        ./scripts/mkimage.sh \
+            --tag "$ALPINE_VERSION" \
+            --outdir "$OUTPUT_DIR" \
+            --arch x86_64 \
+            --hostkeys \
+            --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/main" \
+            --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/community" \
+            --profile openwrt
+        
+        # 检查结果
+        if ls $OUTPUT_DIR/*.iso 1>/dev/null 2>&1; then
+            ISO_FILE=$(ls $OUTPUT_DIR/*.iso)
+            echo ""
+            echo "✅ ISO 构建成功!"
+            echo "文件: $ISO_FILE"
+            echo "大小: $(du -h "$ISO_FILE" | cut -f1)"
+            
+            # 重命名
+            NEW_NAME="openwrt-alpine-$ALPINE_VERSION-$(date +%Y%m%d).iso"
+            mv "$ISO_FILE" "$OUTPUT_DIR/$NEW_NAME"
+            echo "重命名为: $NEW_NAME"
+        else
+            echo "❌ ISO 构建失败"
             exit 1
         fi
         
-        echo "✅ 环境准备完成"
         echo ""
-        
-        # 执行一个简单的测试
-        echo "测试构建环境..."
-        ./scripts/mkimage.sh --help | head -20
-        
-        echo ""
-        echo "✅ 构建脚本准备就绪"
+        echo "🎉 构建完成!"
         SCRIPTEOF
         
         chmod +x build-scripts/build-iso.sh
         
-        # 创建简化的profile测试
-        cat > build-scripts/test-profile.sh << 'TESTEOF'
+        # 创建测试脚本
+        cat > build-scripts/test-env.sh << 'TESTEOF'
         #!/bin/bash
-        
-        cd aports
-        
-        # 创建测试profile
-        cat > scripts/mkimg.test.sh << 'PROFILEEOF'
-        profile_test() {
-            profile_standard
-            kernel_cmdline="console=tty0"
-            syslinux_serial="0 115200"
-        }
-        PROFILEEOF
-        
-        # 测试构建一个小型ISO
-        echo "测试构建ISO..."
-        ./scripts/mkimage.sh \
-            --tag $ALPINE_VERSION \
-            --outdir /tmp/test-output \
-            --arch x86_64 \
-            --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/main" \
-            --profile test
-            
-        echo "测试完成"
+        echo "测试环境..."
+        echo "用户: $(whoami)"
+        echo "目录: $(pwd)"
+        echo "工具检查:"
+        which git && echo "✅ git"
+        which mkimage.sh || echo "⚠️  mkimage.sh"
+        which xorriso && echo "✅ xorriso"
         TESTEOF
         
-        chmod +x build-scripts/test-profile.sh
+        chmod +x build-scripts/test-env.sh
 
     - name: 构建Docker镜像
       run: |
         echo "构建Docker镜像..."
         docker build -t alpine-openwrt-builder -f Dockerfile.alpine-build .
         
-        # 测试镜像
-        echo "测试Docker镜像..."
-        docker run --rm alpine-openwrt-builder whoami
-        docker run --rm alpine-openwrt-builder abuild-keygen -h || true
+        echo "测试镜像..."
+        docker run --rm alpine-openwrt-builder /home/builder/build-scripts/test-env.sh
 
     - name: 下载OpenWRT镜像
       run: |
         echo "下载OpenWRT镜像..."
+        
         # OPENWRT_URL="${{ github.event.inputs.openwrt_image_url }}"
         # 方法1: 尝试下载最新版本
         REPO="sirpdboy/openwrt"
@@ -199,102 +244,63 @@ jobs:
             DOWNLOAD_URLS="https://github.com/sirpdboy/openwrt/releases/download/v2024.09.01/2024.09.01-x86-64-generic-squashfs-combined.img.gz"
         fi
         
-        FIRST_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
-        echo "下载URL: $FIRST_URL"
+        OPENWRT_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
+        mkdir -p custom-overlay/images
         
-        # 下载镜像
-        # wget --tries=3 --timeout=60 -q "$FIRST_URL" -O assets/openwrt.img.gz
-        # 尝试下载OpenWRT镜像
-        if wget -q -O openwrt.img.gz "$FIRST_URL""; then
-            echo "✅ OpenWRT镜像下载成功"
-            
-            # 尝试解压
-            if gzip -t openwrt.img.gz; then
-                gzip -d openwrt.img.gz
-                echo "✅ 解压成功"
+        if [ -n "$OPENWRT_URL" ] && [ "$OPENWRT_URL" != "none" ]; then
+            echo "下载: $OPENWRT_URL"
+            if wget -q -O custom-overlay/images/openwrt.img.gz "$OPENWRT_URL"; then
+                echo "下载成功"
+                # 尝试解压
+                if gzip -t custom-overlay/images/openwrt.img.gz 2>/dev/null; then
+                    gzip -d custom-overlay/images/openwrt.img.gz
+                    echo "解压成功"
+                else
+                    echo "不是gzip格式，直接使用"
+                    mv custom-overlay/images/openwrt.img.gz custom-overlay/images/openwrt.img
+                fi
+                echo "镜像大小: $(du -h custom-overlay/images/openwrt.img | cut -f1)"
             else
-                echo "⚠️ 文件可能不是gzip格式，尝试直接使用"
-                mv openwrt.img.gz openwrt.img
+                echo "下载失败，创建测试文件"
+                dd if=/dev/zero of=custom-overlay/images/openwrt.img bs=1M count=50
             fi
-            
-            # 创建images目录
-            mkdir -p custom-images
-            mv openwrt.img custom-images/
-            echo "OpenWRT镜像大小: $(du -h custom-images/openwrt.img | cut -f1)"
         else
-            echo "❌ OpenWRT镜像下载失败"
-            # 创建一个空的测试文件
-            mkdir -p custom-images
-            dd if=/dev/zero of=custom-images/openwrt.img bs=1M count=10
-            echo "⚠️ 使用测试镜像文件"
+            echo "未提供URL，创建测试文件"
+            dd if=/dev/zero of=custom-overlay/images/openwrt.img bs=1M count=50
         fi
+        
+        # 创建简单的安装脚本
+        cat > custom-overlay/install.sh << 'INSTALLEOF'
+        #!/bin/sh
+        echo "OpenWRT安装脚本"
+        echo "镜像位置: /images/openwrt.img"
+        INSTALLEOF
+        chmod +x custom-overlay/install.sh
 
     - name: 运行构建
       run: |
         echo "运行构建容器..."
         
-        # 创建最终构建脚本
-        cat > build-scripts/final-build.sh << 'FINALEOF'
-        #!/bin/bash
-        set -e
-        
-        echo "最终构建开始..."
-        
-        # 设置环境
-        export TMPDIR=/tmp/mkimage-work
-        mkdir -p $TMPDIR
-        
-        # 进入aports目录
-        cd aports
-        
-        # 创建OpenWRT安装profile
-        cat > scripts/mkimg.openwrt.sh << 'PROFILEEOF'
-        profile_openwrt() {
-            profile_standard
-            kernel_cmdline="console=tty0 console=ttyS0,115200"
-            syslinux_serial="0 115200"
-            apks="\$apks"
-            
-            # 创建一个简单的overlay
-            cat > scripts/genapkovl-openwrt.sh << 'OVERLAYEOF'
-            #!/bin/sh
-            tmp="\${ROOT}/tmp/overlay"
-            mkdir -p "\$tmp"/etc
-            echo "OpenWRT Installer" > "\$tmp"/etc/issue
-            ( cd "\$tmp" && tar -c -f "\${ROOT}"/tmp/overlay.tar . )
-            OVERLAYEOF
-            
-            chmod +x scripts/genapkovl-openwrt.sh
-            apkovl="genapkovl-openwrt.sh"
-        }
-        PROFILEEOF
-        
-        # 构建ISO
-        echo "开始构建ISO..."
-        ./scripts/mkimage.sh \
-            --tag $ALPINE_VERSION \
-            --outdir /output \
-            --arch x86_64 \
-            --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/main" \
-            --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/community" \
-            --profile openwrt
-        
-        echo "构建完成！"
-        FINALEOF
-        
-        chmod +x build-scripts/final-build.sh
-        
-        # 运行容器
         docker run --rm \
-          -v $(pwd)/custom-images:/images:ro \
+          -v $(pwd)/custom-overlay:/custom:ro \
           -v $(pwd)/iso-output:/output:rw \
-          -v $(pwd)/build-scripts:/home/builder/build-scripts:ro \
-          alpine-openwrt-builder
+          -e ALPINE_VERSION="${{ env.ALPINE_VERSION }}" \
+          alpine-openwrt-builder \
+          /home/builder/build-scripts/build-iso.sh "${{ env.ALPINE_VERSION }}"
         
         # 检查输出
+        echo ""
+        echo "检查输出文件..."
         if ls iso-output/*.iso 1>/dev/null 2>&1; then
-            echo "✅ ISO构建成功！"
+            echo "✅ ISO文件:"
             ls -lh iso-output/
+            
+            # 验证ISO
+            echo ""
+            echo "验证ISO..."
+            if command -v file >/dev/null; then
+                file iso-output/*.iso
+            fi
         else
             echo "❌ 没有生成ISO文件"
             exit 1
@@ -303,6 +309,26 @@ jobs:
     - name: 上传制品
       uses: actions/upload-artifact@v4
       with:
-        name: openwrt-iso
+        name: openwrt-alpine-iso
         path: iso-output/*.iso
         retention-days: 7
+        
+    - name: 创建Release
+      if: success()
+      uses: softprops/action-gh-release@v1
+      with:
+        files: iso-output/*.iso
+        tag_name: openwrt-${{ github.run_number }}
+        name: "OpenWRT Alpine Installer"
+        body: |
+          # OpenWRT Alpine Installer ISO
+          
+          版本: ${{ env.ALPINE_VERSION }}
+          构建时间: $(date)
+          
+          使用说明:
+          1. 写入U盘: `dd if=*.iso of=/dev/sdX bs=4M status=progress`
+          2. 从U盘启动
+          3. 选择安装选项
+        draft: false
+        prerelease: false
