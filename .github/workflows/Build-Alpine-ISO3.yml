@@ -1,4 +1,4 @@
-name: Build OpenWRT Alpine ISO
+name: Build-Alpine-ISO3
 
 on:
   workflow_dispatch:
