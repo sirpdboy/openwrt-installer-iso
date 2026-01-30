@@ -540,10 +540,7 @@ if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
     if [ -f "$STAGING_DIR/live/initrd" ] && [ -s "$STAGING_DIR/live/initrd" ]; then
         SIZE=$(du -h "$STAGING_DIR/live/initrd" | cut -f1)
         log_success "修改后的 initrd 创建成功"
-	
-        # 检查内容
-        log_info "检查 initrd 内容:"
-        gzip -dc "$STAGING_DIR/live/initrd" 2>/dev/null | cpio -t 2>/dev/null | grep -E "^(\./init|\./busybox)" 
+
     else
         log_warning "修改失败，使用简单 initrd"
         create_minimal_initrd "$STAGING_DIR/live/initrd"
