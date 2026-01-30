@@ -1,5 +1,5 @@
 #!/bin/bash
-# build-iso.sh OpenWRT ISO构建脚本 - 基于Alpine mkimage
+# OpenWRT ISO构建脚本 - 基于Alpine mkimage
 
 set -e
 
@@ -26,14 +26,35 @@ if [ $# -lt 2 ]; then
 fi
 
 IMG_FILE="$1"
-OUTPUT_DIR="$2"
+OUTPUT_PATH="$2"
 ALPINE_VERSION="${3:-3.20}"
 
-OPENWRT_IMG=$(realpath "$IMG_FILE" 2>/dev/null || echo "$(cd "$(dirname "$IMG_FILE")" && pwd)/$(basename "$IMG_FILE")")
-OUTPUT_ISO=$(realpath "$OUTPUT_DIR" 2>/dev/null || echo "$(cd "$(dirname "$OUTPUT_DIR")" && pwd)/$(basename "$OUTPUT_DIR")")
+# 获取绝对路径（兼容各种环境）
+get_absolute_path() {
+    local path="$1"
+    # 尝试使用realpath
+    if command -v realpath >/dev/null 2>&1; then
+        realpath "$path" 2>/dev/null || echo "$(cd "$(dirname "$path")" && pwd)/$(basename "$path")"
+    else
+        # 如果没有realpath，使用其他方法
+        if [[ "$path" == /* ]]; then
+            echo "$path"
+        else
+            echo "$(pwd)/$path"
+        fi
+    fi
+}
+
+# 转换为绝对路径
+OPENWRT_IMG=$(get_absolute_path "$IMG_FILE")
+OUTPUT_ISO=$(get_absolute_path "$OUTPUT_PATH")
+
 # 验证输入文件
 if [ ! -f "$OPENWRT_IMG" ]; then
     echo "❌ 错误: OpenWRT镜像文件不存在: $OPENWRT_IMG"
+    echo "当前目录: $(pwd)"
+    echo "目录内容:"
+    ls -la "$(dirname "$OPENWRT_IMG")" 2>/dev/null || echo "目录不存在"
     exit 1
 fi
 
@@ -46,14 +67,16 @@ echo "  OpenWRT Alpine Installer Builder"
 echo "================================================"
 echo ""
 echo "配置信息:"
-echo "  OpenWRT镜像: $OPENWRT_IMG ($(du -h "$OPENWRT_IMG" | cut -f1))"
+echo "  输入文件: $IMG_FILE"
+echo "  绝对路径: $OPENWRT_IMG"
 echo "  输出ISO: $OUTPUT_ISO"
 echo "  Alpine版本: $ALPINE_VERSION"
+echo "  工作目录: $(pwd)"
 echo ""
 
-# 创建临时工作目录
+# 创建临时工作目录（使用mktemp确保唯一性）
 WORKDIR=$(mktemp -d)
-echo "工作目录: $WORKDIR"
+echo "临时工作目录: $WORKDIR"
 cd "$WORKDIR"
 
 # 函数：清理临时文件
@@ -68,8 +91,15 @@ trap cleanup EXIT
 # 1. 复制OpenWRT镜像到工作目录
 echo "准备OpenWRT镜像..."
 mkdir -p overlay/images
+echo "复制 $OPENWRT_IMG 到 $WORKDIR/overlay/images/openwrt.img"
 cp "$OPENWRT_IMG" overlay/images/openwrt.img
-echo "✅ 镜像复制完成"
+
+if [ $? -eq 0 ] && [ -f "overlay/images/openwrt.img" ]; then
+    echo "✅ 镜像复制完成: $(du -h overlay/images/openwrt.img | cut -f1)"
+else
+    echo "❌ 镜像复制失败"
+    exit 1
+fi
 
 # 2. 创建安装脚本
 echo "创建安装系统..."
@@ -101,7 +131,7 @@ mount -t devtmpfs devtmpfs /dev 2>/dev/null || mdev -s
 
 # 设置控制台
 exec 0</dev/console
-exec 1>/dev/console
+exec 1</dev/console
 exec 2</dev/console
 
 clear
@@ -510,5 +540,8 @@ if [ -f "$OUTPUT_ISO" ]; then
     exit 0
 else
     echo "❌ 构建失败 - ISO文件未生成"
+    # 显示输出目录内容
+    echo "输出目录内容:"
+    ls -la "$OUTPUT_DIR" 2>/dev/null || echo "输出目录不存在"
     exit 1
 fi
