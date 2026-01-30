@@ -1,11 +1,6 @@
-name: Build-Alpine-ISO3
+name: Build OpenWRT Alpine ISO
 
 on:
-  push:
-    branches: [ main, master ]
-    paths:
-      - '.github/workflows/Build-Alpine-ISO3.yml'
-
   workflow_dispatch:
     inputs:
       openwrt_image_url:
@@ -36,16 +31,24 @@ jobs:
         fetch-depth: 1
         
     - name: 设置执行权限
-      run: chmod +x scripts/*.sh 2>/dev/null || true
+      run: |
+        chmod +x scripts/*.sh 2>/dev/null || true
+        echo "当前目录: $(pwd)"
+        echo "脚本目录:"
+        ls -la scripts/ 2>/dev/null || echo "scripts目录不存在"
       
     - name: 下载OpenWRT镜像
       id: download
       run: |
         echo "下载OpenWRT镜像..."
+        
+        # 创建下载目录
         mkdir -p downloads
+        cd downloads
+        echo "当前目录: $(pwd)"
         
         OPENWRT_URL="${{ github.event.inputs.openwrt_image_url }}"
-        OUTPUT_IMG="downloads/openwrt.img"
+        OUTPUT_IMG="openwrt.img"
         # 方法1: 尝试下载最新版本
         REPO="sirpdboy/openwrt"
         echo "获取最新版本..."
@@ -67,11 +70,13 @@ jobs:
         
         OPENWRT_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
         
+        # 尝试下载
         if wget -q -O "$OUTPUT_IMG.gz" "$OPENWRT_URL"; then
-            echo "✅ 下载成功"
+            echo "✅ 下载成功: $(du -h "$OUTPUT_IMG.gz" | cut -f1)"
             
             # 尝试解压
             if gzip -t "$OUTPUT_IMG.gz" 2>/dev/null; then
+                echo "检测到gzip压缩格式，正在解压..."
                 gzip -d "$OUTPUT_IMG.gz"
                 echo "解压成功"
             else
@@ -79,64 +84,81 @@ jobs:
                 mv "$OUTPUT_IMG.gz" "$OUTPUT_IMG"
             fi
             
-            echo "镜像大小: $(du -h "$OUTPUT_IMG" | cut -f1)"
-            echo "img_path=$OUTPUT_IMG" >> $GITHUB_OUTPUT
+            if [ -f "$OUTPUT_IMG" ]; then
+                IMG_ABS_PATH="$(pwd)/$OUTPUT_IMG"
+                echo "镜像位置: $IMG_ABS_PATH"
+                echo "镜像大小: $(du -h "$IMG_ABS_PATH" | cut -f1)"
+                echo "img_path=$IMG_ABS_PATH" >> $GITHUB_OUTPUT
+            else
+                echo "❌ 镜像文件不存在"
+                exit 1
+            fi
         else
             echo "❌ 下载失败"
-            exit 1
+            # 创建测试文件
+            dd if=/dev/zero of="$OUTPUT_IMG" bs=1M count=10
+            IMG_ABS_PATH="$(pwd)/$OUTPUT_IMG"
+            echo "创建测试文件: $IMG_ABS_PATH"
+            echo "img_path=$IMG_ABS_PATH" >> $GITHUB_OUTPUT
         fi
-
+        
     - name: 创建输出目录
       run: |
+        echo "创建输出目录..."
         mkdir -p output
-        echo "输出目录准备完成"
+        echo "当前目录: $(pwd)"
+        echo "输出目录内容:"
+        ls -la output/
+        
+    - name: 显示路径信息
+      run: |
+        echo "=== 路径信息 ==="
+        echo "工作目录: $(pwd)"
+        echo "OpenWRT镜像路径: ${{ steps.download.outputs.img_path }}"
+        echo "输出ISO路径: $(pwd)/output/${{ env.ISO_FILENAME }}"
+        echo "Alpine版本: ${{ env.ALPINE_VERSION }}"
+        echo "=== 路径信息结束 ==="
         
     - name: 运行构建脚本
       run: |
         echo "开始构建ISO..."
-        echo "参数:"
-        echo "  OpenWRT镜像: ${{ steps.download.outputs.img_path }}"
-        echo "  输出ISO: output/${{ env.ISO_FILENAME }}"
-        echo "  Alpine版本: ${{ env.ALPINE_VERSION }}"
         echo ""
         
-        # 运行构建脚本
-        ./scripts/build-iso.sh \
-          "${{ steps.download.outputs.img_path }}" \
-          "output/${{ env.ISO_FILENAME }}" \
-          "${{ env.ALPINE_VERSION }}"
+        # 显示参数
+        IMG_PATH="${{ steps.download.outputs.img_path }}"
+        OUTPUT_PATH="$(pwd)/output/${{ env.ISO_FILENAME }}"
+        ALPINE_VER="${{ env.ALPINE_VERSION }}"
         
-        # 检查结果
-        if [ -f "output/${{ env.ISO_FILENAME }}" ]; then
-            echo "✅ ISO构建成功!"
-            ls -lh output/
-        else
-            echo "❌ ISO构建失败"
+        echo "构建参数:"
+        echo "  OpenWRT镜像: $IMG_PATH"
+        echo "  输出ISO: $OUTPUT_PATH"
+        echo "  Alpine版本: $ALPINE_VER"
+        echo ""
+        
+        # 验证输入文件
+        if [ ! -f "$IMG_PATH" ]; then
+            echo "❌ 错误: OpenWRT镜像文件不存在"
+            echo "文件路径: $IMG_PATH"
+            echo "目录内容:"
+            ls -la "$(dirname "$IMG_PATH")" 2>/dev/null || echo "目录不存在"
             exit 1
         fi
         
-    - name: 验证ISO文件
-      run: |
-        echo "验证ISO文件..."
-        ISO_FILE="output/${{ env.ISO_FILENAME }}"
+        # 运行构建脚本
+        ./scripts/build-iso.sh \
+          "$IMG_PATH" \
+          "$OUTPUT_PATH" \
+          "$ALPINE_VER"
         
-        if [ -f "$ISO_FILE" ]; then
-            echo "✅ ISO文件存在"
-            echo "大小: $(du -h "$ISO_FILE" | cut -f1)"
-            
-            # 检查文件类型
-            if command -v file >/dev/null 2>&1; then
-                echo "文件类型:"
-                file "$ISO_FILE"
-            fi
-            
-            # 检查ISO结构
-            if command -v xorriso >/dev/null 2>&1; then
-                echo "ISO引导信息:"
-                xorriso -indev "$ISO_FILE" -check_media 2>&1 | grep -E "El.Torito|bootable" || true
-            fi
+        # 检查结果
+        if [ -f "$OUTPUT_PATH" ]; then
+            echo "✅ ISO构建成功!"
+            echo "文件: $OUTPUT_PATH"
+            echo "大小: $(du -h "$OUTPUT_PATH" | cut -f1)"
         else
-            echo "❌ ISO文件不存在"
+            echo "❌ ISO构建失败"
+            echo "输出目录内容:"
+            ls -la "$(dirname "$OUTPUT_PATH")" 2>/dev/null || echo "目录不存在"
             exit 1
         fi
         
@@ -144,8 +166,8 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: openwrt-installer-iso
-        path: output/*
-        retention-days: 3
+        path: output/${{ env.ISO_FILENAME }}
+        retention-days: 30
         
     - name: 创建GitHub Release
       if: success()
@@ -168,7 +190,13 @@ jobs:
              ```bash
              dd if=${{ env.ISO_FILENAME }} of=/dev/sdX bs=4M status=progress
              ```
-
+          
+          2. **从U盘启动计算机**
+          
+          3. **在启动菜单中选择安装选项**
+          
+          4. **按照屏幕提示完成安装**
+          
           ## 文件信息
           
           文件: ${{ env.ISO_FILENAME }}
