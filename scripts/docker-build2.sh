@@ -202,20 +202,25 @@ create_initrd() {
     
     # 创建极简的 init 脚本
     cat > "$initrd_dir/init" << 'INIT_EOF'
-#!/bin/sh
-# OpenWRT 极简安装程序
+#!/bin/busybox sh
+# 终极简单 init
 
-export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+# 挂载必要的文件系统
+/bin/busybox mount -t proc proc /proc
+/bin/busybox mount -t sysfs sysfs /sys
+/bin/busybox mount -t tmpfs tmpfs /tmp
 
-# 基本初始化
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev 2>/dev/null || mdev -s
-mount -t tmpfs tmpfs /tmp
-mount -t tmpfs tmpfs /run
+# 创建设备
+/bin/busybox mkdir -p /dev
+/bin/busybox mknod /dev/console c 5 1
+/bin/busybox mknod /dev/null c 1 3
+/bin/busybox mknod /dev/tty c 5 0
 
 # 设置控制台
-exec >/dev/console 2>&1 </dev/console
+exec 0</dev/console
+exec 1>/dev/console
+exec 2>/dev/console
+
 
 # 加载必要模块
 echo "加载必要模块..."
@@ -519,35 +524,25 @@ if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
     log_info "重新打包 initrd..."
     cd "$INITRD_DIR"
     # 使用最简单的 cpio 命令
-    echo "init" > filelist.txt
-    echo "install.sh" >> filelist.txt
-    echo "busybox" >> filelist.txt
-    echo "sh" >> filelist.txt
-    echo "bin" >> filelist.txt
-    echo "dev" >> filelist.txt
-    echo "proc" >> filelist.txt
-    echo "sys" >> filelist.txt
-    echo "tmp" >> filelist.txt
-    echo "run" >> filelist.txt
-    echo "mnt" >> filelist.txt
+    echo "init" > list.txt
+    echo "busybox" >> list.txt
     
     
     # 方法1：使用简单的 find
     # find . -type f -o -type d | cpio -ov -H newc 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
     
-    find . -print0 | cpio --null -ov -H newc 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
+    # find . -print0 | cpio --null -ov -H newc 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
     
-    # cpio -ov -H newc < filelist.txt 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
+    cpio -ov -H newc < list.txt 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
     cd - >/dev/null
 
     # 验证
     if [ -f "$STAGING_DIR/live/initrd" ] && [ -s "$STAGING_DIR/live/initrd" ]; then
-        SIZE=$(du -h "$STAGING_DIR/live/initrd" | cut -f1)
-        log_success "修改后的 initrd 创建成功"
-
+        log_success "终极 initrd 创建成功: $(du -h "$STAGING_DIR/live/initrd" | cut -f1)"
+        return 0
     else
-        log_warning "修改失败，使用简单 initrd"
-        create_minimal_initrd "$STAGING_DIR/live/initrd"
+        log_error "终极 initrd 创建失败"
+        return 1
     fi
     cd - >/dev/null
     rm -rf "$INITRD_DIR"
@@ -559,7 +554,101 @@ fi
         log_warning "无法挂载ISO，使用备用方法..."
     fi
 fi
+# 测试 initrd 是否能正常启动
+test_initrd() {
+    local initrd_file="$1"
+    
+    log_info "测试 initrd: $initrd_file"
+    
+    # 1. 检查文件是否存在
+    if [ ! -f "$initrd_file" ]; then
+        log_error "initrd 文件不存在"
+        return 1
+    fi
+    
+    # 2. 检查文件大小
+    local size=$(du -h "$initrd_file" | cut -f1)
+    if [ "$size" = "0" ]; then
+        log_error "initrd 文件大小为 0"
+        return 1
+    fi
+    
+    log_success "文件大小: $size"
+    
+    # 3. 检查是否能解压
+    local test_dir="$WORK_DIR/test_initrd"
+    rm -rf "$test_dir"
+    mkdir -p "$test_dir"
+    
+    if gzip -dc "$initrd_file" 2>/dev/null | cpio -id -D "$test_dir" 2>/dev/null; then
+        log_success "✅ initrd 可以正常解压"
+    else
+        log_error "❌ initrd 无法解压"
+        return 1
+    fi
+    
+    # 4. 检查是否有 init 文件
+    if [ -f "$test_dir/init" ]; then
+        log_success "✅ 找到 init 文件"
+        
+        # 检查 init 文件权限
+        if [ -x "$test_dir/init" ]; then
+            log_success "✅ init 文件可执行"
+        else
+            log_error "❌ init 文件不可执行"
+            chmod +x "$test_dir/init" 2>/dev/null || true
+        fi
+        
+        # 检查 shebang
+        local first_line=$(head -1 "$test_dir/init" 2>/dev/null)
+        if echo "$first_line" | grep -q "^#!/"; then
+            log_success "✅ init 有正确的 shebang: $first_line"
+        else
+            log_warning "⚠ init 缺少 shebang，修复中..."
+            sed -i '1i#!/bin/sh' "$test_dir/init" 2>/dev/null || true
+        fi
+        
+        # 查看 init 文件大小
+        local init_size=$(wc -l < "$test_dir/init" 2>/dev/null)
+        log_info "init 文件行数: $init_size"
+        
+    else
+        log_error "❌ 未找到 init 文件"
+        log_info "目录内容:"
+        find "$test_dir" -type f | head -10
+        return 1
+    fi
+    
+    # 5. 检查是否有 busybox
+    if [ -f "$test_dir/busybox" ] || [ -f "$test_dir/bin/busybox" ]; then
+        log_success "✅ 找到 busybox"
+    else
+        log_error "❌ 未找到 busybox"
+        log_info "可用工具:"
+        find "$test_dir" -type f -executable | head -10
+    fi
+    
+    # 6. 测试 init 脚本
+    log_info "测试 init 脚本语法..."
+    if /bin/sh -n "$test_dir/init" 2>/dev/null; then
+        log_success "✅ init 脚本语法正确"
+    else
+        log_warning "⚠ init 脚本可能有语法错误"
+        /bin/sh -n "$test_dir/init" 2>&1 | head -5 || true
+    fi
+    
+    rm -rf "$test_dir"
+    return 0
+}
 
+# 在构建过程中调用测试
+log_info "测试 initrd..."
+if test_initrd "$STAGING_DIR/live/initrd"; then
+    log_success "✅ initrd 测试通过"
+else
+    log_error "❌ initrd 测试失败"
+    exit 1
+fi
 # 如果提取失败，使用本地内核或创建简单initrd
 if [ ! -f "$STAGING_DIR/live/vmlinuz" ]; then
     log_info "使用本地内核..."
