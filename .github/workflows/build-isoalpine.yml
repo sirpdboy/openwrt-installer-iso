@@ -37,7 +37,7 @@ jobs:
         FROM alpine:3.20
     
         # 安装构建工具
-        apk update && apk add --no-cache \
+        RUN apk update && apk add --no-cache \
         bash \
         git \
         alpine-sdk \
