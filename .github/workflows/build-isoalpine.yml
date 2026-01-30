@@ -25,7 +25,10 @@ jobs:
         echo "Alpine版本: ${{ env.ALPINE_VERSION }}"
         echo "IMG文件: ${{ github.event.inputs.img_file }}"
         echo "输出名称: ${{ github.event.inputs.output_name }}"
-
+        
+    - name: 检出代码
+      uses: actions/checkout@v4
+      
     - name: 准备Docker构建环境
       run: |
         # 创建Dockerfile
