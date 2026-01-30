@@ -595,6 +595,9 @@ if command -v busybox >/dev/null 2>&1; then
     cp $(which busybox) "$ROOTFS_DIR/busybox"
     # 创建必要的符号链接
     cd "$ROOTFS_DIR"
+    ls -l
+    chmod +x busybox
+    
     ./busybox --install -s .
     cd - >/dev/null
 else
