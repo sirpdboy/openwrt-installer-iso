@@ -590,26 +590,164 @@ chmod +x "$ROOTFS_DIR/init"
 # ========== 步骤5: 准备busybox ==========
 echo "[5/8] 准备busybox..."
 
-# 复制busybox到rootfs
+
+# 方法1: 直接复制busybox并手动创建符号链接
 if command -v busybox >/dev/null 2>&1; then
-    cp $(which busybox) "$ROOTFS_DIR/busybox"
-    # 创建必要的符号链接
-    cd "$ROOTFS_DIR"
-    ls -l
-    chmod +x busybox
+    echo "复制busybox..."
+    BUSYBOX_PATH=$(which busybox)
+    cp "$BUSYBOX_PATH" "$ROOTFS_DIR/bin/busybox"
     
-    ./busybox --install -s .
+    # 创建必要的符号链接（手动）
+    echo "创建busybox符号链接..."
+    cd "$ROOTFS_DIR/bin"
+    
+    # 创建最必要的符号链接
+    for app in sh ash bash cat echo ls cp mv rm mkdir rmdir \
+               mount umount chmod chown chroot dd df sync \
+               sleep kill ps grep awk sed tar gzip gunzip \
+               wget curl ping modprobe insmod rmmod losetup \
+               blkid fdisk sfdisk mkfs.ext4 mkfs.vfat \
+               dmesg clear reset stty tty; do
+        ln -sf busybox "$app" 2>/dev/null || true
+    done
+    
     cd - >/dev/null
 else
-    # 从Alpine包中提取busybox
-    echo "下载busybox..."
-    curl -L -o "$WORK_DIR/busybox.apk" \
-        "${ALPINE_MIRROR}/${ALPINE_BRANCH}/main/${ALPINE_ARCH}/busybox-*.apk" 2>/dev/null || true
+    # 方法2: 从Alpine包中提取busybox
+    echo "下载busybox静态版本..."
+    BUSYBOX_APK_URL="${ALPINE_MIRROR}/${ALPINE_BRANCH}/main/${ALPINE_ARCH}/busybox-static-*.apk"
+    curl -L -o "$WORK_DIR/busybox-static.apk" "$BUSYBOX_APK_URL" 2>/dev/null || true
     
-    if [ -f "$WORK_DIR/busybox.apk" ]; then
-        tar -xzf "$WORK_DIR/busybox.apk" -C "$WORK_DIR" 2>/dev/null
-        cp "$WORK_DIR/bin/busybox" "$ROOTFS_DIR/bin/" 2>/dev/null || true
+    if [ -f "$WORK_DIR/busybox-static.apk" ]; then
+        echo "提取busybox-static..."
+        tar -xzf "$WORK_DIR/busybox-static.apk" -C "$WORK_DIR" --strip-components=1 2>/dev/null || true
+        
+        # 复制busybox
+        if [ -f "$WORK_DIR/bin/busybox.static" ]; then
+            cp "$WORK_DIR/bin/busybox.static" "$ROOTFS_DIR/bin/busybox"
+            chmod +x "$ROOTFS_DIR/bin/busybox"
+            
+            # 创建符号链接
+            cd "$ROOTFS_DIR/bin"
+            ln -sf busybox sh
+            ln -sf busybox mount
+            ln -sf busybox umount
+            ln -sf busybox modprobe
+            ln -sf busybox insmod
+            ln -sf busybox rmmod
+            ln -sf busybox losetup
+            ln -sf busybox dd
+            ln -sf busybox sync
+            ln -sf busybox reboot
+            ln -sf busybox poweroff
+            cd - >/dev/null
+            
+            echo "✅ 使用busybox-static"
+        fi
     fi
+fi
+
+# 确保busybox存在
+if [ ! -f "$ROOTFS_DIR/bin/busybox" ]; then
+    echo "⚠️ 无法获取busybox，尝试最后的方法..."
+    
+    # 创建极简的busybox替代方案
+    cat > "$ROOTFS_DIR/bin/sh" << 'MINIMAL_SH'
+#!/bin/sh
+echo "Minimal shell - limited functionality"
+echo "Available commands: sh, echo, mount, umount, dd, sync"
+echo "Use: sh -c 'command'"
+exec /bin/ash
+MINIMAL_SH
+    chmod +x "$ROOTFS_DIR/bin/sh"
+    
+    # 创建必要的工具
+    cat > "$ROOTFS_DIR/bin/mount" << 'MOUNT_SH'
+#!/bin/sh
+exec /bin/sh -c "mount \$@"
+MOUNT_SH
+    chmod +x "$ROOTFS_DIR/bin/mount"
+    
+    cat > "$ROOTFS_DIR/bin/umount" << 'UMOUNT_SH'
+#!/bin/sh
+exec /bin/sh -c "umount \$@"
+UMOUNT_SH
+    chmod +x "$ROOTFS_DIR/bin/umount"
+    
+    cat > "$ROOTFS_DIR/bin/dd" << 'DD_SH'
+#!/bin/sh
+exec /bin/sh -c "dd \$@"
+DD_SH
+    chmod +x "$ROOTFS_DIR/bin/dd"
+fi
+
+echo "✅ busybox准备完成"
+echo ""
+
+# ========== 步骤5b: 创建busybox符号链接的替代方法 ==========
+echo "创建busybox符号链接..."
+create_busybox_links() {
+    local busybox_path="$1"
+    local target_dir="$2"
+    
+    # 如果busybox不存在，返回
+    [ -f "$busybox_path" ] || return 1
+    
+    # 创建最必要的符号链接
+    local essential_apps="
+        sh ash bash
+        mount umount
+        modprobe insmod rmmod lsmod
+        losetup
+        dd cp mv rm
+        cat echo ls
+        mkdir rmdir
+        chmod chown
+        sync
+        sleep
+        kill
+        ps grep
+        awk sed
+        tar gzip gunzip
+        wget curl
+        ping
+        dmesg
+        clear
+        stty tty
+        reboot poweroff halt
+        blkid
+        fdisk sfdisk parted
+        mkfs.ext4 mkfs.vfat
+        mknod
+        find
+        head tail
+        sort uniq
+        wc
+        date
+        which
+        true false
+        test [
+        printf
+    "
+    
+    for app in $essential_apps; do
+        ln -sf "../bin/busybox" "$target_dir/$app" 2>/dev/null || true
+    done
+    
+    return 0
+}
+
+# 为/bin目录创建链接
+if [ -f "$ROOTFS_DIR/bin/busybox" ]; then
+    echo "为/bin创建符号链接..."
+    create_busybox_links "../bin/busybox" "$ROOTFS_DIR/bin"
+fi
+
+# 为/sbin目录创建链接
+if [ -f "$ROOTFS_DIR/bin/busybox" ]; then
+    echo "为/sbin创建符号链接..."
+    mkdir -p "$ROOTFS_DIR/sbin"
+    create_busybox_links "../bin/busybox" "$ROOTFS_DIR/sbin"
 fi
 
 # ========== 步骤6: 创建initramfs ==========
