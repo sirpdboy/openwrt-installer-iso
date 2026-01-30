@@ -482,15 +482,16 @@ if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
         rm -rf "$MOUNT_DIR"
         continue
     fi
-    
+    ls -l 
     cd - >/dev/null
-    
+    ls -l
     # 备份原来的 init
     if [ -f "$INITRD_DIR/init" ]; then
         mv "$INITRD_DIR/init" "$INITRD_DIR/init.alpine"
         log_info "备份原 init 脚本"
     fi
-    
+    ls $INITRD
+    cat $INITRD_DIR/init.alpine
     # 写入我们简化的 init 脚本
     create_initrd "$INITRD_DIR"
     
@@ -509,8 +510,9 @@ if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
     log_info "重新打包 initrd..."
     cd "$INITRD_DIR"
     find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
+    ls -l
     cd - >/dev/null
-    
+    ls -l
     # 验证
     if [ -f "$STAGING_DIR/live/initrd" ] && [ -s "$STAGING_DIR/live/initrd" ]; then
         log_success "修改后的 initrd 创建成功"
