@@ -150,7 +150,6 @@ OUTPUT_DIR="${OUTPUT_DIR:-/output}"
 ISO_NAME="${ISO_NAME:-openwrt.iso}"
 ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
 
-[ $# -lt 1 ] && { echo "用法: $0 <openwrt.img> [输出目录] [iso名称] [alpine版本]"; exit 1; }
 [ ! -f "$INPUT_IMG" ] && { echo "错误: 找不到IMG文件: $INPUT_IMG"; exit 1; }
 
 # 工作目录
