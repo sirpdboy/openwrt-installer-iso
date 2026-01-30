@@ -197,224 +197,198 @@ mkdir -p "$OUTPUT_DIR"
 mkdir -p "$STAGING_DIR"/{EFI/boot,boot/grub,isolinux,live,images}
 echo ""
 
-create_simple_initrd() {
-    local initrd_path="$1"
-    local initrd_dir="$WORK_DIR/simple_initrd"
+create_initrd() {
+    local initrd_dir="$1"
     
-    rm -rf "$initrd_dir"
-    mkdir -p "$initrd_dir"
-    
-    log_info "创建最小化 initrd..."
-    
-    # 1. 创建绝对简单的 init 脚本
-    cat > "$initrd_dir/init" << 'MINIMAL_INIT'
+    # 创建极简的 init 脚本
+    cat > "$initrd_dir/init" << 'INIT_EOF'
 #!/bin/sh
-# 绝对最小化的 init 脚本
+# OpenWRT 极简安装程序
 
-# 立即输出到控制台，确认 init 已启动
-echo ""
-echo "========================================"
-echo "  OpenWRT Installer Init Starting..."
-echo "========================================"
-echo ""
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
-# 先挂载 proc 和 sys
+# 基本初始化
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
-
-# 创建设备
-mkdir -p /dev
-mount -t devtmpfs devtmpfs /dev 2>/dev/null || {
-    # 如果 devtmpfs 失败，创建必要的设备节点
-    mknod /dev/console c 5 1
-    mknod /dev/null c 1 3
-    mknod /dev/zero c 1 5
-    mknod /dev/tty c 5 0
-}
-
-# 挂载 tmpfs
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || mdev -s
 mount -t tmpfs tmpfs /tmp
 mount -t tmpfs tmpfs /run
 
 # 设置控制台
-exec 0</dev/console
-exec 1>/dev/console
-exec 2>/dev/console
+exec >/dev/console 2>&1 </dev/console
 
-echo "控制台已设置"
+# 加载必要模块
+echo "加载必要模块..."
+for mod in isofs cdrom sr_mod loop fat vfat; do
+    modprobe $mod 2>/dev/null || true
+done
 
 # 挂载安装介质
 echo "挂载安装介质..."
-mkdir -p /mnt
-
-# 尝试挂载 CD/DVD
-for dev in /dev/sr0 /dev/sr1 /dev/cdrom; do
-    if [ -e "$dev" ]; then
-        echo "尝试挂载 $dev"
+for dev in /dev/sr0 /dev/cdrom /dev/sd[a-z]; do
+    if [ -b "$dev" ]; then
         mount -t iso9660 -o ro "$dev" /mnt 2>/dev/null && break
-        mount -t auto -o ro "$dev" /mnt 2>/dev/null && break
     fi
 done
 
-# 如果失败，尝试 USB
-if ! mountpoint -q /mnt; then
-    for dev in /dev/sda /dev/sdb /dev/sdc; do
-        if [ -e "$dev" ]; then
-            echo "尝试挂载 $dev"
-            mount -t iso9660 -o ro "$dev" /mnt 2>/dev/null && break
-            mount -t vfat -o ro "$dev" /mnt 2>/dev/null && break
-        fi
-    done
-fi
-
-if mountpoint -q /mnt; then
-    echo "安装介质挂载成功"
-    ls -la /mnt/
-else
-    echo "无法挂载安装介质，继续..."
-fi
-
-# 进入安装程序
-echo "启动安装程序..."
-if [ -x /install.sh ]; then
-    exec /install.sh
-else
-    # 内联安装程序
-    echo "未找到安装脚本，启动内联安装程序"
-    
-    # 查找镜像
-    IMG=""
+# 查找 OpenWRT 镜像
+find_image() {
     for path in /mnt/images/openwrt.img /mnt/openwrt.img /images/openwrt.img; do
         if [ -f "$path" ]; then
-            IMG="$path"
-            echo "找到镜像: $IMG"
-            break
+            echo "$path"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 显示界面
+show_header() {
+    clear
+    echo "========================================"
+    echo "      OpenWRT 系统安装程序"
+    echo "========================================"
+    echo ""
+}
+
+# 主安装函数
+main_install() {
+    local img_path="$1"
+    
+    show_header
+    
+    # 第一步：输入目标磁盘
+    echo "第一步：输入目标磁盘"
+    echo "-------------------"
+    echo ""
+    echo "可用磁盘列表:"
+    echo "-------------"
+    
+    # 简单列出磁盘
+    for dev in /dev/sd[a-z] /dev/nvme[0-9]n[0-9]; do
+        if [ -b "$dev" ]; then
+            echo "  $dev"
         fi
     done
     
-    if [ -z "$IMG" ]; then
-        echo "错误: 找不到 OpenWRT 镜像"
-        echo "进入紧急 Shell..."
+    echo "-------------"
+    echo ""
+    echo "请输入目标磁盘名称（例如：sda, nvme0n1）："
+    read disk_name
+    
+    if [ -z "$disk_name" ]; then
+        echo "错误：磁盘名称不能为空"
+        sleep 2
+        return 1
+    fi
+    
+    # 添加 /dev/ 前缀
+    if [[ "$disk_name" != /dev/* ]]; then
+        disk_name="/dev/$disk_name"
+    fi
+    
+    if [ ! -b "$disk_name" ]; then
+        echo "错误：磁盘 $disk_name 不存在"
+        sleep 2
+        return 1
+    fi
+    
+    # 第二步：确认安装
+    show_header
+    echo "第二步：确认安装"
+    echo "---------------"
+    echo ""
+    echo "您选择了磁盘：$disk_name"
+    echo ""
+    echo "⚠️  警告：这将永久擦除 $disk_name 上的所有数据！"
+    echo ""
+    echo "请输入 YES 确认安装，输入其他内容取消："
+    read confirm
+    
+    if [ "$confirm" != "YES" ]; then
+        echo "安装已取消"
+        sleep 2
+        return 1
+    fi
+    
+    # 开始安装
+    show_header
+    echo "正在安装 OpenWRT..."
+    echo ""
+    echo "源镜像：$(basename "$img_path")"
+    echo "目标盘：$disk_name"
+    echo ""
+    echo "正在写入，请稍候..."
+    echo ""
+    
+    # 写入镜像
+    if command -v pv >/dev/null 2>&1; then
+        pv "$img_path" | dd of="$disk_name" bs=4M
+    else
+        dd if="$img_path" of="$disk_name" bs=4M status=progress 2>/dev/null || \
+        dd if="$img_path" of="$disk_name" bs=4M
+    fi
+    
+    if [ $? -eq 0 ]; then
+        sync
+        echo ""
+        echo "✅ 安装成功！"
+        echo ""
+        echo "OpenWRT 已安装到 $disk_name"
+        echo ""
+        echo "系统将在 10 秒后重启..."
+        echo ""
+        
+        # 倒计时
+        for i in $(seq 10 -1 1); do
+            echo -ne "倒计时: ${i} 秒...\r"
+            sleep 1
+        done
+        
+        echo ""
+        echo "正在重启..."
+        reboot -f
+    else
+        echo ""
+        echo "❌ 安装失败！"
+        echo ""
+        echo "按 Enter 键重新开始..."
+        read
+        return 1
+    fi
+}
+
+# 主程序
+main() {
+    echo "初始化安装环境..."
+    sleep 1
+    
+    # 查找镜像
+    local img_path=$(find_image)
+    if [ $? -ne 0 ]; then
+        show_header
+        echo "错误：找不到 OpenWRT 镜像"
+        echo ""
+        echo "请检查安装介质是否正确"
+        echo "按 Enter 键进入紧急模式..."
+        read
         exec /bin/sh
     fi
     
-    # 简单安装循环
+    # 循环运行安装程序（失败时重试）
     while true; do
-        echo ""
-        echo "可用磁盘:"
-        for dev in /dev/sda /dev/sdb /dev/sdc /dev/nvme0n1; do
-            if [ -e "$dev" ]; then
-                echo "  $dev"
-            fi
-        done
-        
-        echo ""
-        echo "输入目标磁盘 (如 sda): "
-        read disk
-        
-        if [ -n "$disk" ]; then
-            if [ ! -e "/dev/$disk" ]; then
-                echo "磁盘不存在"
-                continue
-            fi
-            
-            echo "确认安装到 /dev/$disk? (输入 yes): "
-            read confirm
-            
-            if [ "$confirm" = "yes" ]; then
-                echo "开始安装..."
-                dd if="$IMG" of="/dev/$disk" bs=4M
-                sync
-                echo "安装完成!"
-                echo "10秒后重启..."
-                sleep 10
-                reboot
-            fi
+        if main_install "$img_path"; then
+            break  # 安装成功，退出循环
         fi
     done
-fi
-MINIMAL_INIT
-
-    chmod +x "$initrd_dir/init"
-    
-    # 2. 创建一个安装脚本
-    cat > "$initrd_dir/install.sh" << 'INSTALL_SH'
-#!/bin/sh
-echo ""
-echo "========================================"
-echo "  OpenWRT 安装程序"
-echo "========================================"
-echo ""
-
-sleep 1
-exec /bin/sh
-INSTALL_SH
-    chmod +x "$initrd_dir/install.sh"
-    
-    # 3. 复制 busybox
-    if command -v busybox >/dev/null 2>&1; then
-        cp $(which busybox) "$initrd_dir/busybox"
-        cd "$initrd_dir"
-        
-        # 创建最少符号链接
-        for app in sh echo cat mount umount ls mkdir mknod sleep dd sync reboot; do
-            ln -s busybox "$app" 2>/dev/null || true
-        done
-        
-    echo ===========dir:$pwd
-    ls -l 
-    cd - >/dev/null
-    echo ===========dir:$pwd
-    ls -l
-    else
-        log_error "错误: 找不到 busybox"
-        return 1
-    fi
-    
-    # 4. 创建目录结构
-    mkdir -p "$initrd_dir"/{proc,sys,dev,tmp,run,mnt,images,bin,sbin}
-    
-    # 5. 打包 initrd（使用最简单的方式）
-    log_info "打包 initrd..."
-    cd "$initrd_dir"
-    
-    # 使用最简单的 cpio 命令
-    echo "init" > filelist.txt
-    echo "install.sh" >> filelist.txt
-    echo "busybox" >> filelist.txt
-    echo "sh" >> filelist.txt
-    echo "bin" >> filelist.txt
-    echo "dev" >> filelist.txt
-    echo "proc" >> filelist.txt
-    echo "sys" >> filelist.txt
-    echo "tmp" >> filelist.txt
-    echo "run" >> filelist.txt
-    echo "mnt" >> filelist.txt
-    
-    # 方法1：使用简单的 find
-    find . -type f -o -type d | cpio -ov -H newc 2>/dev/null | gzip -9 > "$initrd_path"
-    
-    # 验证
-    if [ -f "$initrd_path" ] && [ -s "$initrd_path" ]; then
-        SIZE=$(du -h "$initrd_path" | cut -f1)
-        log_success "最小 initrd 创建成功: $SIZE"
-        
-        # 检查内容
-        log_info "检查 initrd 内容:"
-        gzip -dc "$initrd_path" 2>/dev/null | cpio -t 2>/dev/null | grep -E "^(\./init|\./busybox)" || true
-    else
-        log_error "initrd 创建失败"
-        return 1
-    fi
-    
-    echo ===========dir:$pwd
-    ls -l 
-    cd - >/dev/null
-    echo ===========dir:$pwd
-    ls -l
-    rm -rf "$initrd_dir"
 }
 
+# 运行主程序
+main
+INIT_EOF
+
+    chmod +x "$initrd_dir/init"
+}
 
 # ========== 步骤3: 获取Alpine内核和initramfs ==========
 log_info "[3/10] 获取Alpine内核和initramfs..."
@@ -515,29 +489,66 @@ if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
         log_info "备份原 init 脚本"
     fi
     # 写入我们简化的 init 脚本
-    create_initrd "$STAGING_DIR/live/initrd"
-    # 确保有必要的工具
-    if [ ! -f "$INITRD_DIR/busybox" ] && command -v busybox >/dev/null 2>&1; then
+    create_initrd "$INITRD_DIR"
+      
+    # 3. 复制 busybox
+    if command -v busybox >/dev/null 2>&1; then
         cp $(which busybox) "$INITRD_DIR/busybox"
+        cd "$INITRD_DIR"
+        
+        # 创建最少符号链接
+        for app in sh echo cat mount umount ls mkdir mknod sleep ls dd sync reboot; do
+            ln -s busybox "$app" 2>/dev/null || true
+        done
+        
+        cd - >/dev/null
+    else
+        log_error "错误: 找不到 busybox"
+        return 1
     fi
+     mkdir -p "$INITRD_DIR"/{proc,sys,dev,tmp,run,mnt,images,bin,sbin}
+
+    
     # 确保有设备节点
     if [ ! -c "$INITRD_DIR/dev/console" ]; then
         mkdir -p "$INITRD_DIR/dev"
         mknod "$INITRD_DIR/dev/console" c 5 1 2>/dev/null || true
         mknod "$INITRD_DIR/dev/null" c 1 3 2>/dev/null || true
     fi
-
+    
     log_info "重新打包 initrd..."
     cd "$INITRD_DIR"
-    find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
+    # 使用最简单的 cpio 命令
+    echo "init" > filelist.txt
+    echo "install.sh" >> filelist.txt
+    echo "busybox" >> filelist.txt
+    echo "sh" >> filelist.txt
+    echo "bin" >> filelist.txt
+    echo "dev" >> filelist.txt
+    echo "proc" >> filelist.txt
+    echo "sys" >> filelist.txt
+    echo "tmp" >> filelist.txt
+    echo "run" >> filelist.txt
+    echo "mnt" >> filelist.txt
+    
+    
+    # 方法1：使用简单的 find
+    find . -type f -o -type d | cpio -ov -H newc 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
     cd - >/dev/null
+
     # 验证
     if [ -f "$STAGING_DIR/live/initrd" ] && [ -s "$STAGING_DIR/live/initrd" ]; then
+        SIZE=$(du -h "$STAGING_DIR/live/initrd" | cut -f1)
         log_success "修改后的 initrd 创建成功"
+	
+        # 检查内容
+        log_info "检查 initrd 内容:"
+        gzip -dc "$STAGING_DIR/live/initrd" 2>/dev/null | cpio -t 2>/dev/null | grep -E "^(\./init|\./busybox)" 
     else
         log_warning "修改失败，使用简单 initrd"
-        create_simple_initrd "$STAGING_DIR/live/initrd"
+        create_minimal_initrd "$STAGING_DIR/live/initrd"
     fi
+    cd - >/dev/null
     rm -rf "$INITRD_DIR"
 fi
 	
@@ -576,7 +587,7 @@ create_minimal_initrd() {
     mkdir -p "$initrd_dir"
     
     # 创建 init 脚本
-    create_initrd "$initrd_path"
+    create_initrd "$initrd_dir"
     
     # 复制必要的工具
     if command -v busybox >/dev/null 2>&1; then
@@ -589,11 +600,7 @@ create_minimal_initrd() {
             ln -s busybox "$app" 2>/dev/null || true
         done
         
-    echo ===========dir:$pwd
-    ls -l 
-    cd - >/dev/null
-    echo ===========dir:$pwd
-    ls -l
+        cd - >/dev/null
     fi
     
     # 复制其他必要工具
@@ -620,11 +627,7 @@ create_minimal_initrd() {
     # 打包 initrd
     cd "$initrd_dir"
     find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$initrd_path"
-    echo ===========dir:$pwd
-    ls -l 
     cd - >/dev/null
-    echo ===========dir:$pwd
-    ls -l
     
     # 检查 initrd 是否创建成功
     if [ -f "$initrd_path" ] && [ -s "$initrd_path" ]; then
