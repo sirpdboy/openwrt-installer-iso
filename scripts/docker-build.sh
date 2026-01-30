@@ -459,7 +459,7 @@ ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
 
 
 
-BUILD_SCRIPT_EOF
+SCRIPTEOF
 
 chmod +x build-scripts/build-iso.sh
 # ========== 构建Docker镜像 ==========
