@@ -66,22 +66,23 @@ cat > "$DOCKERFILE_PATH" << 'DOCKERFILE_EOF'
 ARG ALPINE_VERSION=3.20
 FROM alpine:${ALPINE_VERSION}
 
-# 设置仓库
-RUN echo "http://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main" > /etc/apk/repositories && \
-    echo "http://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community" >> /etc/apk/repositories
+RUN echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > /etc/apk/repositories && \
+    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> /etc/apk/repositories
 
-# 安装完整的ISO构建工具
+# 安装完整的ISO构建工具链和内核
 RUN apk update && apk add --no-cache \
     bash \
     xorriso \
     syslinux \
+    mtools \
+    dosfstools \
+    grub \
     grub-efi \
     grub-bios \
-    dosfstools \
-    mtools \
     e2fsprogs \
     parted \
     util-linux \
+    util-linux-misc \
     coreutils \
     gzip \
     tar \
@@ -89,35 +90,41 @@ RUN apk update && apk add --no-cache \
     findutils \
     grep \
     gawk \
+    file \
     curl \
     wget \
     linux-lts \
-    alpine-mkinitfs \
-    alpine-conf \
-    alpine-base \
+    linux-firmware-none \
     && rm -rf /var/cache/apk/*
+# 创建必要的设备节点
+RUN mknod -m 0660 /dev/loop0 b 7 0 2>/dev/null || true && \
+    mknod -m 0660 /dev/loop1 b 7 1 2>/dev/null || true
 
-# 安装额外的工具用于initramfs
-RUN apk add --no-cache \
-    busybox \
-    busybox-static \
-    pv \
-    && ln -s /bin/busybox /bin/sh
+# 下载备用内核（如果Alpine内核安装失败）
+RUN echo "下载备用内核..." && \
+    mkdir -p /tmp/kernel && cd /tmp/kernel && \
+    curl -L -o kernel.tar.xz https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.30.tar.xz 2>/dev/null || \
+    curl -L -o kernel.tar.xz https://mirrors.edge.kernel.org/pub/linux/kernel/v6.x/linux-6.6.30.tar.xz 2>/dev/null || \
+    echo "内核下载失败，继续..."
 
-# 验证安装
-RUN echo "🔧 验证工具安装:" && \
+# 验证工具和内核
+RUN echo "🔧 验证安装:" && \
+    echo "内核位置:" && \
+    ls -la /boot/ 2>/dev/null || echo "无/boot目录" && \
+    echo "" && \
+    echo "可用内核:" && \
+    find /boot -name "vmlinuz*" 2>/dev/null | head -5 || echo "未找到内核" && \
+    echo "" && \
     echo "xorriso: $(which xorriso)" && \
-    echo "mkinitfs: $(which mkinitfs 2>/dev/null || echo '未安装')" && \
-    echo "内核: $(ls /boot/vmlinuz* 2>/dev/null | head -1 || echo '无内核')"
-
+    echo "mkfs.fat: $(which mkfs.fat 2>/dev/null || which mkfs.vfat 2>/dev/null || echo '未找到')"
 WORKDIR /work
 
 # 复制构建脚本
 COPY scripts/build-iso-alpine.sh /work/build-iso.sh
 RUN chmod +x /work/build-iso.sh
 
-ENTRYPOINT ["/work/build-iso.sh"]
 
+ENTRYPOINT ["/work/build-iso.sh"]
 
 
 DOCKERFILE_EOF
