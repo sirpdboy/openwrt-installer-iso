@@ -522,8 +522,7 @@ if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
         mv "$INITRD_DIR/init" "$INITRD_DIR/init.alpine"
         log_info "备份原 init 脚本"
     fi
-    ls $INITRD
-    cat $INITRD_DIR/init.alpine
+    ls "$INITRD_DIR"
     # 写入我们简化的 init 脚本
     create_initrd "$INITRD_DIR"
     
@@ -591,7 +590,7 @@ create_minimal_initrd() {
     mkdir -p "$initrd_dir"
     
     # 创建 init 脚本
-    create_initrd "$initrd_dir"
+    create_initrd "$initrd_path"
     
     # 复制必要的工具
     if command -v busybox >/dev/null 2>&1; then
