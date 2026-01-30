@@ -31,7 +31,7 @@ echo "工作目录: $WORKDIR"
 # 克隆 aports 仓库
 echo "克隆 aports 仓库..."
 if ! git clone --depth 1 --branch "$ALPINE_VERSION-stable" \
-          https://gitlab.alpinelinux.org/alpine/aports.git; then
+    https://gitlab.alpinelinux.org/alpine/aports.git; then
     echo "⚠️  分支 v$ALPINE_VERSION 不存在，使用默认分支"
     git clone --depth 1 https://gitlab.alpinelinux.org/alpine/aports.git
 fi
@@ -49,29 +49,38 @@ echo "✅ 找到 mkimage.sh"
 # 创建自定义的OpenWRT安装profile
 echo "创建OpenWRT安装profile..."
 
-# 1. 创建profile文件 - 使用不同的EOF标记避免冲突
-cat > scripts/mkimg.openwrt.sh << 'PROFILE_EOF'
+# 创建profile目录
+mkdir -p "scripts/"
+
+# 1. 创建profile文件 - 简化版本，避免嵌套问题
+cat > scripts/mkimg.openwrt.sh << 'PROFILEEOF'
+#!/bin/sh
+
 profile_openwrt() {
+    # 继承标准profile
     profile_standard
+    
+    # 设置内核参数
     kernel_cmdline="console=tty0 console=ttyS0,115200"
     syslinux_serial="0 115200"
-    kernel_addons=""
-    apks="$apks openrc openssh chrony hdparm e2fsprogs sfdisk parted"
     
-    # 添加必要的包用于OpenWRT安装
+    # 添加必要的软件包
+    apks="$apks openrc openssh chrony hdparm e2fsprogs sfdisk parted"
     apks="$apks wget curl gzip lsblk util-linux coreutils"
     
-    local _k _a
+    # 添加内核包
     for _k in $kernel_flavors; do
         apks="$apks linux-$_k"
-        for _a in $kernel_addons; do
-            apks="$apks $_a-$_k"
-        done
     done
     apks="$apks linux-firmware"
     
-    # 创建overlay脚本 - 使用不同的EOF标记
-    cat > "${apksrcdir}/genapkovl-openwrt.sh" << 'OVERLAY_SCRIPT_EOF'
+    # 设置overlay脚本
+    apkovl="genapkovl-openwrt.sh"
+}
+PROFILEEOF
+
+# 2. 创建独立的overlay生成脚本
+cat > scripts/genapkovl-openwrt.sh << 'OVERLAYEOF'
 #!/bin/sh
 
 set -e
@@ -84,10 +93,9 @@ mkdir -p "$tmp"/usr/local/bin
 mkdir -p "$tmp"/root
 
 # 创建欢迎信息
-cat > "$tmp"/etc/issue << 'ISSUE_EOF'
+cat > "$tmp"/etc/issue << 'EOF'
 ========================================
       OpenWRT Alpine Installer
-      Version: $ALPINE_VERSION
 ========================================
 
 系统启动后:
@@ -95,10 +103,10 @@ cat > "$tmp"/etc/issue << 'ISSUE_EOF'
 2. 运行: openwrt-installer
 3. 按照提示安装OpenWRT
 
-ISSUE_EOF
+EOF
 
 # 创建安装脚本
-cat > "$tmp"/usr/local/bin/openwrt-installer << 'INSTALLER_SCRIPT_EOF'
+cat > "$tmp"/usr/local/bin/openwrt-installer << 'EOF'
 #!/bin/sh
 
 set -e
@@ -117,7 +125,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # 显示当前磁盘
 echo "${BLUE}=== 当前磁盘信息 ===${NC}"
@@ -247,17 +255,17 @@ echo ""
 # 清理
 cd /
 rm -rf "$TEMP_DIR"
-
-INSTALLER_SCRIPT_EOF
-
-# 替换占位符为实际的IMG URL
-sed -i "s|__IMG_FILE_URL__|${IMG_FILE_URL}|g" "$tmp/usr/local/bin/openwrt-installer"
+EOF
 
 # 设置执行权限
 chmod +x "$tmp/usr/local/bin/openwrt-installer"
 
+# 替换占位符
+sed -i "s|__IMG_FILE_URL__|${IMG_FILE_URL}|g" "$tmp/usr/local/bin/openwrt-installer"
+sed -i "s|__ALPINE_VERSION__|${ALPINE_VERSION}|g" "$tmp/etc/issue"
+
 # 创建motd
-cat > "$tmp"/etc/motd << 'MOTD_EOF'
+cat > "$tmp"/etc/motd << 'EOF'
 
 ========================================
 OpenWRT Alpine 安装环境
@@ -268,38 +276,26 @@ OpenWRT Alpine 安装环境
 
 ========================================
 
-MOTD_EOF
+EOF
 
-# 设置SSH允许root登录（仅临时安装环境）
+# 设置SSH配置
 mkdir -p "$tmp"/etc/ssh
-cat > "$tmp"/etc/ssh/sshd_config << 'SSH_CONFIG_EOF'
+cat > "$tmp"/etc/ssh/sshd_config << 'EOF'
 PermitRootLogin yes
 PasswordAuthentication yes
 ChallengeResponseAuthentication no
 UsePAM yes
 PrintMotd yes
 Subsystem sftp /usr/lib/ssh/sftp-server
-SSH_CONFIG_EOF
-
-# 创建自动运行脚本（可选）
-cat > "$tmp"/root/.profile << 'PROFILE_SCRIPT_EOF'
-#!/bin/sh
-
-if [ -f /usr/local/bin/openwrt-installer ] && [ ! -f /tmp/installer-run ]; then
-    echo ""
-    echo "提示: 运行 'openwrt-installer' 开始安装OpenWRT"
-    echo ""
-    touch /tmp/installer-run
-fi
-PROFILE_SCRIPT_EOF
+EOF
 
 # 打包overlay
 ( cd "$tmp" && tar -c -f "${ROOT}"/tmp/overlay.tar . )
-}
-PROFILE_EOF
+OVERLAYEOF
 
-# 确保scripts目录存在并设置权限
+# 设置执行权限
 chmod +x scripts/mkimg.openwrt.sh
+chmod +x scripts/genapkovl-openwrt.sh
 
 echo "✅ Profile创建完成"
 
