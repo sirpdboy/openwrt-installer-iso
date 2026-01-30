@@ -25,10 +25,12 @@ if [ $# -lt 2 ]; then
     usage
 fi
 
-OPENWRT_IMG="$1"
-OUTPUT_ISO="$2"
+IMG_FILE="$1"
+OUTPUT_DIR="$2"
 ALPINE_VERSION="${3:-3.20}"
 
+OPENWRT_IMG=$(realpath "$IMG_FILE" 2>/dev/null || echo "$(cd "$(dirname "$IMG_FILE")" && pwd)/$(basename "$IMG_FILE")")
+OUTPUT_ISO=$(realpath "$OUTPUT_DIR" 2>/dev/null || echo "$(cd "$(dirname "$OUTPUT_DIR")" && pwd)/$(basename "$OUTPUT_DIR")")
 # 验证输入文件
 if [ ! -f "$OPENWRT_IMG" ]; then
     echo "❌ 错误: OpenWRT镜像文件不存在: $OPENWRT_IMG"
