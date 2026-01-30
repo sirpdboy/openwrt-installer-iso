@@ -509,7 +509,7 @@ if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
         cd - >/dev/null
     else
         log_error "错误: 找不到 busybox"
-        return 1
+        exit 1
     fi
      mkdir -p "$INITRD_DIR"/{proc,sys,dev,tmp,run,mnt,images,bin,sbin}
 
@@ -539,10 +539,9 @@ if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
     # 验证
     if [ -f "$STAGING_DIR/live/initrd" ] && [ -s "$STAGING_DIR/live/initrd" ]; then
         log_success "终极 initrd 创建成功: $(du -h "$STAGING_DIR/live/initrd" | cut -f1)"
-        return 0
     else
         log_error "终极 initrd 创建失败"
-        return 1
+        exit 1
     fi
     cd - >/dev/null
     rm -rf "$INITRD_DIR"
@@ -638,7 +637,6 @@ test_initrd() {
     fi
     
     rm -rf "$test_dir"
-    return 0
 }
 
 # 在构建过程中调用测试
