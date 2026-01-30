@@ -52,7 +52,7 @@ echo "创建OpenWRT安装profile..."
 # 创建profile目录
 mkdir -p "scripts/"
 
-# 1. 创建profile文件 - 简化版本，避免嵌套问题
+# 1. 创建profile文件
 cat > scripts/mkimg.openwrt.sh << 'PROFILEEOF'
 #!/bin/sh
 
@@ -91,6 +91,7 @@ mkdir -p "$tmp"
 mkdir -p "$tmp"/etc
 mkdir -p "$tmp"/usr/local/bin
 mkdir -p "$tmp"/root
+mkdir -p "$tmp"/etc/init.d
 
 # 创建欢迎信息
 cat > "$tmp"/etc/issue << 'EOF'
@@ -289,6 +290,29 @@ PrintMotd yes
 Subsystem sftp /usr/lib/ssh/sftp-server
 EOF
 
+# 创建开机自启动脚本（可选）
+cat > "$tmp"/etc/init.d/installer-prompter << 'EOF'
+#!/sbin/openrc-run
+
+name="installer_prompter"
+description="Prompts user to run OpenWRT installer"
+
+start() {
+    ebegin "Starting installer prompter"
+    if [ -f /usr/local/bin/openwrt-installer ] && [ ! -f /tmp/installer-run ]; then
+        echo ""
+        echo "========================================"
+        echo "提示: 运行 'openwrt-installer' 开始安装OpenWRT"
+        echo "========================================"
+        echo ""
+        touch /tmp/installer-run
+    fi
+    eend $?
+}
+EOF
+
+chmod +x "$tmp"/etc/init.d/installer-prompter
+
 # 打包overlay
 ( cd "$tmp" && tar -c -f "${ROOT}"/tmp/overlay.tar . )
 OVERLAYEOF
@@ -299,20 +323,49 @@ chmod +x scripts/genapkovl-openwrt.sh
 
 echo "✅ Profile创建完成"
 
+# 3. 创建临时密钥（或者直接禁用签名）
+echo "设置签名密钥..."
+
+# 方法1: 生成临时密钥（推荐）
+mkdir -p /tmp/keys
+if [ ! -f /tmp/keys/builder.rsa ]; then
+    echo "生成临时RSA密钥..."
+    openssl genrsa -out /tmp/keys/builder.rsa 2048 2>/dev/null
+    openssl rsa -in /tmp/keys/builder.rsa -pubout -out /tmp/keys/builder.rsa.pub 2>/dev/null
+    echo "✅ 密钥生成完成"
+fi
+
 # 2. 构建ISO
 echo ""
 echo "开始构建ISO..."
 
-# 构建ISO（支持BIOS和UEFI）
+# 构建ISO（支持BIOS和UEFI） - 禁用签名或使用临时密钥
 echo "运行mkimage.sh命令..."
-./scripts/mkimage.sh \
-    --tag "$ALPINE_VERSION" \
-    --outdir "$OUTPUT_DIR" \
-    --arch x86_64 \
-    --hostkeys \
-    --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/main" \
-    --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/community" \
-    --profile openwrt 2>&1
+
+# 尝试使用临时密钥构建
+if [ -f /tmp/keys/builder.rsa ]; then
+    echo "使用临时密钥签名..."
+    ./scripts/mkimage.sh \
+        --tag "$ALPINE_VERSION" \
+        --outdir "$OUTPUT_DIR" \
+        --arch x86_64 \
+        --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/main" \
+        --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/community" \
+        --profile openwrt \
+        --hostkeys \
+        --sign-key /tmp/keys/builder.rsa 2>&1
+else
+    # 如果不生成密钥，尝试禁用签名
+    echo "尝试禁用签名..."
+    ./scripts/mkimage.sh \
+        --tag "$ALPINE_VERSION" \
+        --outdir "$OUTPUT_DIR" \
+        --arch x86_64 \
+        --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/main" \
+        --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/community" \
+        --profile openwrt \
+        --no-hostkeys 2>&1
+fi
 
 # 检查结果
 ISO_FILE=$(find "$OUTPUT_DIR" -name "*.iso" -type f | head -1)
