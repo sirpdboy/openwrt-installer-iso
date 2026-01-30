@@ -515,7 +515,7 @@ if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
         log_info "备份原 init 脚本"
     fi
     # 写入我们简化的 init 脚本
-    create_initrd "$INITRD_DIR"
+    create_initrd "$STAGING_DIR/live/initrd"
     # 确保有必要的工具
     if [ ! -f "$INITRD_DIR/busybox" ] && command -v busybox >/dev/null 2>&1; then
         cp $(which busybox) "$INITRD_DIR/busybox"
