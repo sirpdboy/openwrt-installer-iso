@@ -150,11 +150,6 @@ OUTPUT_DIR="${2:-./output}"
 ISO_NAME="${3:-openwrt.iso}"
 ALPINE_VERSION="${4:-3.20}"
 
-if [ $# -lt 1 ]; then
-    echo "用法: $0 <openwrt.img> [输出目录] [iso名称] [alpine版本]"
-    exit 1
-fi
-
 if [ ! -f "$INPUT_IMG" ]; then
     echo "错误: 找不到IMG文件: $INPUT_IMG"
     exit 1
