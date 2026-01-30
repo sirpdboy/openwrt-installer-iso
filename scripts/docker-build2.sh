@@ -533,7 +533,11 @@ if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
     
     
     # 方法1：使用简单的 find
-    find . -type f -o -type d | cpio -ov -H newc 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
+    # find . -type f -o -type d | cpio -ov -H newc 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
+    
+    find . -print0 | cpio --null -ov -H newc 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
+    
+    # cpio -ov -H newc < filelist.txt 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
     cd - >/dev/null
 
     # 验证
