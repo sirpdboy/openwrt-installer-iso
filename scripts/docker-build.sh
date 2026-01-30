@@ -244,7 +244,6 @@ setup_console() {
 
 # 设置控制台
 exec >/dev/console 2>&1 </dev/console
-setup_console
 
 # 加载必要模块
 echo "正在加载内核模块..."
