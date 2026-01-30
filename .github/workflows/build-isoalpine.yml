@@ -32,11 +32,11 @@ jobs:
     - name: 准备Docker构建环境
       run: |
         # 创建Dockerfile
-         chmod +x scripts/build-iso.sh
+        chmod +x scripts/build-iso.sh
         cat > Dockerfile.openwrt-builder << 'DOCKEREOF'
         FROM alpine:3.20
         
-        # 安装构建工具
+        # 安装构建工具和openssl用于密钥生成
         RUN apk update && apk add --no-cache \
             bash \
             git \
@@ -49,7 +49,8 @@ jobs:
             mtools \
             dosfstools \
             coreutils \
-            e2fsprogs-extra
+            e2fsprogs-extra \
+            openssl
         
         # 创建工作目录
         WORKDIR /builder
