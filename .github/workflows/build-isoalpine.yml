@@ -64,10 +64,9 @@ jobs:
         
         cd "$WORKDIR"
         echo "工作目录: $WORKDIR"
-        
         # 克隆 aports 仓库
         echo "克隆 aports 仓库..."
-        git clone --depth 1 --branch "v$ALPINE_VERSION" \
+        git clone --depth 1 --branch "v$ALPINE_VERSION-stable" \
           https://gitlab.alpinelinux.org/alpine/aports.git
         
         cd aports
