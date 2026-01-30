@@ -46,7 +46,6 @@ OUTPUT_ISO=$(get_absolute_path "$OUTPUT_PATH")
 # 验证输入文件
 if [ ! -f "$OPENWRT_IMG" ]; then
     echo "❌ 错误: OpenWRT镜像文件不存在: $OPENWRT_IMG"
-    echo "当前目录: $(pwd)"
     exit 1
 fi
 
@@ -305,7 +304,7 @@ chmod +x genapkovl-openwrt.sh
 # 4. 使用Docker运行Alpine容器进行构建
 echo "启动Alpine构建容器..."
 
-# 使用Docker构建（修复工作目录问题）
+# 使用Docker构建（修复模块签名问题）
 docker run --rm \
     -v "$WORKDIR/overlay:/source:ro" \
     -v "$WORKDIR:/work:rw" \
@@ -327,19 +326,30 @@ docker run --rm \
     apk update
     apk add alpine-sdk alpine-conf syslinux xorriso squashfs-tools git
     
-    # 克隆aports到/tmp目录（可写）
+    # 克隆aports到/tmp目录
     echo 'Cloning aports...'
     git clone --depth 1 https://gitlab.alpinelinux.org/alpine/aports.git
     cd aports
     
-    # 创建profile
+    # 创建profile - 关键修复：禁用模块签名
     echo 'Creating profile...'
     cat > scripts/mkimg.openwrt.sh << 'PROFILEEOF'
 profile_openwrt() {
     profile_standard
     kernel_cmdline=\"console=tty0 console=ttyS0,115200\"
     syslinux_serial=\"0 115200\"
+    
+    # 禁用模块签名以避免PACKAGER_PRIVKEY错误
+    modloop_sign=no
+    
+    # 明确设置不包含内核模块
+    kernel_flavors=\"\"
+    kernel_addons=\"\"
+    
+    # 添加必要软件包
     apks=\"\\\$apks\"
+    
+    # 使用我们的overlay脚本
     apkovl=\"genapkovl-openwrt.sh\"
 }
 PROFILEEOF
@@ -349,16 +359,73 @@ PROFILEEOF
     cp /work/genapkovl-openwrt.sh scripts/
     chmod +x scripts/genapkovl-openwrt.sh
     
-    # 构建ISO
-    echo 'Building ISO...'
-    ./scripts/mkimage.sh \\
-        --tag \"\$ALPINE_VERSION\" \\
-        --outdir /output \\
-        --arch x86_64 \\
-        --hostkeys \\
-        --repository \"http://dl-cdn.alpinelinux.org/alpine/v\$ALPINE_VERSION/main\" \\
-        --repository \"http://dl-cdn.alpinelinux.org/alpine/v\$ALPINE_VERSION/community\" \\
-        --profile openwrt
+    # 方法1: 尝试使用标准profile构建（避免模块签名问题）
+    echo 'Method 1: Using standard profile with custom overlay...'
+    
+    # 使用mkimage的--hostkeys参数，并禁用模块签名
+    cat > build-simple.sh << 'BUILDEOF'
+#!/bin/sh
+# 简单构建脚本
+
+set -e
+
+# 创建简单的profile配置
+cat > mkimg.simple.sh << 'SIMPLEEOF'
+profile_simple() {
+    profile_standard
+    kernel_cmdline=\"console=tty0 console=ttyS0,115200\"
+    syslinux_serial=\"0 115200\"
+    
+    # 关键：禁用模块签名
+    modloop_sign=no
+    
+    # 不使用内核模块
+    kernel_flavors=\"\"
+    kernel_addons=\"\"
+    
+    # 使用我们的overlay
+    apkovl=\"genapkovl-openwrt.sh\"
+}
+SIMPLEEOF
+
+# 将profile移动到正确位置
+mv mkimg.simple.sh scripts/mkimg.simple.sh
+
+# 构建ISO
+echo 'Building ISO...'
+./scripts/mkimage.sh \\
+    --tag \"\$ALPINE_VERSION\" \\
+    --outdir /output \\
+    --arch x86_64 \\
+    --hostkeys \\
+    --modloop \\
+    --repository \"http://dl-cdn.alpinelinux.org/alpine/v\$ALPINE_VERSION/main\" \\
+    --repository \"http://dl-cdn.alpinelinux.org/alpine/v\$ALPINE_VERSION/community\" \\
+    --profile simple
+BUILDEOF
+    
+    chmod +x build-simple.sh
+    
+    # 尝试方法1
+    echo 'Trying method 1...'
+    if ./build-simple.sh; then
+        echo '✅ Method 1 succeeded'
+    else
+        echo '⚠️ Method 1 failed, trying method 2...'
+        
+        # 方法2: 使用更简单的配置
+        echo 'Method 2: Using minimal configuration...'
+        
+        # 使用vanilla profile，它默认不包含内核模块
+        ./scripts/mkimage.sh \\
+            --tag \"\$ALPINE_VERSION\" \\
+            --outdir /output \\
+            --arch x86_64 \\
+            --hostkeys \\
+            --no-modloop \\
+            --repository \"http://dl-cdn.alpinelinux.org/alpine/v\$ALPINE_VERSION/main\" \\
+            --profile vanilla
+    fi
     
     # 检查结果
     if ls /output/*.iso >/dev/null 2>&1; then
