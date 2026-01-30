@@ -27,15 +27,9 @@ jobs:
     steps:
     - name: 检出代码
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 1
         
     - name: 设置执行权限
-      run: |
-        chmod +x scripts/*.sh 2>/dev/null || true
-        echo "当前目录: $(pwd)"
-        echo "脚本目录:"
-        ls -la scripts/ 2>/dev/null || echo "scripts目录不存在"
+      run: chmod +x scripts/*.sh
       
     - name: 下载OpenWRT镜像
       id: download
@@ -104,61 +98,38 @@ jobs:
         
     - name: 创建输出目录
       run: |
-        echo "创建输出目录..."
         mkdir -p output
-        echo "当前目录: $(pwd)"
-        echo "输出目录内容:"
-        ls -la output/
+        echo "输出目录准备完成"
         
-    - name: 显示路径信息
-      run: |
-        echo "=== 路径信息 ==="
-        echo "工作目录: $(pwd)"
-        echo "OpenWRT镜像路径: ${{ steps.download.outputs.img_path }}"
-        echo "输出ISO路径: $(pwd)/output/${{ env.ISO_FILENAME }}"
-        echo "Alpine版本: ${{ env.ALPINE_VERSION }}"
-        echo "=== 路径信息结束 ==="
         
     - name: 运行构建脚本
       run: |
         echo "开始构建ISO..."
-        echo ""
         
-        # 显示参数
-        IMG_PATH="${{ steps.download.outputs.img_path }}"
-        OUTPUT_PATH="$(pwd)/output/${{ env.ISO_FILENAME }}"
-        ALPINE_VER="${{ env.ALPINE_VERSION }}"
-        
-        echo "构建参数:"
-        echo "  OpenWRT镜像: $IMG_PATH"
-        echo "  输出ISO: $OUTPUT_PATH"
-        echo "  Alpine版本: $ALPINE_VER"
-        echo ""
-        
-        # 验证输入文件
-        if [ ! -f "$IMG_PATH" ]; then
-            echo "❌ 错误: OpenWRT镜像文件不存在"
-            echo "文件路径: $IMG_PATH"
-            echo "目录内容:"
-            ls -la "$(dirname "$IMG_PATH")" 2>/dev/null || echo "目录不存在"
-            exit 1
-        fi
         
         # 运行构建脚本
         ./scripts/build-iso.sh \
-          "$IMG_PATH" \
-          "$OUTPUT_PATH" \
-          "$ALPINE_VER"
+          "${{ steps.download.outputs.img_path }}" \
+          "$(pwd)/output/${{ env.ISO_FILENAME }}" \
+          "${{ env.ALPINE_VERSION }}"
         
-        # 检查结果
-        if [ -f "$OUTPUT_PATH" ]; then
+    - name: 检查构建结果
+      run: |
+        echo "检查构建结果..."
+        ISO_FILE="output/${{ env.ISO_FILENAME }}"
+        
+        if [ -f "$ISO_FILE" ]; then
             echo "✅ ISO构建成功!"
-            echo "文件: $OUTPUT_PATH"
-            echo "大小: $(du -h "$OUTPUT_PATH" | cut -f1)"
+            echo "文件: $ISO_FILE"
+            echo "大小: $(du -h "$ISO_FILE" | cut -f1)"
+            
+            # 验证ISO
+            if command -v file >/dev/null 2>&1; then
+                echo "文件类型:"
+                file "$ISO_FILE"
+            fi
         else
             echo "❌ ISO构建失败"
-            echo "输出目录内容:"
-            ls -la "$(dirname "$OUTPUT_PATH")" 2>/dev/null || echo "目录不存在"
             exit 1
         fi
         
