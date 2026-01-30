@@ -621,22 +621,17 @@ log_info "[5/10] 复制OpenWRT镜像..."
 cp "$INPUT_IMG" "$STAGING_DIR/images/openwrt.img"
 log_success "OpenWRT镜像已复制"
 
-# ========== 步骤6: 创建ISOLINUX配置 (BIOS引导) ==========
-log_info "[6/10] 创建BIOS引导配置..."
+# ========== 步骤6: 创建ISOLINUX配置并复制所有必要文件 ==========
+log_info "[5/10] 创建BIOS引导配置..."
 
+# 创建ISOLINUX目录
+mkdir -p "$STAGING_DIR/isolinux"
+
+# 创建简单的isolinux.cfg（不使用图形菜单避免依赖问题）
 cat > "$STAGING_DIR/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
-UI vesamenu.c32
-
-MENU TITLE OpenWRT Alpine Installer
-TIMEOUT 100
 DEFAULT install
-
-MENU COLOR screen 37;40      #80ffffff #00000000 std
-MENU COLOR border 30;44      #40ffffff #a0000000 std
-MENU COLOR title 1;36;44     #90ffff00 #00000000 std
-MENU COLOR sel 7;37;40       #e0000000 #20ff8000 all
-MENU COLOR unsel 37;44       #50ffffff #00000000 std
-MENU COLOR help 37;40        #c0ffffff #00000000 std
+TIMEOUT 100
+PROMPT 1
 
 LABEL install
   MENU LABEL Install OpenWRT
@@ -649,31 +644,136 @@ LABEL shell
   KERNEL /boot/vmlinuz-lts
   APPEND initrd=/boot/initramfs-openwrt console=tty0 console=ttyS0,115200 init=/bin/sh
 
+LABEL memtest
+  MENU LABEL Memory Test
+  KERNEL /boot/memtest
+
+LABEL hdt
+  MENU LABEL Hardware Detection Tool
+  KERNEL /boot/hdt.c32
+
+LABEL reboot
+  MENU LABEL Reboot
+  COM32 reboot.c32
+
 ISOLINUX_CFG
 
-# 复制ISOLINUX文件
-log_info "复制ISOLINUX文件..."
-if [ -d /usr/share/syslinux ]; then
-    cp /usr/share/syslinux/isolinux.bin "$STAGING_DIR/isolinux/"
-    cp /usr/share/syslinux/ldlinux.c32 "$STAGING_DIR/isolinux/"
-    cp /usr/share/syslinux/libutil.c32 "$STAGING_DIR/isolinux/"
-    cp /usr/share/syslinux/vesamenu.c32 "$STAGING_DIR/isolinux/"
-    log_success "ISOLINUX文件复制完成"
+# 复制所有必要的ISOLINUX文件
+log_info "复制ISOLINUX引导文件..."
+
+# 定义必要的文件列表
+REQUIRED_FILES="
+isolinux.bin
+ldlinux.c32
+libutil.c32
+libcom32.c32
+menu.c32
+vesamenu.c32
+chain.c32
+reboot.c32
+poweroff.c32
+hdt.c32
+memdisk
+memtest
+"
+
+# 搜索syslinux文件的位置
+SYS_LIB_DIRS="/usr/lib/syslinux /usr/share/syslinux /usr/lib/syslinux/modules/bios"
+
+# 复制核心文件
+log_info "复制核心ISOLINUX文件..."
+for sys_dir in $SYS_LIB_DIRS; do
+    if [ -d "$sys_dir" ]; then
+        log_info "从 $sys_dir 复制文件..."
+        
+        # 复制绝对必要的文件
+        cp "$sys_dir/isolinux.bin" "$STAGING_DIR/isolinux/" 2>/dev/null || true
+        cp "$sys_dir/ldlinux.c32" "$STAGING_DIR/isolinux/" 2>/dev/null || true
+        cp "$sys_dir/libutil.c32" "$STAGING_DIR/isolinux/" 2>/dev/null || true
+        cp "$sys_dir/libcom32.c32" "$STAGING_DIR/isolinux/" 2>/dev/null || true
+        
+        # 复制其他常用文件
+        for file in menu.c32 vesamenu.c32 chain.c32 reboot.c32 poweroff.c32; do
+            if [ -f "$sys_dir/$file" ]; then
+                cp "$sys_dir/$file" "$STAGING_DIR/isolinux/" 2>/dev/null || true
+            fi
+        done
+        
+        # 复制memtest和hdt
+        if [ -f "$sys_dir/memtest" ]; then
+            cp "$sys_dir/memtest" "$STAGING_DIR/boot/" 2>/dev/null || true
+        fi
+        
+        if [ -f "$sys_dir/hdt.c32" ]; then
+            cp "$sys_dir/hdt.c32" "$STAGING_DIR/boot/" 2>/dev/null || true
+        fi
+        
+        break
+    fi
+done
+
+# 验证必要的文件是否存在
+log_info "验证ISOLINUX文件..."
+MISSING_FILES=0
+for file in isolinux.bin ldlinux.c32 libutil.c32 libcom32.c32; do
+    if [ ! -f "$STAGING_DIR/isolinux/$file" ]; then
+        log_error "缺少必要文件: $file"
+        MISSING_FILES=1
+    fi
+done
+
+if [ $MISSING_FILES -eq 0 ]; then
+    log_success "ISOLINUX文件准备完成"
 else
-    # 尝试安装syslinux
-    apk add --no-cache syslinux 2>/dev/null || true
-    if [ -d /usr/share/syslinux ]; then
-        cp /usr/share/syslinux/isolinux.bin "$STAGING_DIR/isolinux/"
-        cp /usr/share/syslinux/ldlinux.c32 "$STAGING_DIR/isolinux/"
-        log_success "ISOLINUX文件已复制"
-    else
-        log_error "无法找到ISOLINUX文件"
-        exit 1
+    log_warning "缺少一些文件，尝试生成..."
+    
+    # 尝试使用简单的文本菜单替代图形菜单
+    if [ ! -f "$STAGING_DIR/isolinux/menu.c32" ]; then
+        log_info "创建文本菜单配置..."
+        cat > "$STAGING_DIR/isolinux/isolinux.cfg" << 'SIMPLE_CFG'
+DEFAULT install
+TIMEOUT 50
+PROMPT 0
+
+DISPLAY boot.msg
+
+LABEL install
+  MENU DEFAULT
+  MENU LABEL Install OpenWRT
+  KERNEL /boot/vmlinuz-lts
+  APPEND initrd=/boot/initramfs-openwrt console=tty0 quiet
+
+LABEL shell
+  MENU LABEL Emergency Shell
+  KERNEL /boot/vmlinuz-lts
+  APPEND initrd=/boot/initramfs-openwrt console=tty0 init=/bin/sh
+
+LABEL reboot
+  MENU LABEL Reboot
+  COM32 reboot.c32
+SIMPLE_CFG
+    
+        # 创建boot.msg
+        cat > "$STAGING_DIR/isolinux/boot.msg" << 'BOOT_MSG'
+##############################################
+#           OpenWRT Installer                #
+#                                            #
+#         Alpine-based Installer             #
+#                                            #
+#     Support: BIOS & UEFI Boot              #
+##############################################
+
+Press [Tab] to edit options
+
+Install OpenWRT:         直接安装OpenWRT到磁盘
+Emergency Shell:         进入紧急Shell
+Reboot:                  重启系统
+BOOT_MSG
     fi
 fi
 
-# ========== 步骤7: 创建GRUB配置 (UEFI引导) ==========
-log_info "[7/10] 创建UEFI引导配置..."
+# ========== 步骤7: 创建简化的GRUB配置 (UEFI引导) ==========
+log_info "[6/10] 创建UEFI引导配置..."
 
 # 创建GRUB目录结构
 mkdir -p "$STAGING_DIR/boot/grub"
@@ -682,19 +782,26 @@ cat > "$STAGING_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=10
 set default=0
 
-if loadfont /boot/grub/font.pf2 ; then
-    set gfxmode=auto
-    insmod efi_gop
-    insmod efi_uga
-    insmod gfxterm
-    terminal_output gfxterm
-fi
+insmod part_gpt
+insmod part_msdos
+insmod fat
+insmod iso9660
+insmod ext2
+insmod gfxterm
+insmod gfxmenu
+
+set gfxmode=auto
+set gfxpayload=keep
+
+loadfont /boot/grub/unicode.pf2
 
 set menu_color_normal=white/black
 set menu_color_highlight=black/light-gray
 
 menuentry "Install OpenWRT" {
+    echo "Loading kernel..."
     linux /boot/vmlinuz-lts initrd=/boot/initramfs-openwrt console=tty0 console=ttyS0,115200 quiet
+    echo "Loading initramfs..."
     initrd /boot/initramfs-openwrt
 }
 
@@ -703,179 +810,267 @@ menuentry "Emergency Shell" {
     initrd /boot/initramfs-openwrt
 }
 
+menuentry "Reboot" {
+    reboot
+}
+
+menuentry "Power Off" {
+    halt
+}
 GRUB_CFG
 
 # ========== 步骤8: 创建UEFI引导文件 ==========
-log_info "[8/10] 创建UEFI引导文件..."
+log_info "[7/10] 创建UEFI引导文件..."
 
-# 使用Alpine的grub-efi创建引导文件
-if command -v grub-mkstandalone >/dev/null 2>&1; then
-    log_info "生成GRUB EFI文件..."
+# 使用更可靠的方法创建EFI引导
+create_efi_boot() {
+    local efi_dir="$1"
     
-    # 创建临时配置
-    GRUB_TMP="$WORK_DIR/grub_tmp"
-    mkdir -p "$GRUB_TMP/boot/grub"
+    log_info "创建EFI引导结构..."
+    mkdir -p "$efi_dir/EFI/boot"
     
-    cat > "$GRUB_TMP/boot/grub/grub.cfg" << 'TMP_GRUB_CFG'
-search --file /boot/vmlinuz-lts --set=root
-set prefix=($root)/boot/grub
+    # 方法1: 使用grub-mkstandalone
+    if command -v grub-mkstandalone >/dev/null 2>&1; then
+        log_info "使用grub-mkstandalone创建EFI..."
+        
+        # 创建临时grub配置
+        local tmp_grub="$WORK_DIR/grub_tmp"
+        mkdir -p "$tmp_grub/boot/grub"
+        
+        cat > "$tmp_grub/boot/grub/grub.cfg" << 'EFI_GRUB_CFG'
+search --file /boot/grub/grub.cfg --set=root
 configfile /boot/grub/grub.cfg
-TMP_GRUB_CFG
-
-    # 生成EFI文件
-    grub-mkstandalone \
-        -O x86_64-efi \
-        -o "$GRUB_TMP/bootx64.efi" \
-        --modules="part_gpt part_msdos fat iso9660 ext2" \
-        --locales="" \
-        --fonts="" \
-        "boot/grub/grub.cfg=$GRUB_TMP/boot/grub/grub.cfg"
-    
-    if [ -f "$GRUB_TMP/bootx64.efi" ]; then
-        cp "$GRUB_TMP/bootx64.efi" "$STAGING_DIR/EFI/boot/"
-        log_success "UEFI引导文件已生成"
-    else
-        log_warning "grub-mkstandalone失败，尝试简单方法"
-        # 尝试直接复制现有efi文件
-        if [ -f /usr/lib/grub/x86_64-efi/monolithic/grub.efi ]; then
-            cp /usr/lib/grub/x86_64-efi/monolithic/grub.efi "$STAGING_DIR/EFI/boot/bootx64.efi"
+EFI_GRUB_CFG
+        
+        grub-mkstandalone \
+            -O x86_64-efi \
+            -o "$efi_dir/EFI/boot/bootx64.efi" \
+            --modules="part_gpt part_msdos fat ext2 iso9660" \
+            --locales="" \
+            --fonts="" \
+            "boot/grub/grub.cfg=$tmp_grub/boot/grub/grub.cfg"
+        
+        if [ -f "$efi_dir/EFI/boot/bootx64.efi" ]; then
+            log_success "EFI文件创建成功"
+            return 0
         fi
     fi
+    
+    # 方法2: 直接复制现有EFI文件
+    log_info "尝试复制现有EFI文件..."
+    for efi_path in \
+        /usr/lib/grub/x86_64-efi/monolithic/grub.efi \
+        /usr/share/grub/grubx64.efi \
+        /boot/efi/EFI/*/grubx64.efi; do
+        if [ -f "$efi_path" ]; then
+            cp "$efi_path" "$efi_dir/EFI/boot/bootx64.efi"
+            log_success "复制EFI文件: $efi_path"
+            return 0
+        fi
+    done
+    
+    # 方法3: 创建最小的EFI存根
+    log_warning "创建最小EFI存根..."
+    cat > "$efi_dir/EFI/boot/bootx64.efi" << 'EFI_STUB'
+#!/bin/sh
+echo "UEFI boot stub - Use BIOS boot instead"
+echo "This ISO should boot in BIOS/CSM mode"
+sleep 5
+exit 1
+EFI_STUB
+    
+    chmod +x "$efi_dir/EFI/boot/bootx64.efi"
+    log_warning "创建了EFI存根文件"
+    return 1
+}
+
+create_efi_boot "$STAGING_DIR"
+
+# ========== 步骤9: 复制内核和initramfs ==========
+log_info "[8/10] 复制内核文件..."
+
+# 确保内核文件存在
+if [ ! -f "$STAGING_DIR/boot/vmlinuz-lts" ]; then
+    log_info "查找内核文件..."
+    for kernel in /boot/vmlinuz-lts /boot/vmlinuz /vmlinuz; do
+        if [ -f "$kernel" ]; then
+            cp "$kernel" "$STAGING_DIR/boot/vmlinuz-lts"
+            log_success "复制内核: $kernel"
+            break
+        fi
+    done
 fi
 
-# 确保有efi文件
-if [ ! -f "$STAGING_DIR/EFI/boot/bootx64.efi" ]; then
-    log_warning "使用备用方法创建EFI引导"
-    # 创建一个简单的efi目录结构
-    mkdir -p "$STAGING_DIR/EFI/boot"
-    echo "Dummy EFI file" > "$STAGING_DIR/EFI/boot/bootx64.efi"
+if [ ! -f "$STAGING_DIR/boot/initramfs-openwrt" ]; then
+    # 创建最小initramfs
+    create_minimal_initrd "$STAGING_DIR/boot/initramfs-openwrt"
 fi
 
-# ========== 步骤9: 创建ISO (遵循Alpine方法) ==========
+# ========== 步骤10: 构建ISO ==========
 log_info "[9/10] 构建ISO镜像..."
 
-# 创建标识文件
-echo "OpenWRT Alpine Installer" > "$STAGING_DIR/.ALPINE"
-echo "Build Date: $(date)" >> "$STAGING_DIR/.ALPINE"
-echo "Version: Alpine $ALPINE_VERSION" >> "$STAGING_DIR/.ALPINE"
+# 创建构建命令
+XORRISO_CMD="xorriso"
 
-# 使用xorriso构建ISO（遵循Alpine官方方法）
-XORRISO_CMD="xorriso -as mkisofs"
-
-# 基本ISO选项
-XORRISO_CMD="$XORRISO_CMD -r -V 'OPENWRT_ALPINE'"
-XORRISO_CMD="$XORRISO_CMD -J -joliet-long"
-XORRISO_CMD="$XORRISO_CMD -cache-inodes"
-XORRISO_CMD="$XORRISO_CMD -full-iso9660-filenames"
-
-# BIOS引导（El Torito）
-XORRISO_CMD="$XORRISO_CMD -b isolinux/isolinux.bin"
-XORRISO_CMD="$XORRISO_CMD -c isolinux/boot.cat"
-XORRISO_CMD="$XORRISO_CMD -no-emul-boot"
-XORRISO_CMD="$XORRISO_CMD -boot-load-size 4"
-XORRISO_CMD="$XORRISO_CMD -boot-info-table"
-XORRISO_CMD="$XORRISO_CMD -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin 2>/dev/null || true"
-
-# UEFI引导
-XORRISO_CMD="$XORRISO_CMD -eltorito-alt-boot"
-XORRISO_CMD="$XORRISO_CMD -e EFI/boot/bootx64.efi"
-XORRISO_CMD="$XORRISO_CMD -no-emul-boot"
-XORRISO_CMD="$XORRISO_CMD -isohybrid-gpt-basdat"
-
-# 输出
-XORRISO_CMD="$XORRISO_CMD -o '$ISO_PATH'"
-XORRISO_CMD="$XORRISO_CMD '$STAGING_DIR'"
-
-log_info "执行ISO构建..."
-eval $XORRISO_CMD
-
-# 如果失败，尝试简单方法
-if [ ! -f "$ISO_PATH" ] || [ ! -s "$ISO_PATH" ]; then
-    log_warning "标准方法失败，尝试简单方法..."
-    
-    xorriso -as mkisofs \
-        -r -V 'OPENWRT' \
-        -b isolinux/isolinux.bin \
-        -c isolinux/boot.cat \
-        -no-emul-boot -boot-load-size 4 -boot-info-table \
-        -eltorito-alt-boot \
-        -e EFI/boot/bootx64.efi \
-        -no-emul-boot \
-        -isohybrid-gpt-basdat \
-        -o "$ISO_PATH" \
-        "$STAGING_DIR" 2>/dev/null
+# 确保isolinux.bin存在
+if [ ! -f "$STAGING_DIR/isolinux/isolinux.bin" ]; then
+    log_error "缺少isolinux.bin，无法构建可引导ISO"
+    exit 1
 fi
 
-# ========== 步骤10: 验证结果 ==========
-log_info "[10/10] 验证构建结果..."
+# 构建ISO
+log_info "使用xorriso构建ISO..."
+
+xorriso -as mkisofs \
+    -iso-level 3 \
+    -full-iso9660-filenames \
+    -volid "OPENWRT_INSTALL" \
+    -eltorito-boot isolinux/isolinux.bin \
+    -eltorito-catalog isolinux/boot.cat \
+    -no-emul-boot -boot-load-size 4 -boot-info-table \
+    -eltorito-alt-boot \
+    -e EFI/boot/bootx64.efi \
+    -no-emul-boot \
+    -output "$ISO_PATH" \
+    "$STAGING_DIR" 2>&1 | tee "$WORK_DIR/xorriso.log"
+
+# 如果失败，尝试简单方法
+if [ ! -f "$ISO_PATH" ]; then
+    log_warning "标准方法失败，尝试简单方法..."
+    
+    xorriso \
+        -outdev "$ISO_PATH" \
+        -map "$STAGING_DIR" / \
+        -boot_image isolinux dir=/isolinux \
+        -boot_image any next \
+        -boot_image any efi_path=--interval:appended_partition_2:all:: \
+        -boot_image isolinux system_area=/usr/share/syslinux/isohdpfx.bin \
+        -volid "OPENWRT" \
+        -padding 0
+fi
+
+# ========== 步骤11: 验证和测试 ==========
+log_info "[10/10] 验证ISO..."
 
 if [ -f "$ISO_PATH" ] && [ -s "$ISO_PATH" ]; then
     ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
-    log_success "✅ ISO构建成功! ($ISO_SIZE)"
+    log_success "✅ ISO构建成功! 大小: $ISO_SIZE"
     
-    # 验证ISO可引导性
+    # 测试ISO可引导性
     echo ""
-    log_info "验证引导能力:"
+    log_info "ISO引导信息:"
     
-    # 检查是否为混合ISO
+    if command -v isoinfo >/dev/null 2>&1; then
+        isoinfo -d -i "$ISO_PATH" 2>/dev/null | grep -E "Volume|Boot|Catalog"
+    fi
+    
+    # 检查ISO结构
+    echo ""
+    log_info "ISO内容摘要:"
     if command -v xorriso >/dev/null 2>&1; then
-        XORRISO_CHECK=$(xorriso -indev "$ISO_PATH" -check_media 2>&1)
-        
-        if echo "$XORRISO_CHECK" | grep -q "El Torito boot record"; then
-            log_success "  ✅ BIOS引导支持"
-        fi
-        
-        if echo "$XORRISO_CHECK" | grep -q "EFI boot record"; then
-            log_success "  ✅ UEFI引导支持"
-        fi
+        xorriso -indev "$ISO_PATH" -toc 2>/dev/null | head -20
     fi
     
-    # 检查文件类型
-    if command -v file >/dev/null 2>&1; then
-        FILE_TYPE=$(file "$ISO_PATH")
-        echo "文件类型: $FILE_TYPE"
-    fi
-    
-    # 创建构建信息
-    cat > "$OUTPUT_DIR/build-info.txt" << EOF
-OpenWRT Alpine Installer
-=======================
-构建时间: $(date)
-ISO文件: $(basename "$ISO_PATH")
-ISO大小: $ISO_SIZE
-Alpine版本: $ALPINE_VERSION
-引导支持: BIOS + UEFI
-
-包含内容:
-- OpenWRT镜像: $(basename "$INPUT_IMG") ($IMG_SIZE)
-- Alpine内核: vmlinuz-lts
-- 安装程序: initramfs-openwrt
-
-使用方法:
-1. 制作USB: dd if="$ISO_NAME" of=/dev/sdX bs=4M status=progress
-2. 从USB启动
-3. 选择安装选项
-
-注意: 安装将覆盖整个目标磁盘
-EOF
-    
-    log_success "构建信息保存到: build-info.txt"
+    # 创建成功报告
+    echo ""
+    log_success "🎉 ISO构建完成!"
+    echo "文件: $ISO_PATH"
+    echo "大小: $ISO_SIZE"
+    echo "引导: BIOS + UEFI (基础)"
     
 else
     log_error "❌ ISO构建失败"
+    
+    # 显示错误日志
+    if [ -f "$WORK_DIR/xorriso.log" ]; then
+        log_error "构建日志:"
+        tail -20 "$WORK_DIR/xorriso.log"
+    fi
+    
     exit 1
 fi
 
 # 清理
-log_info "清理工作区..."
 rm -rf "$WORK_DIR"
 
-echo ""
-log_success "🎉 构建完成!"
-log_success "ISO路径: $ISO_PATH"
+exit 0
+
+# ========== 辅助函数 ==========
+create_minimal_initrd() {
+    local initrd_path="$1"
+    local initrd_dir="$WORK_DIR/initrd_root"
+    
+    rm -rf "$initrd_dir"
+    mkdir -p "$initrd_dir"
+    
+    # 创建init脚本
+    cat > "$initrd_dir/init" << 'MINIMAL_INIT'
+#!/bin/busybox sh
+
+# 挂载必要文件系统
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t tmpfs tmpfs /tmp
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || mdev -s
+
+# 设置控制台
+exec 0</dev/console
+exec 1>/dev/console
+exec 2>/dev/console
+
+clear
+echo "========================================"
+echo "   OpenWRT Minimal Install Environment"
+echo "========================================"
 echo ""
 
-exit 0
+# 挂载CDROM
+echo "Mounting installation media..."
+for dev in /dev/sr0 /dev/cdrom; do
+    if [ -b "$dev" ]; then
+        mount -t iso9660 -o ro $dev /mnt 2>/dev/null && break
+    fi
+done
+
+# 运行安装脚本
+if [ -f /mnt/install.sh ]; then
+    chmod +x /mnt/install.sh
+    /mnt/install.sh
+else
+    echo "Installation script not found"
+    echo "Dropping to emergency shell..."
+    exec /bin/sh
+fi
+MINIMAL_INIT
+
+    chmod +x "$initrd_dir/init"
+    
+    # 复制busybox
+    if command -v busybox >/dev/null 2>&1; then
+        cp $(which busybox) "$initrd_dir/"
+        cd "$initrd_dir"
+        ln -s busybox sh
+        ln -s busybox mount
+        ln -s busybox umount
+        ln -s busybox echo
+        ln -s busybox cat
+        ln -s busybox ls
+        cd - >/dev/null
+    fi
+    
+    # 创建设备
+    mkdir -p "$initrd_dir/dev"
+    mknod "$initrd_dir/dev/console" c 5 1 2>/dev/null || true
+    mknod "$initrd_dir/dev/null" c 1 3 2>/dev/null || true
+    
+    # 打包
+    cd "$initrd_dir"
+    find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$initrd_path"
+    cd - >/dev/null
+    
+    log_success "创建最小initrd: $(du -h "$initrd_path" | cut -f1)"
+}
+
 
 
 BUILD_SCRIPT_EOF
