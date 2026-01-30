@@ -35,32 +35,43 @@ jobs:
         chmod +x scripts/build-iso.sh
         cat > Dockerfile.openwrt-builder << 'DOCKEREOF'
         FROM alpine:3.20
-        
-        # 安装构建工具和openssl用于密钥生成
-        RUN apk update && apk add --no-cache \
-            bash \
-            git \
-            alpine-sdk \
-            alpine-conf \
-            syslinux \
-            xorriso \
-            squashfs-tools \
-            grub-efi \
-            mtools \
-            dosfstools \
-            coreutils \
-            e2fsprogs-extra \
-            openssl
-        
+    
+        # 安装构建工具
+        apk update && apk add --no-cache \
+        bash \
+        git \
+        alpine-sdk \
+        alpine-conf \
+        syslinux \
+        xorriso \
+        squashfs-tools \
+        grub-efi \
+        mtools \
+        dosfstools \
+        coreutils \
+        e2fsprogs-extra \
+        openssl \
+        abuild
+    
+        # 生成系统apk签名密钥（用于--hostkeys）
+        RUN mkdir -p /etc/apk/keys && \
+        if [ ! -f /etc/apk/keys/alpine-devel@lists.alpinelinux.org-*.rsa.pub ]; then \
+            echo "生成系统APK签名密钥..." && \
+            mkdir -p /tmp/abuild && \
+            cd /tmp/abuild && \
+            abuild-keygen -a -i -n 2>/dev/null && \
+            cp /tmp/abuild/*.rsa.pub /etc/apk/keys/ 2>/dev/null || true; \
+        fi
+    
         # 创建工作目录
         WORKDIR /builder
-        
+    
         # 复制构建脚本
         COPY scripts/ /builder/scripts/
-        
+    
         # 设置权限
         RUN chmod +x /builder/scripts/*.sh
-        
+    
         ENTRYPOINT ["/builder/scripts/build-iso.sh"]
         DOCKEREOF
 
