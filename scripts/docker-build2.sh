@@ -12,7 +12,7 @@ echo ""
 IMG_FILE="$1"
 OUTPUT_DIR="${2:-./output}"
 ISO_NAME="${3:-openwrt-installer-$(date +%Y%m%d).iso}"
-ALPINE_VERSION="${4:-3.20}"
+ALPINE_VERSION="${4:-3.23}"
 
 
 # 基本检查
@@ -63,11 +63,11 @@ echo "✅ Docker可用"
 # 创建优化的Dockerfile
 DOCKERFILE_PATH="Dockerfile.alpine-iso"
 cat > "$DOCKERFILE_PATH" << 'DOCKERFILE_EOF'
-ARG ALPINE_VERSION=3.20
+ARG ALPINE_VERSION=3.23
 FROM alpine:${ALPINE_VERSION}
 
-RUN echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > /etc/apk/repositories && \
-    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> /etc/apk/repositories
+RUN echo "http://dl-cdn.alpinelinux.org/alpine/v3.23/main" > /etc/apk/repositories && \
+    echo "http://dl-cdn.alpinelinux.org/alpine/v3.23/community" >> /etc/apk/repositories
 
 # 安装完整的ISO构建工具链和内核
 RUN apk update && apk add --no-cache \
@@ -149,7 +149,7 @@ echo ""
 INPUT_IMG="${INPUT_IMG:-/mnt/input.img}"
 OUTPUT_DIR="${OUTPUT_DIR:-/output}"
 ISO_NAME="${ISO_NAME:-openwrt.iso}"
-ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
+ALPINE_VERSION="${ALPINE_VERSION:-3.23}"
 
 # 颜色定义
 RED='\033[0;31m'
