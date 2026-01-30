@@ -52,25 +52,39 @@ echo "✅ Docker可用"
 # 创建优化的Dockerfile
 DOCKERFILE_PATH="Dockerfile.alpine-iso"
 cat > "$DOCKERFILE_PATH" << 'DOCKERFILE_EOF'
-       # 安装构建工具
-        RUN apk update && apk add --no-cache \
-            alpine-sdk \
-            alpine-conf \
-            syslinux \
-            xorriso \
-            squashfs-tools \
-            grub \
-            grub-efi \
-            mtools \
-            dosfstools \
-            e2fsprogs \
-            parted \
-            lsblk \
-            curl \
-            wget \
-            git \
-            bash \
-            && rm -rf /var/cache/apk/*
+ARG ALPINE_VERSION=3.20
+FROM alpine:${ALPINE_VERSION}
+
+RUN echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > /etc/apk/repositories && \
+    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> /etc/apk/repositories
+
+# 安装完整的ISO构建工具链和内核
+RUN apk update && apk add --no-cache \
+    bash \
+    xorriso \
+    syslinux \
+    mtools \
+    dosfstools \
+    grub \
+    grub-efi \
+    grub-bios \
+    e2fsprogs \
+    parted \
+    util-linux \
+    util-linux-misc \
+    coreutils \
+    gzip \
+    tar \
+    cpio \
+    findutils \
+    grep \
+    gawk \
+    file \
+    curl \
+    wget \
+    linux-lts \
+    linux-firmware-none \
+    && rm -rf /var/cache/apk/*
         
         # 创建构建用户
         RUN adduser -D -g "Alpine Builder" builder && \
