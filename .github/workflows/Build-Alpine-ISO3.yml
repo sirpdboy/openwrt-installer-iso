@@ -1,6 +1,11 @@
 name: Build OpenWRT ISO with Alpine
 
+
 on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - '.github/workflows/Build-Alpine-ISO3.yml'
   workflow_dispatch:
     inputs:
       alpine_version:
