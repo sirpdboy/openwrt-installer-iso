@@ -361,7 +361,11 @@ INSTALL_SH
             ln -s busybox "$app" 2>/dev/null || true
         done
         
-        cd - >/dev/null
+    echo ===========dir:$pwd
+    ls -l 
+    cd - >/dev/null
+    echo ===========dir:$pwd
+    ls -l
     else
         log_error "错误: 找不到 busybox"
         return 1
@@ -403,7 +407,11 @@ INSTALL_SH
         return 1
     fi
     
+    echo ===========dir:$pwd
+    ls -l 
     cd - >/dev/null
+    echo ===========dir:$pwd
+    ls -l
     rm -rf "$initrd_dir"
 }
 
@@ -495,13 +503,19 @@ if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
         cp "$MOUNT_DIR/boot/initramfs-lts" "$STAGING_DIR/live/initrd"
         # 使用 create_minimal_initrd 创建
         create_minimal_initrd "$STAGING_DIR/live/initrd"
-        cd - >/dev/null
+    echo ===========dir:$pwd
+    ls -l 
+    cd - >/dev/null
+    echo ===========dir:$pwd
+    ls -l
         umount "$MOUNT_DIR" 2>/dev/null || true
         rm -rf "$MOUNT_DIR"
         continue
     fi
+    echo ===========dir:$pwd
     ls -l 
     cd - >/dev/null
+    echo ===========dir:$pwd
     ls -l
     # 备份原来的 init
     if [ -f "$INITRD_DIR/init" ]; then
@@ -590,7 +604,11 @@ create_minimal_initrd() {
             ln -s busybox "$app" 2>/dev/null || true
         done
         
-        cd - >/dev/null
+    echo ===========dir:$pwd
+    ls -l 
+    cd - >/dev/null
+    echo ===========dir:$pwd
+    ls -l
     fi
     
     # 复制其他必要工具
@@ -617,7 +635,11 @@ create_minimal_initrd() {
     # 打包 initrd
     cd "$initrd_dir"
     find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$initrd_path"
+    echo ===========dir:$pwd
+    ls -l 
     cd - >/dev/null
+    echo ===========dir:$pwd
+    ls -l
     
     # 检查 initrd 是否创建成功
     if [ -f "$initrd_path" ] && [ -s "$initrd_path" ]; then
