@@ -503,47 +503,34 @@ if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
         cp "$MOUNT_DIR/boot/initramfs-lts" "$STAGING_DIR/live/initrd"
         # 使用 create_minimal_initrd 创建
         create_minimal_initrd "$STAGING_DIR/live/initrd"
-    echo ===========dir:$pwd
-    ls -l 
-    cd - >/dev/null
-    echo ===========dir:$pwd
-    ls -l
+        cd - >/dev/null
         umount "$MOUNT_DIR" 2>/dev/null || true
         rm -rf "$MOUNT_DIR"
         continue
     fi
-    echo ===========dir:$pwd
-    ls -l 
     cd - >/dev/null
-    echo ===========dir:$pwd
-    ls -l
     # 备份原来的 init
     if [ -f "$INITRD_DIR/init" ]; then
         mv "$INITRD_DIR/init" "$INITRD_DIR/init.alpine"
         log_info "备份原 init 脚本"
     fi
-    ls "$INITRD_DIR"
     # 写入我们简化的 init 脚本
     create_initrd "$INITRD_DIR"
-    
     # 确保有必要的工具
     if [ ! -f "$INITRD_DIR/busybox" ] && command -v busybox >/dev/null 2>&1; then
         cp $(which busybox) "$INITRD_DIR/busybox"
     fi
-    
     # 确保有设备节点
     if [ ! -c "$INITRD_DIR/dev/console" ]; then
         mkdir -p "$INITRD_DIR/dev"
         mknod "$INITRD_DIR/dev/console" c 5 1 2>/dev/null || true
         mknod "$INITRD_DIR/dev/null" c 1 3 2>/dev/null || true
     fi
-    
+
     log_info "重新打包 initrd..."
     cd "$INITRD_DIR"
     find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$STAGING_DIR/live/initrd"
-    ls -l
     cd - >/dev/null
-    ls -l
     # 验证
     if [ -f "$STAGING_DIR/live/initrd" ] && [ -s "$STAGING_DIR/live/initrd" ]; then
         log_success "修改后的 initrd 创建成功"
@@ -551,7 +538,6 @@ if [ -f "$MOUNT_DIR/boot/initramfs-lts" ]; then
         log_warning "修改失败，使用简单 initrd"
         create_simple_initrd "$STAGING_DIR/live/initrd"
     fi
-    
     rm -rf "$INITRD_DIR"
 fi
 	
