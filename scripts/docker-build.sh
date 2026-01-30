@@ -14,19 +14,8 @@ OUTPUT_DIR="${2:-./output}"
 ISO_NAME="${3:-openwrt-installer-$(date +%Y%m%d).iso}"
 ALPINE_VERSION="${4:-3.20}"
 
+[ $# -lt 1 ] && { echo "用法: $0 <openwrt.img> [输出目录] [iso名称] [alpine版本]"; exit 1; }
 
-# 基本检查
-if [ $# -lt 1 ]; then
-    cat << EOF
-用法: $0 <img文件> [输出目录] [iso名称] [alpine版本]
-
-示例:
-  $0 ./openwrt.img
-  $0 ./openwrt.img ./iso my-openwrt.iso
-  $0 ./openwrt.img ./output openwrt.iso 3.19
-EOF
-    exit 1
-fi
 
 if [ ! -f "$IMG_FILE" ]; then
     echo "❌ 错误: IMG文件不存在: $IMG_FILE"
@@ -135,12 +124,12 @@ DOCKERFILE_EOF
 # 创建完整的Alpine构建脚本
 cat > scripts/build-iso-alpine.sh << 'BUILD_SCRIPT_EOF'
 #!/bin/bash
-# openwrt-iso-proven.sh - 经过测试的解决方案
+# openwrt-iso-final.sh - 最终修复版本
 
 set -e
 
 echo "================================================"
-echo "  OpenWRT ISO Builder - Proven Solution"
+echo "  OpenWRT ISO Builder - Final Fix"
 echo "================================================"
 echo ""
 
@@ -150,10 +139,10 @@ OUTPUT_DIR="${OUTPUT_DIR:-/output}"
 ISO_NAME="${ISO_NAME:-openwrt.iso}"
 ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
 
-[ ! -f "$INPUT_IMG" ] && { echo "错误: 找不到IMG文件: $INPUT_IMG"; exit 1; }
+[ ! -f "$INPUT_IMG" ] && { echo "错误: 找不到IMG文件"; exit 1; }
 
 # 工作目录
-WORK_DIR="/tmp/openwrt-proven-$(date +%s)"
+WORK_DIR="/tmp/openwrt-final-$(date +%s)"
 mkdir -p "$WORK_DIR"
 mkdir -p "$OUTPUT_DIR"
 
@@ -162,391 +151,325 @@ OUTPUT_ABS=$(realpath "$OUTPUT_DIR")
 ISO_PATH="$OUTPUT_ABS/$ISO_NAME"
 
 echo "🔧 配置:"
-echo "  输入镜像: $INPUT_ABS"
-echo "  输出ISO: $ISO_PATH"
+echo "  输入: $INPUT_ABS"
+echo "  输出: $ISO_PATH"
 echo ""
 
-# ========== 步骤1: 创建initramfs目录结构 ==========
-echo "[1/7] 创建initramfs目录结构..."
+# ========== 步骤1: 创建极简initramfs目录 ==========
+echo "[1/7] 创建极简initramfs..."
 
 INITRAMFS_DIR="$WORK_DIR/initramfs"
 rm -rf "$INITRAMFS_DIR"
 mkdir -p "$INITRAMFS_DIR"
 
-# 创建完整的目录结构
-for dir in bin dev etc lib lib64 proc root sbin sys tmp usr/bin usr/sbin var mnt images; do
+# 只创建必要的目录
+for dir in bin dev proc sys tmp mnt images; do
     mkdir -p "$INITRAMFS_DIR/$dir"
 done
 
-# ========== 步骤2: 创建绝对正确的init脚本 ==========
+# ========== 步骤2: 创建正确的init脚本 ==========
 echo "[2/7] 创建init脚本..."
 
-# 创建init文件 - 这是最关键的部分！
 cat > "$INITRAMFS_DIR/init" << 'INIT_EOF'
 #!/bin/busybox sh
-# 绝对正确的init脚本 - 内核第一个进程
+# OpenWRT安装程序init脚本
 
 # 1. 挂载核心文件系统
-/bin/busybox mount -t proc proc /proc
-/bin/busybox mount -t sysfs sysfs /sys
-/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || /bin/busybox mount -t tmpfs tmpfs /dev
-/bin/busybox mount -t tmpfs tmpfs /tmp
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t tmpfs tmpfs /tmp
 
-# 2. 创建设备节点（必须！）
-/bin/busybox mkdir -p /dev/pts
-[ ! -c /dev/console ] && /bin/busybox mknod /dev/console c 5 1
-[ ! -c /dev/null ] && /bin/busybox mknod /dev/null c 1 3
-[ ! -c /dev/tty ] && /bin/busybox mknod /dev/tty c 5 0
-[ ! -c /dev/tty0 ] && /bin/busybox mknod /dev/tty0 c 4 0
-[ ! -c /dev/tty1 ] && /bin/busybox mknod /dev/tty1 c 4 1
+# 2. 创建设备
+mdev -s 2>/dev/null || true
+[ ! -c /dev/console ] && mknod /dev/console c 5 1
+[ ! -c /dev/null ] && mknod /dev/null c 1 3
 
-# 3. 设置控制台（必须！）
+# 3. 设置控制台
 exec 0</dev/console
 exec 1>/dev/console
 exec 2>/dev/console
 
-# 4. 设置PATH环境变量
-export PATH=/bin:/sbin:/usr/bin:/usr/sbin
-
-# 5. 启动udev或mdev
-if [ -x /bin/mdev ]; then
-    /bin/busybox echo "/bin/mdev" > /proc/sys/kernel/hotplug
-    /bin/mdev -s
-fi
-
-# 6. 清屏并显示信息
-/bin/busybox clear
-/bin/busybox echo "========================================"
-/bin/busybox echo "  OpenWRT Installer - Init Started"
-/bin/busybox echo "========================================"
-/bin/busybox echo ""
-/bin/busybox echo "Checking system..."
-/bin/busybox echo ""
-
-# 7. 检查必要文件
-if [ ! -x /bin/busybox ]; then
-    /bin/busybox echo "ERROR: /bin/busybox not found or not executable!"
-    /bin/busybox echo "Dropping to emergency shell..."
-    exec /bin/busybox sh
-fi
-
-# 8. 加载必要内核模块
-/bin/busybox echo "Loading kernel modules..."
-for module in loop isofs cdrom sr_mod virtio_blk nvme ahci sd_mod usb-storage; do
-    /bin/busybox modprobe $module 2>/dev/null || true
-done
-
-# 9. 挂载安装介质
-/bin/busybox echo "Mounting installation media..."
-for device in /dev/sr0 /dev/cdrom /dev/sr[0-9]*; do
-    if [ -b "$device" ]; then
-        /bin/busybox echo "Found device: $device"
-        /bin/busybox mount -t iso9660 -o ro "$device" /mnt 2>/dev/null && {
-            /bin/busybox echo "Successfully mounted $device"
-            break
-        }
-    fi
-done
-
-# 10. 如果挂载成功，复制OpenWRT镜像
-if /bin/busybox mountpoint -q /mnt; then
-    if [ -f /mnt/images/openwrt.img ]; then
-        /bin/busybox echo "Copying OpenWRT image..."
-        /bin/busybox cp /mnt/images/openwrt.img /images/ 2>/dev/null || true
-    fi
-    /bin/busybox umount /mnt 2>/dev/null || true
-fi
-
-# 11. 运行安装程序
-/bin/busybox echo ""
-/bin/busybox echo "Starting OpenWRT installer..."
-/bin/busybox echo ""
-
-# 创建简单的安装脚本并执行
-cat > /install.sh << 'INSTALL_EOF'
-#!/bin/busybox sh
-
+# 4. 显示信息
 clear
 echo "========================================"
-echo "      OpenWRT Installation Menu"
+echo "      OpenWRT Installer Started"
 echo "========================================"
 echo ""
 
-while true; do
-    echo "1) Install OpenWRT to disk"
-    echo "2) List available disks"
-    echo "3) Start emergency shell"
-    echo "4) Reboot system"
-    echo ""
-    echo -n "Select option (1-4): "
-    read choice
-    
-    case $choice in
-        1)
-            echo ""
-            echo "Available disks:"
-            echo "----------------"
-            for disk in /dev/sd[a-z] /dev/nvme[0-9]n[0-9]; do
-                [ -b "$disk" ] && echo "  $disk"
-            done
-            echo ""
-            echo -n "Enter target disk (e.g., sda): "
-            read target
-            [ -z "$target" ] && continue
-            
-            [ "$target" != "/dev/"* ] && target="/dev/$target"
-            [ ! -b "$target" ] && echo "Disk not found!" && sleep 2 && continue
-            
-            echo ""
-            echo "WARNING: This will ERASE ALL DATA on $target!"
-            echo ""
-            echo -n "Type 'YES' to confirm: "
-            read confirm
-            [ "$confirm" != "YES" ] && continue
-            
-            # Find OpenWRT image
-            img=""
-            [ -f /images/openwrt.img ] && img="/images/openwrt.img"
-            [ -z "$img" ] && echo "OpenWRT image not found!" && sleep 2 && continue
-            
-            echo ""
-            echo "Installing OpenWRT to $target..."
-            echo ""
-            
-            if command -v pv >/dev/null 2>&1; then
-                pv "$img" | dd of="$target" bs=4M
-            else
-                dd if="$img" of="$target" bs=4M status=progress 2>/dev/null || \
-                dd if="$img" of="$target" bs=4M
-            fi
-            
-            if [ $? -eq 0 ]; then
-                sync
+# 5. 加载内核模块
+echo "Loading modules..."
+for mod in loop isofs cdrom; do
+    modprobe $mod 2>/dev/null || true
+done
+
+# 6. 挂载安装介质
+echo "Mounting installation media..."
+for dev in /dev/sr0 /dev/cdrom /dev/sr[0-9]*; do
+    if [ -b "$dev" ]; then
+        mount -t iso9660 -o ro $dev /mnt 2>/dev/null && break
+    fi
+done
+
+# 7. 复制OpenWRT镜像（如果从CD启动）
+if mountpoint -q /mnt && [ -f /mnt/images/openwrt.img ]; then
+    echo "Copying OpenWRT image..."
+    cp /mnt/images/openwrt.img /images/ 2>/dev/null
+    umount /mnt 2>/dev/null
+fi
+
+# 8. 主安装程序
+install_menu() {
+    while true; do
+        clear
+        echo "========================================"
+        echo "         OpenWRT Installation"
+        echo "========================================"
+        echo ""
+        echo "1) Install OpenWRT"
+        echo "2) List disks"
+        echo "3) Emergency shell"
+        echo "4) Reboot"
+        echo ""
+        echo -n "Select (1-4): "
+        read choice
+        
+        case "$choice" in
+            1)
                 echo ""
-                echo "✅ Installation successful!"
+                echo "Available disks:"
+                echo "----------------"
+                for disk in /dev/sd[a-z] /dev/nvme[0-9]n[0-9]; do
+                    [ -b "$disk" ] && echo "  $disk"
+                done
                 echo ""
-                echo "System will reboot in 10 seconds..."
-                sleep 10
-                reboot -f
-            else
+                echo -n "Enter target disk (e.g., sda): "
+                read target
+                
+                if [ -z "$target" ]; then
+                    echo "No disk specified!"
+                    sleep 2
+                    continue
+                fi
+                
+                # 添加/dev/前缀
+                if [ "$target" != "/dev/"* ]; then
+                    target="/dev/$target"
+                fi
+                
+                if [ ! -b "$target" ]; then
+                    echo "Disk $target not found!"
+                    sleep 2
+                    continue
+                fi
+                
+                # 确认
                 echo ""
-                echo "❌ Installation failed!"
-                sleep 2
-            fi
-            ;;
-        2)
-            echo ""
-            echo "Available disks:"
-            echo "----------------"
-            lsblk 2>/dev/null || {
+                echo "WARNING: This will ERASE $target!"
+                echo ""
+                echo -n "Type 'YES' to confirm: "
+                read confirm
+                
+                if [ "$confirm" != "YES" ]; then
+                    echo "Cancelled"
+                    sleep 2
+                    continue
+                fi
+                
+                # 查找OpenWRT镜像
+                img=""
+                [ -f /images/openwrt.img ] && img="/images/openwrt.img"
+                
+                if [ -z "$img" ]; then
+                    echo "OpenWRT image not found!"
+                    sleep 2
+                    continue
+                fi
+                
+                # 开始安装
+                echo ""
+                echo "Installing OpenWRT to $target..."
+                echo ""
+                
+                if dd if="$img" of="$target" bs=4M status=progress 2>/dev/null; then
+                    sync
+                    echo ""
+                    echo "✅ Installation successful!"
+                    echo ""
+                    echo "Rebooting in 10 seconds..."
+                    sleep 10
+                    reboot -f
+                else
+                    echo ""
+                    echo "❌ Installation failed!"
+                    sleep 2
+                fi
+                ;;
+            2)
+                echo ""
+                echo "Available disks:"
+                echo "----------------"
                 for disk in /dev/sd[a-z] /dev/nvme[0-9]n[0-9]; do
                     if [ -b "$disk" ]; then
                         size=$(blockdev --getsize64 "$disk" 2>/dev/null || echo 0)
                         size_gb=$((size / 1024 / 1024 / 1024))
-                        echo "  $disk - ${size_gb}GB"
+                        printf "  %-12s %4d GB\n" "$disk" "$size_gb"
                     fi
                 done
-            }
-            echo ""
-            echo -n "Press Enter to continue..."
-            read
-            ;;
-        3)
-            echo ""
-            echo "Starting emergency shell..."
-            echo "Type 'exit' to return to menu"
-            echo ""
-            exec /bin/busybox sh
-            ;;
-        4)
-            echo "Rebooting system..."
-            reboot -f
-            ;;
-        *)
-            echo "Invalid option"
-            ;;
-    esac
-done
-INSTALL_EOF
+                echo ""
+                echo -n "Press Enter to continue..."
+                read
+                ;;
+            3)
+                echo ""
+                echo "Starting emergency shell..."
+                echo "Type 'exit' to return"
+                echo ""
+                exec /bin/sh
+                ;;
+            4)
+                echo "Rebooting..."
+                reboot -f
+                ;;
+            *)
+                echo "Invalid choice"
+                sleep 1
+                ;;
+        esac
+    done
+}
 
-chmod +x /install.sh
-exec /bin/busybox sh /install.sh
+# 启动菜单
+install_menu
 
-# 如果上面失败，进入紧急shell
-/bin/busybox echo "Install script failed, dropping to emergency shell..."
-exec /bin/busybox sh
+# 如果失败，进入shell
+echo "Installation failed, dropping to shell..."
+exec /bin/sh
 INIT_EOF
 
-# 确保init文件可执行
 chmod 755 "$INITRAMFS_DIR/init"
 
-# 测试init脚本语法
-echo "测试init脚本语法..."
-if /bin/sh -n "$INITRAMFS_DIR/init" 2>/dev/null; then
-    echo "✅ init脚本语法正确"
-else
-    echo "❌ init脚本语法错误"
-    /bin/sh -n "$INITRAMFS_DIR/init" 2>&1 | head -5
-fi
-
-# ========== 步骤3: 复制busybox并创建符号链接 ==========
+# ========== 步骤3: 准备busybox ==========
 echo "[3/7] 准备busybox..."
 
-# 复制busybox到initramfs
-if command -v busybox >/dev/null 2>&1; then
-    echo "复制busybox..."
-    BUSYBOX_PATH=$(which busybox)
-    cp "$BUSYBOX_PATH" "$INITRAMFS_DIR/bin/busybox"
-    chmod 755 "$INITRAMFS_DIR/bin/busybox"
-    
-    # 检查busybox是否可用
-    if "$INITRAMFS_DIR/bin/busybox" --help 2>&1 | head -1 | grep -q "BusyBox"; then
-        echo "✅ busybox复制成功"
-    else
-        echo "❌ busybox不可用"
-        exit 1
-    fi
-else
+# 检查busybox是否可用
+if ! command -v busybox >/dev/null 2>&1; then
     echo "❌ 错误: 系统没有busybox"
     exit 1
 fi
 
-# 创建符号链接 - 使用busybox命令自身创建
-echo "创建busybox符号链接..."
-cd "$INITRAMFS_DIR"
-cat > create_links.sh << 'LINK_EOF'
-#!/bin/sh
-cd /bin
-./busybox --install -s . 2>/dev/null || {
-    # 手动创建必要的链接
-    for app in sh mount umount modprobe insmod rmmod lsmod \
-               losetup dd cp mv rm cat echo ls \
-               mkdir rmdir chmod chown ln sleep kill ps \
-               grep sed awk head tail find mknod mdev \
-               clear stty tty date which true false test \
-               [ printf read reboot poweroff halt blkid \
-               fdisk sfdisk blockdev pv gzip gunzip tar cpio \
-               wget curl ping dmesg sort uniq wc \
-               basename dirname cut tr xargs; do
-        ln -sf busybox $app 2>/dev/null || true
-    done
-}
-LINK_EOF
+# 获取busybox路径
+BUSYBOX_PATH=$(which busybox)
 
-chmod +x create_links.sh
+# 复制busybox到initramfs
+echo "复制busybox..."
+cp "$BUSYBOX_PATH" "$INITRAMFS_DIR/bin/busybox"
+chmod 755 "$INITRAMFS_DIR/bin/busybox"
 
-# 在chroot环境中运行（确保环境正确）
-echo "在chroot环境中创建链接..."
-if chroot . /bin/sh create_links.sh 2>/dev/null; then
-    echo "✅ 符号链接创建成功"
+# 测试busybox
+if "$INITRAMFS_DIR/bin/busybox" --help 2>&1 | head -1 | grep -q "BusyBox"; then
+    echo "✅ busybox可用"
 else
-    echo "⚠️ chroot失败，手动创建链接..."
-    cd "$INITRAMFS_DIR/bin"
-    ln -sf busybox sh 2>/dev/null || true
-    ln -sf busybox mount 2>/dev/null || true
-    ln -sf busybox umount 2>/dev/null || true
-    ln -sf busybox modprobe 2>/dev/null || true
-    ln -sf busybox dd 2>/dev/null || true
-    ln -sf busybox reboot 2>/dev/null || true
-    cd - >/dev/null
-fi
-
-rm -f create_links.sh
-cd - >/dev/null
-
-# 验证关键文件
-echo "验证关键文件..."
-if [ -f "$INITRAMFS_DIR/init" ] && [ -x "$INITRAMFS_DIR/init" ] && \
-   [ -f "$INITRAMFS_DIR/bin/busybox" ] && [ -f "$INITRAMFS_DIR/bin/sh" ]; then
-    echo "✅ 所有关键文件都存在且可执行"
-else
-    echo "❌ 缺少关键文件:"
-    [ -f "$INITRAMFS_DIR/init" ] || echo "  - init 不存在"
-    [ -x "$INITRAMFS_DIR/init" ] || echo "  - init 不可执行"
-    [ -f "$INITRAMFS_DIR/bin/busybox" ] || echo "  - busybox 不存在"
-    [ -f "$INITRAMFS_DIR/bin/sh" ] || echo "  - sh 不存在"
+    echo "❌ busybox可能损坏"
     exit 1
 fi
 
+# 创建必要的符号链接
+echo "创建符号链接..."
+cd "$INITRAMFS_DIR/bin"
+
+# 手动创建最必要的链接
+ln -sf busybox sh 2>/dev/null || true
+ln -sf busybox mount 2>/dev/null || true
+ln -sf busybox umount 2>/dev/null || true
+ln -sf busybox modprobe 2>/dev/null || true
+ln -sf busybox dd 2>/dev/null || true
+ln -sf busybox sync 2>/dev/null || true
+ln -sf busybox reboot 2>/dev/null || true
+ln -sf busybox mknod 2>/dev/null || true
+ln -sf busybox mdev 2>/dev/null || true
+ln -sf busybox cat 2>/dev/null || true
+ln -sf busybox echo 2>/dev/null || true
+ln -sf busybox ls 2>/dev/null || true
+ln -sf busybox clear 2>/dev/null || true
+ln -sf busybox sleep 2>/dev/null || true
+
+cd - >/dev/null
+
 # ========== 步骤4: 复制OpenWRT镜像 ==========
 echo "[4/7] 复制OpenWRT镜像..."
-mkdir -p "$INITRAMFS_DIR/images"
 cp "$INPUT_ABS" "$INITRAMFS_DIR/images/openwrt.img"
-echo "✅ OpenWRT镜像复制完成"
+echo "✅ OpenWRT镜像大小: $(du -h "$INPUT_ABS" | cut -f1)"
 
-# ========== 步骤5: 打包initramfs ==========
+# ========== 步骤5: 打包initramfs（修复路径问题） ==========
 echo "[5/7] 打包initramfs..."
 
+# 保存当前目录
+CURRENT_DIR=$(pwd)
+
+# 进入initramfs目录
 cd "$INITRAMFS_DIR"
 
-# 方法1: 使用find打包（更可靠）
-echo "方法1: 使用find打包..."
-find . -print0 | cpio --null -ov -H newc 2>/dev/null | \
-    gzip -9 > "$WORK_DIR/initramfs.gz"
+echo "正在打包..."
+# 使用简单可靠的方法
+{
+    # 先列出所有文件
+    find . -type f -o -type l | sort
+    
+    # 确保目录存在
+    find . -type d | sed 's|/$||' | sort
+} | cpio -o -H newc 2>/dev/null | gzip -9 > "$WORK_DIR/initramfs.gz"
 
-# 检查initramfs是否创建成功
+# 返回原目录
+cd "$CURRENT_DIR"
+
+# 检查initramfs
 if [ ! -f "$WORK_DIR/initramfs.gz" ] || [ ! -s "$WORK_DIR/initramfs.gz" ]; then
-    echo "方法1失败，尝试方法2..."
-    # 方法2: 明确列出文件
-    {
-        echo "init"
-        find bin -type f -o -type l
-        echo "images/openwrt.img"
-        echo "dev"
-        echo "proc"
-        echo "sys"
-        echo "tmp"
-        echo "mnt"
-        for dir in etc lib lib64 root sbin usr var; do
-            [ -d "$dir" ] && echo "$dir"
-        done
-    } | cpio -o -H newc 2>/dev/null | gzip -9 > "$WORK_DIR/initramfs.gz"
+    echo "❌ initramfs打包失败"
+    exit 1
 fi
 
 INITRAMFS_SIZE=$(du -h "$WORK_DIR/initramfs.gz" | cut -f1)
 echo "✅ initramfs大小: $INITRAMFS_SIZE"
 
-# 测试initramfs是否正常
+# 测试initramfs
 echo "测试initramfs..."
 TEST_DIR="$WORK_DIR/test-initramfs"
 rm -rf "$TEST_DIR"
 mkdir -p "$TEST_DIR"
-cd "$TEST_DIR"
 
-if gzip -dc "$WORK_DIR/initramfs.gz" | cpio -id 2>/dev/null; then
+# 这里修复了cd命令的问题
+if cd "$TEST_DIR" && gzip -dc "$WORK_DIR/initramfs.gz" | cpio -id 2>/dev/null; then
     echo "✅ initramfs可正常解压"
     
-    # 详细检查
-    echo "检查解压后的文件:"
-    echo "  init 存在: $(test -f init && echo '是' || echo '否')"
-    echo "  init 可执行: $(test -x init && echo '是' || echo '否')"
-    echo "  init shebang: $(head -1 init 2>/dev/null || echo '无')"
-    echo "  /bin/busybox 存在: $(test -f bin/busybox && echo '是' || echo '否')"
-    echo "  /bin/sh 存在: $(test -f bin/sh && echo '是' || echo '否')"
-    
-    # 测试init脚本
-    if [ -f init ] && [ -x init ]; then
-        echo "测试init脚本执行..."
-        if /bin/sh -n init 2>/dev/null; then
-            echo "✅ init脚本语法正确"
-        else
-            echo "❌ init脚本语法错误"
-        fi
+    # 检查关键文件
+    if [ -f init ] && [ -x init ] && [ -f bin/busybox ] && [ -f bin/sh ]; then
+        echo "✅ 所有关键文件正常"
+        
+        # 检查shebang
+        SHEBANG=$(head -1 init 2>/dev/null)
+        echo "  init shebang: $SHEBANG"
+    else
+        echo "❌ 缺少关键文件"
+        [ -f init ] || echo "  - 缺少init"
+        [ -x init ] || echo "  - init不可执行"
+        [ -f bin/busybox ] || echo "  - 缺少busybox"
+        [ -f bin/sh ] || echo "  - 缺少sh"
     fi
 else
     echo "❌ initramfs解压失败"
 fi
 
-cd - >/dev/null
+# 返回原目录
+cd "$CURRENT_DIR"
+
+# 清理测试目录
 rm -rf "$TEST_DIR"
-cd - >/dev/null
 
 echo ""
 
-# ========== 步骤6: 获取内核 ==========
+# ========== 步骤6: 准备内核 ==========
 echo "[6/7] 准备内核..."
 
-# 获取内核
 KERNEL_PATH="$WORK_DIR/vmlinuz"
 if [ -f /boot/vmlinuz-lts ]; then
     cp /boot/vmlinuz-lts "$KERNEL_PATH"
@@ -555,9 +478,7 @@ elif [ -f /boot/vmlinuz ]; then
     cp /boot/vmlinuz "$KERNEL_PATH"
     echo "✅ 使用内核: vmlinuz"
 else
-    echo "❌ 错误: 找不到内核文件"
-    echo "在以下位置查找:"
-    find /boot -name "vmlinuz*" 2>/dev/null | head -5
+    echo "❌ 找不到内核文件"
     exit 1
 fi
 
@@ -579,12 +500,8 @@ cp "$INPUT_ABS" "$ISO_ROOT/images/openwrt.img"
 # 创建ISOLINUX配置
 cat > "$ISO_ROOT/isolinux/isolinux.cfg" << 'ISOLINUX_EOF'
 DEFAULT install
-TIMEOUT 300
+TIMEOUT 100
 PROMPT 1
-UI vesamenu.c32
-
-MENU TITLE OpenWRT Installer
-MENU BACKGROUND splash.png
 
 LABEL install
   MENU LABEL Install OpenWRT
@@ -592,19 +509,10 @@ LABEL install
   KERNEL /boot/vmlinuz
   APPEND initrd=/boot/initramfs console=tty0 console=ttyS0,115200 rw quiet
 
-LABEL install_debug
-  MENU LABEL Install OpenWRT (debug mode)
-  KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initramfs console=tty0 console=ttyS0,115200 rw debug
-
 LABEL shell
   MENU LABEL Emergency Shell
   KERNEL /boot/vmlinuz
   APPEND initrd=/boot/initramfs console=tty0 init=/bin/sh rw
-
-LABEL memtest
-  MENU LABEL Memory Test
-  KERNEL /boot/memtest
 
 LABEL reboot
   MENU LABEL Reboot
@@ -616,13 +524,22 @@ echo "复制引导文件..."
 SYS_FOUND=0
 for sys_dir in /usr/share/syslinux /usr/lib/syslinux; do
     if [ -d "$sys_dir" ]; then
-        echo "从 $sys_dir 复制文件..."
-        for file in isolinux.bin ldlinux.c32 libutil.c32 libcom32.c32 vesamenu.c32 menu.c32 chain.c32 reboot.c32; do
-            [ -f "$sys_dir/$file" ] && cp "$sys_dir/$file" "$ISO_ROOT/isolinux/" && echo "  ✅ $file"
+        echo "从 $sys_dir 复制文件"
+        
+        # 复制核心文件
+        for file in isolinux.bin ldlinux.c32; do
+            if [ -f "$sys_dir/$file" ]; then
+                cp "$sys_dir/$file" "$ISO_ROOT/isolinux/"
+                echo "  ✅ $file"
+            fi
         done
         
-        [ -f "$sys_dir/memtest" ] && cp "$sys_dir/memtest" "$ISO_ROOT/boot/"
-        [ -f "$sys_dir/splash.png" ] && cp "$sys_dir/splash.png" "$ISO_ROOT/isolinux/" 2>/dev/null || true
+        # 可选文件
+        for file in libutil.c32 libcom32.c32 reboot.c32; do
+            if [ -f "$sys_dir/$file" ]; then
+                cp "$sys_dir/$file" "$ISO_ROOT/isolinux/" 2>/dev/null || true
+            fi
+        done
         
         SYS_FOUND=1
         break
@@ -636,14 +553,19 @@ fi
 
 # 构建ISO
 echo "构建ISO镜像..."
-xorriso -as mkisofs \
-    -r -V 'OPENWRT_INSTALL' \
-    -o "$ISO_PATH" \
-    -b isolinux/isolinux.bin \
-    -c isolinux/boot.cat \
-    -no-emul-boot -boot-load-size 4 -boot-info-table \
-    -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin 2>/dev/null \
-    "$ISO_ROOT" 2>&1 | grep -v "UPDATE" | tail -20
+if command -v xorriso >/dev/null 2>&1; then
+    xorriso -as mkisofs \
+        -r -V 'OPENWRT_INSTALL' \
+        -o "$ISO_PATH" \
+        -b isolinux/isolinux.bin \
+        -c isolinux/boot.cat \
+        -no-emul-boot -boot-load-size 4 -boot-info-table \
+        -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin 2>/dev/null \
+        "$ISO_ROOT" 2>&1 | grep -v "UPDATE" | tail -10
+else
+    echo "❌ 错误: 没有xorriso"
+    exit 1
+fi
 
 # 验证ISO
 if [ -f "$ISO_PATH" ] && [ -s "$ISO_PATH" ]; then
@@ -655,77 +577,63 @@ if [ -f "$ISO_PATH" ] && [ -s "$ISO_PATH" ]; then
     echo "📁 ISO文件: $ISO_PATH"
     echo "📊 总大小: $ISO_SIZE"
     echo ""
-    echo "📦 组件详情:"
+    echo "📦 组件大小:"
     echo "  - 内核: $KERNEL_SIZE"
     echo "  - initramfs: $INITRAMFS_SIZE"
     echo "  - OpenWRT镜像: $(du -h "$INPUT_ABS" | cut -f1)"
     echo ""
+    echo "✅ 构建完成!"
     
-    # 创建快速测试脚本
-    cat > "$OUTPUT_ABS/test-iso.sh" << 'TEST_EOF'
+    # 创建测试脚本
+    cat > "$OUTPUT_ABS/verify-iso.sh" << 'VERIFY_EOF'
 #!/bin/bash
-# 测试ISO脚本
+# 验证ISO脚本
 
 ISO="$1"
-if [ ! -f "$ISO" ]; then
-    echo "用法: $0 <iso文件>"
-    exit 1
-fi
+[ ! -f "$ISO" ] && { echo "用法: $0 <iso文件>"; exit 1; }
 
-echo "测试ISO: $ISO"
+echo "验证ISO: $ISO"
 echo ""
 
-# 1. 检查文件类型
-echo "1. 文件类型:"
-file "$ISO"
+# 1. 基本检查
+echo "1. 基本检查:"
+echo "  大小: $(ls -lh "$ISO" | awk '{print $5}')"
+echo "  类型: $(file "$ISO" 2>/dev/null | cut -d: -f2-)"
 echo ""
 
-# 2. 检查ISO内容
-echo "2. ISO内容摘要:"
+# 2. 检查引导
+echo "2. 引导检查:"
 if command -v xorriso >/dev/null 2>&1; then
-    xorriso -indev "$ISO" -toc 2>&1 | head -20
-elif command -v isoinfo >/dev/null 2>&1; then
-    isoinfo -d -i "$ISO" 2>&1
+    xorriso -indev "$ISO" -check_media 2>&1 | grep -E "El.Torito|bootable|No.boot" || true
 fi
 echo ""
 
-# 3. 检查引导能力
-echo "3. 引导能力检查:"
-if command -v xorriso >/dev/null 2>&1; then
-    xorriso -indev "$ISO" -check_media 2>&1 | grep -i "boot\|efi\|eltorito" || true
-fi
-echo ""
-
-# 4. 提取initramfs测试
-echo "4. 测试initramfs:"
-TEMP_DIR="/tmp/iso-test-$$"
+# 3. 提取并检查initramfs
+echo "3. 检查initramfs:"
+TEMP_DIR="/tmp/iso-check-$$"
 mkdir -p "$TEMP_DIR"
 
-# 提取initramfs
-xorriso -osirrox on -indev "$ISO" -extract /boot/initramfs "$TEMP_DIR/initramfs" 2>/dev/null || \
-isoinfo -i "$ISO" -x /BOOT/INITRAMFS. -o "$TEMP_DIR/initramfs" 2>/dev/null
-
-if [ -f "$TEMP_DIR/initramfs" ]; then
+# 尝试提取initramfs
+if xorriso -osirrox on -indev "$ISO" -extract /boot/initramfs "$TEMP_DIR/initramfs.gz" 2>/dev/null; then
     echo "  ✅ 成功提取initramfs"
     
-    # 解压测试
+    # 解压
     mkdir -p "$TEMP_DIR/extract"
-    cd "$TEMP_DIR/extract"
-    if gzip -dc "$TEMP_DIR/initramfs" 2>/dev/null | cpio -id 2>/dev/null; then
+    if cd "$TEMP_DIR/extract" && gzip -dc "../initramfs.gz" 2>/dev/null | cpio -id 2>/dev/null; then
         echo "  ✅ initramfs可解压"
         
-        # 检查关键文件
-        [ -f init ] && echo "  ✅ 找到init文件" || echo "  ❌ 未找到init文件"
-        [ -x init ] && echo "  ✅ init文件可执行" || echo "  ❌ init文件不可执行"
-        [ -f bin/busybox ] && echo "  ✅ 找到busybox" || echo "  ❌ 未找到busybox"
-        [ -f bin/sh ] && echo "  ✅ 找到sh" || echo "  ❌ 未找到sh"
+        # 检查文件
+        echo "  - init: $(test -f init && echo '存在' || echo '缺失')"
+        echo "  - init权限: $(test -x init && echo '可执行' || echo '不可执行')"
+        echo "  - busybox: $(test -f bin/busybox && echo '存在' || echo '缺失')"
+        echo "  - sh: $(test -f bin/sh && echo '存在' || echo '缺失')"
         
-        # 显示init文件头
-        echo "  init文件头: $(head -1 init 2>/dev/null || echo '无')"
+        if [ -f init ]; then
+            echo "  - init shebang: $(head -1 init 2>/dev/null)"
+        fi
     else
         echo "  ❌ initramfs解压失败"
     fi
-    cd - >/dev/null
 else
     echo "  ❌ 无法提取initramfs"
 fi
@@ -733,13 +641,13 @@ fi
 # 清理
 rm -rf "$TEMP_DIR"
 echo ""
-echo "✅ 测试完成"
-TEST_EOF
+echo "✅ 验证完成"
+VERIFY_EOF
     
-    chmod +x "$OUTPUT_ABS/test-iso.sh"
+    chmod +x "$OUTPUT_ABS/verify-iso.sh"
     
-    echo "💡 提示: 可以使用以下命令测试ISO:"
-    echo "  $OUTPUT_ABS/test-iso.sh \"$ISO_PATH\""
+    echo "💡 提示: 使用以下命令验证ISO:"
+    echo "  $OUTPUT_ABS/verify-iso.sh \"$ISO_PATH\""
     
 else
     echo "❌ ISO构建失败"
