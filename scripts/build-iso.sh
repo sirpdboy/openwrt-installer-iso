@@ -353,7 +353,7 @@ echo "开始构建ISO..."
 echo "运行mkimage.sh命令..."
 
 # 直接运行mkimage，不使用--hostkeys参数
-cd "$WORKDIR/aparts"
+cd "$WORKDIR/aports"
 ./scripts/mkimage.sh \
     --tag "$ALPINE_VERSION" \
     --outdir "$OUTPUT_DIR" \
