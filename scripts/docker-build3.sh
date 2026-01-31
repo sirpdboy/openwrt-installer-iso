@@ -1,5 +1,5 @@
 #!/bin/sh
-set -euo pipefail
+set -e
 
 # 颜色输出
 RED='\033[0;31m'
