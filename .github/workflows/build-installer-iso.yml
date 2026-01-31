@@ -103,25 +103,20 @@ jobs:
         # OUTPUT_DIR=$(dirname "$(readlink -f ${{ env.ISO_NAME }} )")
         mkdir -p output
         chmod 777 output
-      
-    - name: 构建安装ISO
-      run: |
-        # 如果有上传的IMG文件则使用，否则使用内置示例
-        if [ -f "assets/ezopwrt.img" ]; then
-          echo "使用上传的IMG文件"
-          IMG_PATH="assets/ezopwrt.img"
-        else
-          echo "使用内置示例IMG文件"
-          # 创建一个空的示例IMG文件
-          dd if=/dev/zero of=example.img bs=1M count=64
-          mkfs.ext4 example.img
-          IMG_PATH="example.img"
-        fi
         
-        ./scripts/build-iso.sh \
-          "${{ env.ALPINE_VERSION }}" \
-          "$IMG_PATH" \
-          "output/${{ env.ISO_NAME }}.iso"
+    - name: Build minimal ISO
+      run: |
+        chmod +x ./scripts/build-iso.sh
+        sudo ./scripts/build-iso.sh\
+           "$IMG_PATH" \
+           "output/${{ env.ISO_NAME }}.iso"
+        
+    #- name: 构建安装ISO
+     #  run: |
+     #   ./scripts/build-iso.sh \
+     #     "${{ env.ALPINE_VERSION }}" \
+     #     "$IMG_PATH" \
+     #     "output/${{ env.ISO_NAME }}.iso"
       
     - name: 上传ISO文件
       uses: actions/upload-artifact@v4
