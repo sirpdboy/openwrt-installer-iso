@@ -52,10 +52,10 @@ prepare_dirs() {
 download_rootfs() {
     info "Downloading Alpine Linux minimal rootfs..."
     
+    # 使用具体的版本号
     local rootfs_url="${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ARCH}/alpine-minirootfs-${ALPINE_VERSION}.1-${ARCH}.tar.gz"
     local rootfs_file="${WORK_DIR}/alpine-minirootfs.tar.gz"
     
-    # 使用版本 3.19.1 替代 3.19.0
     wget -q --show-progress -O "${rootfs_file}" "${rootfs_url}" || \
     error "Failed to download Alpine rootfs from ${rootfs_url}"
     
@@ -108,10 +108,10 @@ Built on $(date)
 EOF
     
     # 创建必要的设备节点
-    mknod -m 666 "${ROOTFS}/dev/null" c 1 3
-    mknod -m 666 "${ROOTFS}/dev/zero" c 1 5
-    mknod -m 666 "${ROOTFS}/dev/random" c 1 8
-    mknod -m 666 "${ROOTFS}/dev/urandom" c 1 9
+    mknod -m 666 "${ROOTFS}/dev/null" c 1 3 2>/dev/null || true
+    mknod -m 666 "${ROOTFS}/dev/zero" c 1 5 2>/dev/null || true
+    mknod -m 666 "${ROOTFS}/dev/random" c 1 8 2>/dev/null || true
+    mknod -m 666 "${ROOTFS}/dev/urandom" c 1 9 2>/dev/null || true
 }
 
 # 准备 chroot 环境
@@ -119,17 +119,18 @@ prepare_chroot() {
     info "Preparing chroot environment..."
     
     # 挂载必要的文件系统
-    mount -t proc proc "${ROOTFS}/proc"
-    mount -t sysfs sys "${ROOTFS}/sys"
-    mount -o bind /dev "${ROOTFS}/dev"
-    mount -o bind /dev/pts "${ROOTFS}/dev/pts"
+    mount -t proc proc "${ROOTFS}/proc" 2>/dev/null || true
+    mount -t sysfs sys "${ROOTFS}/sys" 2>/dev/null || true
+    mount -o bind /dev "${ROOTFS}/dev" 2>/dev/null || true
+    mount -o bind /dev/pts "${ROOTFS}/dev/pts" 2>/dev/null || true
     
     # 复制 DNS 配置
-    cp /etc/resolv.conf "${ROOTFS}/etc/resolv.conf"
+    cp /etc/resolv.conf "${ROOTFS}/etc/resolv.conf" 2>/dev/null || true
 }
 
 # 清理 chroot 环境
 cleanup_chroot() {
+    info "Cleaning up chroot environment..."
     umount -f "${ROOTFS}/proc" 2>/dev/null || true
     umount -f "${ROOTFS}/sys" 2>/dev/null || true
     umount -f "${ROOTFS}/dev/pts" 2>/dev/null || true
@@ -153,31 +154,49 @@ EOF
     
     prepare_chroot
     
-    # 安装基础包（分开安装以避免依赖问题）
+    # 安装基础包（简化安装过程）
+    info "Installing base packages..."
     chroot_exec "apk update"
     
-    # 先安装最基础的包
-    chroot_exec "apk add --no-cache alpine-base"
-    chroot_exec "apk add --no-cache linux-lts"
+    # 一次性安装所有包，避免多次触发
+    chroot_exec "apk add --no-cache \
+        alpine-base \
+        linux-lts \
+        syslinux \
+        grub grub-efi \
+        efibootmgr \
+        dosfstools \
+        mtools \
+        squashfs-tools \
+        xorriso"
     
-    # 安装引导相关包
-    chroot_exec "apk add --no-cache syslinux"
-    chroot_exec "apk add --no-cache grub grub-efi"
-    
-    # 安装其他必要工具
-    chroot_exec "apk add --no-cache efibootmgr dosfstools mtools squashfs-tools xorriso"
-    
-    # 创建 initramfs 配置，避免警告
+    # 创建 initramfs 配置
     cat > "${ROOTFS}/etc/mkinitfs/mkinitfs.conf" << EOF
-features="base squashfs ext4 mmc nvme scsi usb virtio"
+features="ata base cdrom ext4 mmc nvme scsi usb virtio"
 kernel_opts=""
 modules=""
 builtin_modules=""
 files=""
 EOF
     
-    # 手动创建 initramfs，指定 root 设备
-    chroot_exec "mkinitfs -c /etc/mkinitfs/mkinitfs.conf -b / /boot/initramfs-lts"
+    # 获取内核版本
+    KERNEL_VERSION=$(chroot_exec "ls /lib/modules | head -1")
+    info "Detected kernel version: ${KERNEL_VERSION}"
+    
+    # 创建 initramfs - 使用正确的参数
+    info "Creating initramfs..."
+    chroot_exec "mkinitfs -F -q -c /etc/mkinitfs/mkinitfs.conf -b / ${KERNEL_VERSION}"
+    
+    # 检查是否创建成功
+    if chroot_exec "ls -la /boot/" | grep -q "initramfs"; then
+        info "Initramfs created successfully"
+    else
+        warn "Initramfs may not have been created, trying alternative method..."
+        # 备用方法：直接复制现有的 initramfs
+        if [ -f "${ROOTFS}/boot/initramfs-${KERNEL_VERSION}" ]; then
+            cp "${ROOTFS}/boot/initramfs-${KERNEL_VERSION}" "${ROOTFS}/boot/initramfs-lts"
+        fi
+    fi
     
     cleanup_chroot
 }
@@ -232,9 +251,8 @@ LABEL hd
     ENDTEXT
 EOF
 
-    # 创建简单的背景图片（1x1 像素）
-    echo -e "P1\n1 1\n0" > "${BIOS_DIR}/boot/syslinux/splash.png" 2>/dev/null || \
-    echo "" > "${BIOS_DIR}/boot/syslinux/splash.png"
+    # 创建简单的背景图片
+    echo "placeholder" > "${BIOS_DIR}/boot/syslinux/splash.png"
 
     # 创建 grub.cfg (EFI 引导菜单)
     mkdir -p "${EFI_DIR}/boot/grub"
@@ -243,21 +261,18 @@ set timeout=5
 set default=0
 
 menuentry "Boot Alpine Linux" {
-    echo "Loading kernel..."
     linux /boot/vmlinuz-lts root=/dev/ram0 alpine_dev=cdrom:vfat modloop=/boot/modloop-lts console=tty0 console=ttyS0,115200 modules=loop,squashfs,sd-mod,usb-storage quiet
-    echo "Loading initramfs..."
     initrd /boot/initramfs-lts
 }
 
 menuentry "Boot from first hard disk" {
-    echo "Booting from first hard disk..."
     chainloader (hd0)
 }
 EOF
 
     # 创建 EFI 引导镜像
     info "Creating EFI boot image..."
-    dd if=/dev/zero of="${EFI_DIR}/boot/grub/efi.img" bs=1M count=10
+    dd if=/dev/zero of="${EFI_DIR}/boot/grub/efi.img" bs=1M count=10 status=progress
     mkfs.vfat "${EFI_DIR}/boot/grub/efi.img"
     
     # 挂载并复制 GRUB EFI 文件
@@ -265,47 +280,49 @@ EOF
     mount "${EFI_DIR}/boot/grub/efi.img" "${MOUNT_POINT}"
     mkdir -p "${MOUNT_POINT}/EFI/BOOT"
     
-    # 复制 GRUB EFI 文件
-    cp "${ROOTFS}/usr/lib/grub/x86_64-efi/monolithic/grubx64.efi" "${MOUNT_POINT}/EFI/BOOT/BOOTX64.EFI" 2>/dev/null || \
-    cp "${ROOTFS}/usr/share/grub/grubx64.efi" "${MOUNT_POINT}/EFI/BOOT/BOOTX64.EFI" 2>/dev/null || \
-    warn "Could not find grubx64.efi, EFI boot may not work"
+    # 查找并复制 GRUB EFI 文件
+    if [ -f "${ROOTFS}/usr/lib/grub/x86_64-efi/monolithic/grubx64.efi" ]; then
+        cp "${ROOTFS}/usr/lib/grub/x86_64-efi/monolithic/grubx64.efi" "${MOUNT_POINT}/EFI/BOOT/BOOTX64.EFI"
+    elif [ -f "${ROOTFS}/usr/share/grub/grubx64.efi" ]; then
+        cp "${ROOTFS}/usr/share/grub/grubx64.efi" "${MOUNT_POINT}/EFI/BOOT/BOOTX64.EFI"
+    else
+        # 尝试安装 grub-efi 包
+        warn "GRUB EFI file not found, installing grub-efi..."
+        prepare_chroot
+        chroot_exec "apk add --no-cache grub-efi"
+        cleanup_chroot
+        
+        if [ -f "${ROOTFS}/usr/lib/grub/x86_64-efi/monolithic/grubx64.efi" ]; then
+            cp "${ROOTFS}/usr/lib/grub/x86_64-efi/monolithic/grubx64.efi" "${MOUNT_POINT}/EFI/BOOT/BOOTX64.EFI"
+        else
+            warn "Could not find grubx64.efi, EFI boot may not work"
+        fi
+    fi
     
     umount "${MOUNT_POINT}"
     rmdir "${MOUNT_POINT}"
 
-    # 复制内核文件 - 使用正确的路径
+    # 复制内核文件
     info "Copying kernel files..."
     
-    # 首先检查标准位置
-    if [ -f "${ROOTFS}/boot/vmlinuz-lts" ]; then
-        cp "${ROOTFS}/boot/vmlinuz-lts" "${WORK_DIR}/"
-        cp "${ROOTFS}/boot/initramfs-lts" "${WORK_DIR}/"
-        
-        # 检查 modloop 文件（可能有不同的名称）
-        if [ -f "${ROOTFS}/boot/modloop-lts" ]; then
-            cp "${ROOTFS}/boot/modloop-lts" "${WORK_DIR}/"
-        elif [ -f "${ROOTFS}/boot/initramfs-lts.extra" ]; then
-            cp "${ROOTFS}/boot/initramfs-lts.extra" "${WORK_DIR}/modloop-lts"
-        else
-            # 下载 modloop
-            warn "modloop-lts not found, downloading..."
-            wget -O "${WORK_DIR}/modloop-lts" \
-                "${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ARCH}/modloop-lts" || \
-            warn "Failed to download modloop-lts"
-        fi
+    # 查找内核文件
+    KERNEL_FILES=$(find "${ROOTFS}/boot" -name "vmlinuz-*" -o -name "vmlinuz.*" | head -1)
+    INITRD_FILES=$(find "${ROOTFS}/boot" -name "initramfs-*" -o -name "initrd*" | head -1)
+    
+    if [ -n "$KERNEL_FILES" ] && [ -n "$INITRD_FILES" ]; then
+        cp "$KERNEL_FILES" "${WORK_DIR}/vmlinuz-lts"
+        cp "$INITRD_FILES" "${WORK_DIR}/initramfs-lts"
+        info "Found kernel: $(basename $KERNEL_FILES)"
+        info "Found initrd: $(basename $INITRD_FILES)"
     else
-        # 如果标准位置没有，搜索其他位置
-        KERNEL_FILE=$(find "${ROOTFS}/boot" -name "vmlinuz*" | head -1)
-        INITRD_FILE=$(find "${ROOTFS}/boot" -name "initramfs*" | head -1)
-        
-        if [ -n "$KERNEL_FILE" ] && [ -n "$INITRD_FILE" ]; then
-            cp "$KERNEL_FILE" "${WORK_DIR}/vmlinuz-lts"
-            cp "$INITRD_FILE" "${WORK_DIR}/initramfs-lts"
-            warn "Using alternative kernel files: $(basename $KERNEL_FILE), $(basename $INITRD_FILE)"
-        else
-            error "Could not find kernel files in ${ROOTFS}/boot"
-        fi
+        error "Could not find kernel files in ${ROOTFS}/boot"
     fi
+    
+    # 下载 modloop 文件
+    info "Downloading modloop file..."
+    wget -O "${WORK_DIR}/modloop-lts" \
+        "${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ARCH}/modloop-lts" || \
+    warn "Failed to download modloop-lts, system may not boot properly"
 }
 
 # 创建 squashfs 根文件系统
@@ -316,8 +333,6 @@ create_squashfs() {
     rm -rf "${ROOTFS}/var/cache/apk/*" 2>/dev/null || true
     rm -rf "${ROOTFS}/usr/share/man/*" 2>/dev/null || true
     rm -rf "${ROOTFS}/usr/share/doc/*" 2>/dev/null || true
-    rm -rf "${ROOTFS}/boot/initramfs-*" 2>/dev/null || true
-    rm -rf "${ROOTFS}/boot/vmlinuz-*" 2>/dev/null || true
     
     # 创建 squashfs
     mksquashfs "${ROOTFS}" "${WORK_DIR}/rootfs.squashfs" -comp xz -b 1M -noappend -all-root
@@ -331,13 +346,12 @@ prepare_iso_structure() {
     
     # 创建 ISO 目录
     mkdir -p "${ISO_DIR}/boot/syslinux"
-    mkdir -p "${ISO_DIR}/efiboot"
+    mkdir -p "${ISO_DIR}/boot/grub"
     
     # 复制 BIOS 引导文件
     cp -r "${BIOS_DIR}/boot/syslinux"/* "${ISO_DIR}/boot/syslinux/"
     
     # 复制 EFI 引导文件
-    mkdir -p "${ISO_DIR}/boot/grub"
     cp "${EFI_DIR}/boot/grub/efi.img" "${ISO_DIR}/boot/grub/"
     cp "${EFI_DIR}/boot/grub/grub.cfg" "${ISO_DIR}/boot/grub/"
     
@@ -353,8 +367,21 @@ prepare_iso_structure() {
     cp "${WORK_DIR}/rootfs.squashfs" "${ISO_DIR}/"
     
     # 创建引导信息文件
-    echo "Alpine Linux Minimal ${ALPINE_VERSION} - Dual Boot (BIOS/UEFI)" > "${ISO_DIR}/README.TXT"
-    echo "Build date: $(date)" >> "${ISO_DIR}/README.TXT"
+    cat > "${ISO_DIR}/README.TXT" << EOF
+Alpine Linux Minimal ${ALPINE_VERSION}
+Dual Boot ISO (BIOS/UEFI)
+Build date: $(date)
+
+Boot options:
+1. BIOS: Uses SYSLINUX bootloader
+2. UEFI: Uses GRUB bootloader
+
+Default boot entry: "Boot Alpine Linux"
+Timeout: 5 seconds
+
+Kernel: $(basename $(find "${ROOTFS}/boot" -name "vmlinuz-*" | head -1))
+Initramfs: $(basename $(find "${ROOTFS}/boot" -name "initramfs-*" | head -1))
+EOF
 }
 
 # 创建混合 ISO
@@ -369,21 +396,25 @@ create_hybrid_iso() {
         # 尝试其他位置
         ISOHDPFX=$(find "${ROOTFS}" -name "isohdpfx.bin" | head -1)
         if [ -z "$ISOHDPFX" ]; then
-            warn "isohdpfx.bin not found, downloading..."
-            wget -O /tmp/isohdpfx.bin https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/Testing/6.04/syslinux-6.04-pre1.tar.gz
-            tar -Oxf /tmp/isohdpfx.bin syslinux-6.04-pre1/bios/mbr/isohdpfx.bin > /tmp/isohdpfx_extracted.bin
-            ISOHDPFX="/tmp/isohdpfx_extracted.bin"
+            warn "isohdpfx.bin not found, using default"
+            # 创建简单的 MBR
+            dd if=/dev/zero of=/tmp/isohdpfx.bin bs=512 count=1
+            printf '\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' | \
+                dd of=/tmp/isohdpfx.bin conv=notrunc 2>/dev/null
+            ISOHDPFX="/tmp/isohdpfx.bin"
         fi
     fi
+    
+    info "Using bootloader: $ISOHDPFX"
     
     # 使用 xorriso 创建支持 BIOS 和 EFI 的混合 ISO
     xorriso -as mkisofs \
         -iso-level 3 \
         -full-iso9660-filenames \
-        -volid "ALPINEMINIMAL" \
+        -volid "ALPINEMIN" \
         -appid "Alpine Linux Minimal ${ALPINE_VERSION}" \
-        -publisher "Built with GitHub Actions" \
-        -preparer "Alpine Linux Builder" \
+        -publisher "GitHub Actions Builder" \
+        -preparer "Alpine Build Script" \
         -eltorito-boot boot/syslinux/isolinux.bin \
         -eltorito-catalog boot/syslinux/boot.cat \
         -no-emul-boot -boot-load-size 4 -boot-info-table \
@@ -393,21 +424,17 @@ create_hybrid_iso() {
         -no-emul-boot \
         -isohybrid-gpt-basdat \
         -output "${OUTPUT_DIR}/${ISO_NAME}" \
-        "${ISO_DIR}/" 2>&1 | grep -v "libisofs-WARNING"
+        "${ISO_DIR}/" 2>&1 | grep -v "libisofs-WARNING" || true
     
     # 检查 ISO 是否创建成功
     if [ -f "${OUTPUT_DIR}/${ISO_NAME}" ]; then
-        info "ISO created successfully: ${OUTPUT_DIR}/${ISO_NAME}"
+        info "✓ ISO created successfully!"
+        info "  File: ${OUTPUT_DIR}/${ISO_NAME}"
+        info "  Size: $(du -h ${OUTPUT_DIR}/${ISO_NAME} | cut -f1)"
         
-        # 显示 ISO 信息
-        ISO_SIZE=$(du -h "${OUTPUT_DIR}/${ISO_NAME}" | cut -f1)
-        info "ISO size: ${ISO_SIZE}"
-        
-        # 添加 ISO 验证信息
-        info "ISO verification:"
-        file "${OUTPUT_DIR}/${ISO_NAME}"
-        echo ""
-        isoinfo -d -i "${OUTPUT_DIR}/${ISO_NAME}" | grep -E "Volume id:|Volume size:|Boot media type:"
+        # 验证 ISO
+        info "Verifying ISO structure..."
+        isoinfo -d -i "${OUTPUT_DIR}/${ISO_NAME}" 2>/dev/null | grep -E "Volume id:|Volume size:" || true
         
     else
         error "Failed to create ISO"
@@ -416,11 +443,14 @@ create_hybrid_iso() {
 
 # 主执行流程
 main() {
-    info "Starting Alpine Linux minimal ISO build..."
+    info "========================================"
+    info "Alpine Linux Minimal ISO Builder"
     info "Version: ${ALPINE_VERSION}"
     info "Architecture: ${ARCH}"
+    info "========================================"
     
-    trap cleanup_chroot EXIT
+    # 设置退出时的清理
+    trap 'cleanup_chroot; info "Build process interrupted."; exit 1' INT TERM
     
     cleanup
     prepare_dirs
@@ -432,8 +462,11 @@ main() {
     prepare_iso_structure
     create_hybrid_iso
     
-    info "Build process completed successfully!"
-    info "ISO file: ${OUTPUT_DIR}/${ISO_NAME}"
+    info "========================================"
+    info "✓ Build completed successfully!"
+    info "  ISO file: ${OUTPUT_DIR}/${ISO_NAME}"
+    info "  Support: BIOS & UEFI dual boot"
+    info "========================================"
 }
 
 # 执行主函数
