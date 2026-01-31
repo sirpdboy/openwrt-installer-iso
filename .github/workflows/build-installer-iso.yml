@@ -118,7 +118,7 @@ jobs:
           IMG_PATH="example.img"
         fi
         
-        ./scripts/docker-build-installer.sh \
+        ./scripts/build-iso.sh \
           "${{ env.ALPINE_VERSION }}" \
           "$IMG_PATH" \
           "output/${{ env.ISO_NAME }}.iso"
