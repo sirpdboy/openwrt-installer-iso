@@ -108,7 +108,7 @@ jobs:
         
         
         # 运行构建脚本
-        ./scripts/build-iso.sh \
+        ./scripts/docker-build.sh \
           "${{ steps.download.outputs.img_path }}" \
           "$(pwd)/output/${{ env.ISO_FILENAME }}" \
           "${{ env.ALPINE_VERSION }}"
