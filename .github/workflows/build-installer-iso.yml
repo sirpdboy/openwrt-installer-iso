@@ -16,13 +16,29 @@ env:
   ALPINE_VERSION: ${{ github.event.inputs.alpine_version }}
   ISO_NAME: ${{ github.event.inputs.iso_name }}
 
+
 jobs:
-  build-installer-iso:
+  build-iso:
     runs-on: ubuntu-latest
     
     steps:
-    - name: 检出代码
+    - name: Checkout repository
       uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+            wget \
+            tar \
+            squashfs-tools \
+            dosfstools \
+            mtools \
+            xorriso \
+            isolinux \
+            syslinux-common \
+            grub-efi-amd64-bin
+
       
     - name: 设置执行权限
       run: |
@@ -109,23 +125,12 @@ jobs:
         chmod +x ./scripts/build-iso.sh
         sudo ./scripts/build-iso.sh\
            "$IMG_PATH" \
-           "output/${{ env.ISO_NAME }}.iso"
-        
-    #- name: 构建安装ISO
-     #  run: |
-     #   ./scripts/build-iso.sh \
-     #     "${{ env.ALPINE_VERSION }}" \
-     #     "$IMG_PATH" \
-     #     "output/${{ env.ISO_NAME }}.iso"
-      
-    - name: 上传ISO文件
+    - name: Upload ISO artifact
       uses: actions/upload-artifact@v4
       with:
-        name: openwrt-installer-iso
-        path: "./output/"
-        retention-days: 2
+        name: alpine-minimal-iso
+        path: ./output/alpine-minimal-*.iso
+        retention-days: 7
+           "output/${{ env.ISO_NAME }}.iso"
         
-    - name: 显示构建信息
-      run: |
-        echo "=== 构建完成 ==="
-        ls -lh output/*.iso 2>/dev/null || echo "未找到ISO文件"
+   
