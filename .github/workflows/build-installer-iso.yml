@@ -127,13 +127,10 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: openwrt-installer-iso
-        path: "output/${{ env.ISO_NAME }}/*.iso"
+        path: "./output/"
         retention-days: 2
         
     - name: 显示构建信息
       run: |
         echo "=== 构建完成 ==="
-        echo "Alpine版本: ${{ env.ALPINE_VERSION }}"
-        echo "ISO名称: "${{ env.ISO_NAME }}.iso"
-        echo "ISO文件:"
         ls -lh output/*.iso 2>/dev/null || echo "未找到ISO文件"
