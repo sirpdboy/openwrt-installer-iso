@@ -30,7 +30,7 @@ echo "工作目录: $WORKDIR"
 
 # 克隆 aports 仓库
 echo "克隆 aports 仓库..."
-if ! git clone --depth 1 --branch "v$ALPINE_VERSION" \
+if ! git clone --depth 1 --branch "$ALPINE_VERSION-stable" \
     https://gitlab.alpinelinux.org/alpine/aports.git; then
     echo "⚠️  分支 v$ALPINE_VERSION 不存在，使用默认分支"
     git clone --depth 1 https://gitlab.alpinelinux.org/alpine/aports.git
