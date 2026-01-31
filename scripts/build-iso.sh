@@ -1,485 +1,297 @@
-#!/bin/bash
+#!/bin/sh
 set -e
 
-# 接收参数
-IMG_FILE_URL="${1}"
-OUTPUT_NAME="${2}"
-ALPINE_VERSION="${3:-3.20}"
-
-echo "================================================"
-echo "  OpenWRT ISO Builder - Alpine Based"
-echo "================================================"
-echo ""
-echo "参数:"
-echo "  IMG文件URL: $IMG_FILE_URL"
-echo "  输出名称: $OUTPUT_NAME"
-echo "  Alpine版本: $ALPINE_VERSION"
-echo ""
-
-# 设置工作目录
-WORKDIR="/tmp/openwrt-builder"
-OUTPUT_DIR="/output"
-
-# 清理并创建目录
-rm -rf "$WORKDIR"
-mkdir -p "$WORKDIR"
-mkdir -p "$OUTPUT_DIR"
-
-cd "$WORKDIR"
-echo "工作目录: $WORKDIR"
-
-# 克隆 aports 仓库
-echo "克隆 aports 仓库..."
-if ! git clone --depth 1 --branch "$ALPINE_VERSION-stable" \
-    https://gitlab.alpinelinux.org/alpine/aports.git; then
-    echo "⚠️  分支 v$ALPINE_VERSION 不存在，使用默认分支"
-    git clone --depth 1 https://gitlab.alpinelinux.org/alpine/aports.git
-fi
-
-cd aports
-
-# 验证mkimage脚本存在
-if [ ! -f "scripts/mkimage.sh" ]; then
-    echo "❌ 错误: scripts/mkimage.sh 不存在"
-    exit 1
-fi
-
-echo "✅ 找到 mkimage.sh"
-
-# 创建自定义的OpenWRT安装profile
-echo "创建OpenWRT安装profile..."
-
-# 创建profile目录
-mkdir -p "scripts/"
-
-# 1. 创建profile文件
-cat > scripts/mkimg.openwrt.sh << 'PROFILEEOF'
-#!/bin/sh
-
-profile_openwrt() {
-    # 继承标准profile
-    profile_standard
-    
-    # 设置内核参数
-    kernel_cmdline="console=tty0 console=ttyS0,115200"
-    syslinux_serial="0 115200"
-    
-    # 添加必要的软件包
-    apks="$apks openrc openssh chrony hdparm e2fsprogs sfdisk parted"
-    apks="$apks wget curl gzip lsblk util-linux coreutils"
-    
-    # 添加内核包
-    for _k in $kernel_flavors; do
-        apks="$apks linux-$_k"
-    done
-    apks="$apks linux-firmware"
-    
-    # 设置overlay脚本
-    apkovl="genapkovl-openwrt.sh"
-}
-PROFILEEOF
-
-# 2. 创建独立的overlay生成脚本
-cat > scripts/genapkovl-openwrt.sh << 'OVERLAYEOF'
-#!/bin/sh
-
-set -e
-
-# 创建临时目录
-tmp="${ROOT}/tmp/overlay"
-mkdir -p "$tmp"
-mkdir -p "$tmp"/etc
-mkdir -p "$tmp"/usr/local/bin
-mkdir -p "$tmp"/root
-mkdir -p "$tmp"/etc/init.d
-
-# 创建欢迎信息
-cat > "$tmp"/etc/issue << 'EOF'
-========================================
-      OpenWRT Alpine Installer
-      Version: __ALPINE_VERSION__
-========================================
-
-系统启动后:
-1. 登录: root (无需密码)
-2. 运行: openwrt-installer
-3. 按照提示安装OpenWRT
-
-EOF
-
-# 创建安装脚本
-cat > "$tmp"/usr/local/bin/openwrt-installer << 'EOF'
-#!/bin/sh
-
-set -e
-
-echo ""
-echo "========================================"
-echo "      OpenWRT 安装程序"
-echo "========================================"
-echo ""
-
-# 默认IMG URL
-DEFAULT_IMG_URL="__IMG_FILE_URL__"
-
-# 颜色定义
+# 颜色输出
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
-# 显示当前磁盘
-echo "${BLUE}=== 当前磁盘信息 ===${NC}"
-lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,LABEL
+info() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
 
-echo ""
-echo "${YELLOW}警告: 此操作将覆盖所选磁盘上的所有数据！${NC}"
-echo ""
-
-# 选择磁盘
-while true; do
-    read -p "请输入要安装OpenWRT的磁盘(如: sda, nvme0n1): " DISK
-    
-    if [ -z "$DISK" ]; then
-        echo "${RED}磁盘名称不能为空${NC}"
-        continue
-    fi
-    
-    if [ ! -b "/dev/$DISK" ]; then
-        echo "${RED}错误: /dev/$DISK 不存在或不是块设备${NC}"
-        continue
-    fi
-    
-    # 确认选择
-    echo ""
-    echo "您选择了: /dev/$DISK"
-    echo "磁盘信息:"
-    fdisk -l "/dev/$DISK" | head -20
-    echo ""
-    
-    read -p "确认在此磁盘安装OpenWRT？(y/N): " CONFIRM
-    case "$CONFIRM" in
-        [yY][eE][sS]|[yY])
-            break
-            ;;
-        *)
-            echo "重新选择..."
-            continue
-            ;;
-    esac
-done
-
-# 下载IMG文件
-echo ""
-echo "${BLUE}=== 下载OpenWRT镜像 ===${NC}"
-
-IMG_URL="$DEFAULT_IMG_URL"
-read -p "输入OpenWRT镜像URL [默认: $IMG_URL]: " USER_IMG_URL
-[ -n "$USER_IMG_URL" ] && IMG_URL="$USER_IMG_URL"
-
-echo "下载: $IMG_URL"
-
-# 创建临时目录
-TEMP_DIR="/tmp/openwrt_install"
-mkdir -p "$TEMP_DIR"
-cd "$TEMP_DIR"
-
-# 下载文件
-if echo "$IMG_URL" | grep -q "\.gz$"; then
-    FILENAME="openwrt.img.gz"
-else
-    FILENAME="openwrt.img"
-fi
-
-echo "开始下载..."
-wget -O "$FILENAME" "$IMG_URL" || {
-    echo "${RED}下载失败${NC}"
+error() {
+    echo -e "${RED}[ERROR]${NC} $1"
     exit 1
 }
 
-# 解压（如果是压缩文件）
-if echo "$FILENAME" | grep -q "\.gz$"; then
-    echo "解压镜像..."
-    gzip -d "$FILENAME"
-    IMG_FILE="openwrt.img"
-else
-    IMG_FILE="$FILENAME"
+# 检查 root 权限
+if [ "$(id -u)" -ne 0 ]; then
+    error "This script must be run as root"
 fi
 
-# 验证IMG文件
-if [ ! -f "$IMG_FILE" ]; then
-    echo "${RED}错误: IMG文件不存在${NC}"
-    exit 1
-fi
+# 配置变量
+ALPINE_VERSION="3.19"
+ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
+ARCH="x86_64"
+OUTPUT_DIR="$(pwd)/output"
+ISO_DIR="${OUTPUT_DIR}/iso"
+ISO_NAME="alpine-minimal-${ALPINE_VERSION}-dual-boot.iso"
+WORK_DIR="${OUTPUT_DIR}/work"
+EFI_DIR="${WORK_DIR}/efi"
+BIOS_DIR="${WORK_DIR}/bios"
+ROOTFS="${WORK_DIR}/rootfs"
 
-IMG_SIZE=$(stat -c%s "$IMG_FILE")
-echo "镜像大小: $((IMG_SIZE / 1024 / 1024)) MB"
+# 清理并创建目录
+cleanup() {
+    info "Cleaning up previous build..."
+    rm -rf "${OUTPUT_DIR}"
+}
 
-# 最后确认
-echo ""
-echo "${RED}⚠️  ⚠️  ⚠️  最终警告 ⚠️  ⚠️  ⚠️${NC}"
-echo "即将覆盖 /dev/$DISK 上的所有数据！"
-echo ""
-read -p "输入 'YES' 继续安装: " FINAL_CONFIRM
-if [ "$FINAL_CONFIRM" != "YES" ]; then
-    echo "安装取消"
-    exit 0
-fi
+prepare_dirs() {
+    info "Preparing directories..."
+    mkdir -p "${OUTPUT_DIR}" "${ISO_DIR}" "${WORK_DIR}" "${EFI_DIR}" "${BIOS_DIR}" "${ROOTFS}"
+}
 
-# 开始写入
-echo ""
-echo "${GREEN}=== 开始写入磁盘 ===${NC}"
+# 下载 Alpine 最小 rootfs
+download_rootfs() {
+    info "Downloading Alpine Linux minimal rootfs..."
+    
+    local rootfs_url="${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ARCH}/alpine-minirootfs-${ALPINE_VERSION}.0-${ARCH}.tar.gz"
+    local rootfs_file="${WORK_DIR}/alpine-minirootfs.tar.gz"
+    
+    wget -q --show-progress -O "${rootfs_file}" "${rootfs_url}" || \
+    wget -O "${rootfs_file}" "${rootfs_url}" || \
+    error "Failed to download Alpine rootfs"
+    
+    info "Extracting rootfs..."
+    tar -xzf "${rootfs_file}" -C "${ROOTFS}"
+    rm -f "${rootfs_file}"
+}
 
-# 卸载所有相关分区
-for part in /dev/${DISK}*; do
-    if mount | grep -q "^$part"; then
-        umount "$part" 2>/dev/null || true
-    fi
-done
-
-# 使用dd写入镜像
-echo "写入镜像到 /dev/$DISK ..."
-dd if="$IMG_FILE" of="/dev/$DISK" bs=4M status=progress oflag=sync
-
-# 同步磁盘
-sync
-
-echo ""
-echo "${GREEN}✅ OpenWRT 安装完成！${NC}"
-echo ""
-echo "下一步:"
-echo "1. 关机: poweroff"
-echo "2. 移除安装介质"
-echo "3. 从硬盘启动OpenWRT"
-echo ""
-
-# 清理
-cd /
-rm -rf "$TEMP_DIR"
+# 配置基础系统
+configure_base_system() {
+    info "Configuring base system..."
+    
+    # 设置 hosts
+    cat > "${ROOTFS}/etc/hosts" << EOF
+127.0.0.1   localhost localhost.localdomain
+::1         localhost localhost.localdomain
 EOF
 
-# 设置执行权限
-chmod +x "$tmp/usr/local/bin/openwrt-installer"
-
-# 替换占位符
-sed -i "s|__IMG_FILE_URL__|${IMG_FILE_URL}|g" "$tmp/usr/local/bin/openwrt-installer"
-sed -i "s|__ALPINE_VERSION__|${ALPINE_VERSION}|g" "$tmp/etc/issue"
-
-# 创建motd
-cat > "$tmp"/etc/motd << 'EOF'
-
-========================================
-OpenWRT Alpine 安装环境
-========================================
-
-运行以下命令开始安装:
-    openwrt-installer
-
-========================================
-
+    # 设置 resolv.conf
+    cat > "${ROOTFS}/etc/resolv.conf" << EOF
+nameserver 8.8.8.8
+nameserver 1.1.1.1
 EOF
 
-# 设置SSH配置
-mkdir -p "$tmp"/etc/ssh
-cat > "$tmp"/etc/ssh/sshd_config << 'EOF'
-PermitRootLogin yes
-PasswordAuthentication yes
-ChallengeResponseAuthentication no
-UsePAM yes
-PrintMotd yes
-Subsystem sftp /usr/lib/ssh/sftp-server
+    # 创建 fstab
+    cat > "${ROOTFS}/etc/fstab" << EOF
+# <file system> <mount point> <type> <options> <dump> <pass>
+/dev/cdrom /media/cdrom iso9660 ro 0 0
 EOF
 
-# 创建开机自启动脚本（可选）
-cat > "$tmp"/etc/init.d/installer-prompter << 'EOF'
-#!/sbin/openrc-run
+    # 设置时区
+    ln -sf /usr/share/zoneinfo/UTC "${ROOTFS}/etc/localtime"
+    
+    # 创建默认网络配置
+    cat > "${ROOTFS}/etc/network/interfaces" << EOF
+auto lo
+iface lo inet loopback
 
-name="installer_prompter"
-description="Prompts user to run OpenWRT installer"
+auto eth0
+iface eth0 inet dhcp
+EOF
 
-start() {
-    ebegin "Starting installer prompter"
-    if [ -f /usr/local/bin/openwrt-installer ] && [ ! -f /tmp/installer-run ]; then
-        echo ""
-        echo "========================================"
-        echo "提示: 运行 'openwrt-installer' 开始安装OpenWRT"
-        echo "========================================"
-        echo ""
-        touch /tmp/installer-run
-    fi
-    eend $?
+    # 创建 motd
+    cat > "${ROOTFS}/etc/motd" << EOF
+=============================================
+Minimal Alpine Linux System
+Built on $(date)
+=============================================
+EOF
+}
+
+# 安装必要的包
+install_packages() {
+    info "Installing essential packages..."
+    
+    # 使用 chroot 安装包
+    chroot "${ROOTFS}" /bin/sh <<EOF
+# 设置仓库
+echo "${ALPINE_MIRROR}/v${ALPINE_VERSION}/main" > /etc/apk/repositories
+echo "${ALPINE_MIRROR}/v${ALPINE_VERSION}/community" >> /etc/apk/repositories
+
+# 更新并安装基础包
+apk update
+apk add --no-cache \
+    alpine-base \
+    linux-lts \
+    syslinux \
+    grub-efi \
+    efibootmgr \
+    dosfstools \
+    mtools \
+    squashfs-tools \
+    xorriso
+EOF
+}
+
+# 配置引导加载器
+configure_bootloader() {
+    info "Configuring bootloaders..."
+    
+    # 创建 BIOS 引导目录结构
+    mkdir -p "${BIOS_DIR}/boot/syslinux"
+    
+    # 复制 syslinux 文件
+    cp "${ROOTFS}/usr/share/syslinux/isolinux.bin" "${BIOS_DIR}/boot/syslinux/"
+    cp "${ROOTFS}/usr/share/syslinux/ldlinux.c32" "${BIOS_DIR}/boot/syslinux/"
+    cp "${ROOTFS}/usr/share/syslinux/libutil.c32" "${BIOS_DIR}/boot/syslinux/"
+    cp "${ROOTFS}/usr/share/syslinux/menu.c32" "${BIOS_DIR}/boot/syslinux/"
+    
+    # 创建 isolinux.cfg (BIOS 引导菜单)
+    cat > "${BIOS_DIR}/boot/syslinux/isolinux.cfg" << 'EOF'
+DEFAULT vesamenu.c32
+PROMPT 0
+MENU TITLE Alpine Linux Boot Menu
+TIMEOUT 50
+TIMEOUT_TOTAL 50
+
+MENU BACKGROUND /boot/syslinux/splash.png
+MENU COLOR border       30;44   #40ffffff #a0000000 std
+MENU COLOR title        1;36;44 #9033ccff #a0000000 std
+MENU COLOR sel          7;37;40 #e0ffffff #20ffffff all
+MENU COLOR unsel        37;44   #50ffffff #a0000000 std
+MENU COLOR help         37;40   #c0ffffff #a0000000 std
+MENU COLOR timeout_msg  37;40   #80ffffff #00000000 std
+MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
+MENU COLOR msg07        37;40   #90ffffff #a0000000 std
+MENU COLOR tabmsg       31;40   #30ffffff #00000000 std
+
+LABEL alpine
+    MENU LABEL ^Boot Alpine Linux
+    MENU DEFAULT
+    KERNEL /boot/vmlinuz-lts
+    INITRD /boot/initramfs-lts
+    APPEND root=/dev/ram0 alpine_dev=cdrom:vfat modloop=/boot/modloop-lts console=tty0 console=ttyS0,115200 modules=loop,squashfs,sd-mod,usb-storage quiet
+    TEXT HELP
+    Boot the Alpine Linux system
+    ENDTEXT
+
+LABEL hd
+    MENU LABEL ^Boot from first hard disk
+    LOCALBOOT 0
+    TEXT HELP
+    Boot the first hard disk
+    ENDTEXT
+EOF
+
+    # 创建 grub.cfg (EFI 引导菜单)
+    mkdir -p "${EFI_DIR}/boot/grub"
+    cat > "${EFI_DIR}/boot/grub/grub.cfg" << 'EOF'
+set timeout=5
+set default=0
+
+menuentry "Boot Alpine Linux" {
+    echo "Loading kernel..."
+    linux /boot/vmlinuz-lts root=/dev/ram0 alpine_dev=cdrom:vfat modloop=/boot/modloop-lts console=tty0 console=ttyS0,115200 modules=loop,squashfs,sd-mod,usb-storage quiet
+    echo "Loading initramfs..."
+    initrd /boot/initramfs-lts
+}
+
+menuentry "Boot from first hard disk" {
+    echo "Booting from first hard disk..."
+    chainloader (hd0)
 }
 EOF
 
-chmod +x "$tmp"/etc/init.d/installer-prompter
+    # 复制内核和 initramfs
+    cp "${ROOTFS}/boot/vmlinuz-lts" "${WORK_DIR}/"
+    cp "${ROOTFS}/boot/initramfs-lts" "${WORK_DIR}/"
+    cp "${ROOTFS}/boot/modloop-lts" "${WORK_DIR}/"
+}
 
-# 打包overlay
-( cd "$tmp" && tar -c -f "${ROOT}"/tmp/overlay.tar . )
-OVERLAYEOF
-
-# 设置执行权限
-chmod +x scripts/mkimg.openwrt.sh
-chmod +x scripts/genapkovl-openwrt.sh
-
-echo "✅ Profile创建完成"
-
-# 3. 生成有效的APK签名密钥
-echo "生成APK签名密钥..."
-
-# 创建APK密钥目录
-APK_KEYS_DIR="/etc/apk/keys"
-mkdir -p "$APK_KEYS_DIR"
-
-# 生成RSA密钥对
-echo "生成RSA密钥对..."
-if [ ! -f /tmp/builder.key ]; then
-    openssl genrsa -out /tmp/builder.key 2048 2>/dev/null
-    openssl rsa -in /tmp/builder.key -pubout -out /tmp/builder.pub 2>/dev/null
+# 创建 squashfs 根文件系统
+create_squashfs() {
+    info "Creating squashfs root filesystem..."
     
-    # 将公钥复制到APK密钥目录
-    cp /tmp/builder.pub "$APK_KEYS_DIR/"
+    # 清理不必要的文件以减小体积
+    rm -rf "${ROOTFS}/var/cache/apk/*"
+    rm -rf "${ROOTFS}/usr/share/man/*"
+    rm -rf "${ROOTFS}/usr/share/doc/*"
     
-    echo "✅ 密钥生成完成"
-else
-    echo "✅ 密钥已存在"
-fi
+    # 创建 squashfs
+    mksquashfs "${ROOTFS}" "${WORK_DIR}/rootfs.squashfs" -comp xz -b 1M -noappend
+}
 
-# 设置环境变量
-export APK_PRIVKEY="/tmp/builder.key"
-export APK_PUBKEY="/tmp/builder.pub"
-
-# 2. 构建ISO
-echo ""
-echo "开始构建ISO..."
-
-# 方法：使用Alpine官方的方式，直接运行mkimage
-echo "运行mkimage.sh命令..."
-
-# 直接运行mkimage，不使用--hostkeys参数
-cd "$WORKDIR/aports"
-echo "当前目录: $(pwd)"
-echo "准备运行mkimage..."
-
-# 先测试mkimage是否能运行
-if ! ./scripts/mkimage.sh --help >/dev/null 2>&1; then
-    echo "❌ mkimage脚本无法运行"
-    exit 1
-fi
-
-echo "开始构建ISO..."
-./scripts/mkimage.sh \
-    --tag "$ALPINE_VERSION" \
-    --outdir "$OUTPUT_DIR" \
-    --arch x86_64 \
-    --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/main" \
-    --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/community" \
-    --profile openwrt 2>&1
-
-# 检查结果
-ISO_FILE=$(find "$OUTPUT_DIR" -name "*.iso" -type f 2>/dev/null | head -1)
-
-if [ -n "$ISO_FILE" ] && [ -f "$ISO_FILE" ]; then
-    FILE_SIZE=$(stat -c%s "$ISO_FILE" 2>/dev/null || echo "0")
+# 准备 ISO 目录结构
+prepare_iso_structure() {
+    info "Preparing ISO directory structure..."
     
-    if [ "$FILE_SIZE" -gt 1000000 ]; then  # 至少1MB
-        echo ""
-        echo "✅ ISO 构建成功!"
-        echo "原始文件: $(basename "$ISO_FILE")"
-        echo "大小: $((FILE_SIZE / 1024 / 1024)) MB"
-        
-        # 重命名ISO文件
-        FINAL_ISO="$OUTPUT_DIR/${OUTPUT_NAME}-v${ALPINE_VERSION}-$(date +%Y%m%d).iso"
-        mv "$ISO_FILE" "$FINAL_ISO"
-        
-        echo "重命名为: $(basename "$FINAL_ISO")"
-        
-        # 验证ISO
-        echo ""
-        echo "ISO验证:"
-        if command -v file >/dev/null 2>&1; then
-            file "$FINAL_ISO" 2>/dev/null || echo "文件类型检查失败"
-        fi
-        
-        echo ""
-        echo "🎉 构建完成!"
-        echo "输出文件: $FINAL_ISO"
-        exit 0
-    else
-        echo "⚠️ 生成的ISO文件太小($FILE_SIZE字节)"
-    fi
-fi
+    # 复制引导文件
+    cp -r "${BIOS_DIR}/boot" "${ISO_DIR}/"
+    cp -r "${EFI_DIR}/boot" "${ISO_DIR}/efiboot/"
+    
+    # 复制内核文件
+    mkdir -p "${ISO_DIR}/boot"
+    cp "${WORK_DIR}/vmlinuz-lts" "${ISO_DIR}/boot/"
+    cp "${WORK_DIR}/initramfs-lts" "${ISO_DIR}/boot/"
+    cp "${WORK_DIR}/modloop-lts" "${ISO_DIR}/boot/"
+    
+    # 复制根文件系统
+    cp "${WORK_DIR}/rootfs.squashfs" "${ISO_DIR}/"
+    
+    # 创建引导信息文件
+    echo "Alpine Linux Minimal ${ALPINE_VERSION} - Dual Boot (BIOS/UEFI)" > "${ISO_DIR}/README.TXT"
+}
 
-echo "❌ 标准构建方法失败，尝试备用方法..."
-
-# 备用方法：使用Alpine的原始ISO并修改它
-echo "尝试备用构建方法..."
-
-cd "$WORKDIR"
-mkdir -p alpine-iso
-cd alpine-iso
-
-# 下载Alpine标准ISO
-ALPINE_ISO_URL="http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/releases/x86_64/alpine-standard-$ALPINE_VERSION-x86_64.iso"
-echo "下载Alpine标准ISO: $ALPINE_ISO_URL"
-
-if ! wget -O alpine.iso "$ALPINE_ISO_URL"; then
-    # 尝试其他镜像URL
-    ALPINE_ISO_URL="https://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/releases/x86_64/alpine-standard-$ALPINE_VERSION-x86_64.iso"
-    echo "尝试备用URL: $ALPINE_ISO_URL"
-    wget -O alpine.iso "$ALPINE_ISO_URL" || {
-        echo "❌ 下载Alpine ISO失败"
-        # 创建空文件继续流程
-        FINAL_ISO="$OUTPUT_DIR/${OUTPUT_NAME}-v${ALPINE_VERSION}-$(date +%Y%m%d).iso"
-        echo "创建空ISO文件: $FINAL_ISO"
-        dd if=/dev/zero of="$FINAL_ISO" bs=1M count=10 2>/dev/null
-        echo "⚠️ 创建了占位ISO文件"
-        exit 0
-    }
-fi
-
-# 解压ISO
-echo "解压ISO..."
-mkdir -p iso-extract
-cd iso-extract
-
-# 使用xorriso解压
-if command -v xorriso >/dev/null 2>&1; then
-    xorriso -osirrox on -indev ../alpine.iso -extract / .
-    echo "✅ ISO解压完成"
-else
-    echo "❌ 没有找到xorriso，无法解压ISO"
-    # 创建空文件继续流程
-    FINAL_ISO="$OUTPUT_DIR/${OUTPUT_NAME}-v${ALPINE_VERSION}-$(date +%Y%m%d).iso"
-    echo "创建空ISO文件: $FINAL_ISO"
-    dd if=/dev/zero of="$FINAL_ISO" bs=1M count=10 2>/dev/null
-    echo "⚠️ 创建了占位ISO文件"
-    exit 0
-fi
-
-# 重新打包ISO
-echo "重新打包ISO..."
-FINAL_ISO="$OUTPUT_DIR/${OUTPUT_NAME}-v${ALPINE_VERSION}-$(date +%Y%m%d).iso"
-
-if command -v xorriso >/dev/null 2>&1; then
+# 创建混合 ISO
+create_hybrid_iso() {
+    info "Creating hybrid ISO image..."
+    
+    cd "${WORK_DIR}"
+    
+    # 使用 xorriso 创建支持 BIOS 和 EFI 的混合 ISO
     xorriso -as mkisofs \
         -iso-level 3 \
         -full-iso9660-filenames \
-        -volid "OPENWRT_INSTALLER" \
-        -eltorito-boot boot/isolinux/isolinux.bin \
-        -eltorito-catalog boot/isolinux/boot.cat \
+        -volid "ALPINEMINIMAL" \
+        -eltorito-boot boot/syslinux/isolinux.bin \
+        -eltorito-catalog boot/syslinux/boot.cat \
         -no-emul-boot -boot-load-size 4 -boot-info-table \
-        -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
+        -isohybrid-mbr "${ROOTFS}/usr/share/syslinux/isohdpfx.bin" \
         -eltorito-alt-boot \
         -e boot/grub/efi.img \
         -no-emul-boot \
         -isohybrid-gpt-basdat \
-        -output "$FINAL_ISO" .
+        -output "${OUTPUT_DIR}/${ISO_NAME}" \
+        "${ISO_DIR}/"
     
-    echo "✅ 备用方法构建完成!"
-    echo "文件: $FINAL_ISO"
-    echo "大小: $(du -h "$FINAL_ISO" | cut -f1)"
-else
-    echo "❌ 没有找到xorriso，无法打包ISO"
-    exit 1
-fi
+    # 检查 ISO 是否创建成功
+    if [ -f "${OUTPUT_DIR}/${ISO_NAME}" ]; then
+        info "ISO created successfully: ${OUTPUT_DIR}/${ISO_NAME}"
+        
+        # 显示 ISO 信息
+        du -h "${OUTPUT_DIR}/${ISO_NAME}"
+        echo ""
+        info "ISO build completed!"
+        info "File: ${ISO_NAME}"
+        info "Size: $(du -h ${OUTPUT_DIR}/${ISO_NAME} | cut -f1)"
+        info "Supported: BIOS and UEFI boot"
+    else
+        error "Failed to create ISO"
+    fi
+}
+
+# 主执行流程
+main() {
+    info "Starting Alpine Linux minimal ISO build..."
+    info "Version: ${ALPINE_VERSION}"
+    info "Architecture: ${ARCH}"
+    
+    cleanup
+    prepare_dirs
+    download_rootfs
+    configure_base_system
+    install_packages
+    configure_bootloader
+    create_squashfs
+    prepare_iso_structure
+    create_hybrid_iso
+    
+    info "Build process completed successfully!"
+}
+
+# 执行主函数
+main
