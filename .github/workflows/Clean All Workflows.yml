@@ -46,6 +46,31 @@ jobs:
           retain_days: ${{ inputs.keep_workflow_days }}
           keep_minimum_runs: 3
           delete_workflow_runs: true
+
+      - name: Delete all workflow runs
+        uses: actions/github-script@v6
+        with:
+          script: |
+            // 获取所有工作流运行记录
+            const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+            
+            // 遍历删除每个运行记录
+            for (const run of runs.workflow_runs) {
+              try {
+                await github.rest.actions.deleteWorkflowRun({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id: run.id
+                });
+                console.log(`Deleted run ${run.id} from workflow ${run.workflow_id}`);
+              } catch (error) {
+                console.error(`Failed to delete run ${run.id}: ${error.message}`);
+              }
+            }
           
       - name: Clean releases
         if: github.event.inputs.keep_releases != '0'
