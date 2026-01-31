@@ -67,7 +67,7 @@ jobs:
         WORKDIR /builder
     
         # 复制构建脚本
-        COPY scripts/ /builder/scripts/
+        COPY build-isoalpine.sh /builder/scripts/build-iso.sh
     
         # 设置权限
         RUN chmod +x /builder/scripts/*.sh
