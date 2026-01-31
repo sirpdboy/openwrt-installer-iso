@@ -1,6 +1,13 @@
 name: Build-Alpine-ISO3
 
 on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'scripts/docker-build3.sh'
+      - '.github/workflows/Build-Alpine-ISO3.yml'
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
     inputs:
       openwrt_image_url:
@@ -95,8 +102,31 @@ jobs:
             echo "创建测试文件: $IMG_ABS_PATH"
             echo "img_path=$IMG_ABS_PATH" >> $GITHUB_OUTPUT
         fi
-        
-    - name: 创建输出目录
+    - name: Set up QEMU for cross-platform builds
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          qemu-system-x86 \
+          qemu-utils \
+          cloud-image-utils
+    
+    - name: Install build dependencies
+      run: |
+        sudo apt-get install -y \
+          wget \
+          tar \
+          gzip \
+          xorriso \
+          syslinux-common \
+          isolinux \
+          mtools \
+          dosfstools \
+          grub-efi-amd64-bin \
+          grub-pc-bin \
+          squashfs-tools \
+          cpio \
+          rsync \
+          e2fsprogs    - name: 创建输出目录
       run: |
         mkdir -p output
         echo "输出目录准备完成"
