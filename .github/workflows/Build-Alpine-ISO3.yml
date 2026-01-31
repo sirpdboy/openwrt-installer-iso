@@ -127,15 +127,12 @@ jobs:
           cpio \
           rsync \
           e2fsprogs    - name: 创建输出目录
-      run: |
-        mkdir -p output
-        echo "输出目录准备完成"
-        
         
     - name: 运行构建脚本
       run: |
         echo "开始构建ISO..."
         
+        mkdir -p output
         
         # 运行构建脚本
         sudo ./scripts/docker-build3.sh \
