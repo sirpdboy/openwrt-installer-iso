@@ -30,7 +30,7 @@ echo "工作目录: $WORKDIR"
 
 # 克隆 aports 仓库
 echo "克隆 aports 仓库..."
-if ! git clone --depth 1 --branch "$ALPINE_VERSION-stable" \
+if ! git clone --depth 1 --branch "v$ALPINE_VERSION" \
     https://gitlab.alpinelinux.org/alpine/aports.git; then
     echo "⚠️  分支 v$ALPINE_VERSION 不存在，使用默认分支"
     git clone --depth 1 https://gitlab.alpinelinux.org/alpine/aports.git
@@ -97,6 +97,7 @@ mkdir -p "$tmp"/etc/init.d
 cat > "$tmp"/etc/issue << 'EOF'
 ========================================
       OpenWRT Alpine Installer
+      Version: __ALPINE_VERSION__
 ========================================
 
 系统启动后:
@@ -323,140 +324,55 @@ chmod +x scripts/genapkovl-openwrt.sh
 
 echo "✅ Profile创建完成"
 
+# 3. 生成有效的APK签名密钥
+echo "生成APK签名密钥..."
+
+# 创建APK密钥目录
+APK_KEYS_DIR="/etc/apk/keys"
+mkdir -p "$APK_KEYS_DIR"
+
+# 生成RSA密钥对
+echo "生成RSA密钥对..."
+openssl genrsa -out /tmp/builder.key 2048 2>/dev/null
+openssl rsa -in /tmp/builder.key -pubout -out /tmp/builder.pub 2>/dev/null
+
+# 将公钥复制到APK密钥目录
+cp /tmp/builder.pub "$APK_KEYS_DIR/"
+
+# 设置环境变量
+export APK_PRIVKEY="/tmp/builder.key"
+export APK_PUBKEY="/tmp/builder.pub"
+
+echo "✅ 密钥生成完成"
+
 # 2. 构建ISO
 echo ""
 echo "开始构建ISO..."
 
-# 构建ISO（支持BIOS和UEFI）
+# 方法：使用Alpine官方的方式，直接运行mkimage
 echo "运行mkimage.sh命令..."
 
-# 创建一个简单的包装脚本来处理签名问题
-cat > /tmp/run-mkimage.sh << 'RUNEOF'
-#!/bin/sh
-
-# 直接运行mkimage，忽略可能的签名错误
-echo "直接运行mkimage..."
-
-# 解析参数
-TAG=""
-OUTDIR=""
-ARCH="x86_64"
-REPOS=""
-PROFILE=""
-
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --tag)
-            TAG="$2"
-            shift 2
-            ;;
-        --tag=*)
-            TAG="${1#*=}"
-            shift
-            ;;
-        --outdir)
-            OUTDIR="$2"
-            shift 2
-            ;;
-        --outdir=*)
-            OUTDIR="${1#*=}"
-            shift
-            ;;
-        --arch)
-            ARCH="$2"
-            shift 2
-            ;;
-        --arch=*)
-            ARCH="${1#*=}"
-            shift
-            ;;
-        --repository)
-            REPOS="$REPOS $2"
-            shift 2
-            ;;
-        --repository=*)
-            REPOS="$REPOS ${1#*=}"
-            shift
-            ;;
-        --profile)
-            PROFILE="$2"
-            shift 2
-            ;;
-        --profile=*)
-            PROFILE="${1#*=}"
-            shift
-            ;;
-        *)
-            shift
-            ;;
-    esac
-done
-
-# 确保输出目录存在
-if [ -n "$OUTDIR" ]; then
-    mkdir -p "$OUTDIR"
-fi
-
-# 构建命令
-CMD="./scripts/mkimage.sh"
-[ -n "$TAG" ] && CMD="$CMD --tag \"$TAG\""
-[ -n "$OUTDIR" ] && CMD="$CMD --outdir \"$OUTDIR\""
-CMD="$CMD --arch $ARCH"
-CMD="$CMD --profile $PROFILE"
-
-# 添加仓库
-for repo in $REPOS; do
-    CMD="$CMD --repository \"$repo\""
-done
-
-echo "执行命令: $CMD"
-eval "$CMD" 2>&1
-
-# 检查是否生成了ISO文件
-if [ -n "$OUTDIR" ]; then
-    ISO_FILE=$(find "$OUTDIR" -name "*.iso" -type f | head -1)
-    if [ -n "$ISO_FILE" ] && [ -f "$ISO_FILE" ]; then
-        echo "✅ 找到生成的ISO文件: $(basename "$ISO_FILE")"
-        exit 0
-    else
-        echo "❌ 未找到生成的ISO文件"
-        # 尝试创建空文件，至少让流程继续
-        touch "$OUTDIR/openwrt-temp.iso"
-        echo "⚠️ 创建了临时ISO文件"
-        exit 0
-    fi
-fi
-
-exit 0
-RUNEOF
-
-chmod +x /tmp/run-mkimage.sh
-
-# 运行构建
-cd "$WORKDIR/aports"
-/tmp/run-mkimage.sh \
+# 直接运行mkimage，不使用--hostkeys参数
+cd "$WORKDIR/aparts"
+./scripts/mkimage.sh \
     --tag "$ALPINE_VERSION" \
     --outdir "$OUTPUT_DIR" \
     --arch x86_64 \
     --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/main" \
     --repository "http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/community" \
-    --profile openwrt
+    --profile openwrt 2>&1
 
-# 等待一下确保文件写入完成
-sleep 2
-
-# 检查结果 - 更宽松的检查
+# 检查结果
 ISO_FILE=$(find "$OUTPUT_DIR" -name "*.iso" -type f 2>/dev/null | head -1)
 
 if [ -n "$ISO_FILE" ] && [ -f "$ISO_FILE" ]; then
-    # 检查文件大小，避免空文件
     FILE_SIZE=$(stat -c%s "$ISO_FILE" 2>/dev/null || echo "0")
     
-    if [ "$FILE_SIZE" -gt 1000000 ]; then  # 至少1MB才认为是有效的ISO
+    if [ "$FILE_SIZE" -gt 1000000 ]; then  # 至少1MB
         echo ""
         echo "✅ ISO 构建成功!"
         echo "原始文件: $(basename "$ISO_FILE")"
-        echo "大小: $(du -h "$ISO_FILE" | cut -f1)"
+        echo "大小: $((FILE_SIZE / 1024 / 1024)) MB"
         
         # 重命名ISO文件
         FINAL_ISO="$OUTPUT_DIR/${OUTPUT_NAME}-v${ALPINE_VERSION}-$(date +%Y%m%d).iso"
@@ -464,30 +380,94 @@ if [ -n "$ISO_FILE" ] && [ -f "$ISO_FILE" ]; then
         
         echo "重命名为: $(basename "$FINAL_ISO")"
         
-        # 显示ISO信息
+        # 验证ISO
         echo ""
-        echo "ISO详细信息:"
+        echo "ISO验证:"
         if command -v file >/dev/null 2>&1; then
-            file "$FINAL_ISO" 2>/dev/null || echo "无法识别文件类型"
+            file "$FINAL_ISO" 2>/dev/null || echo "文件类型检查失败"
         fi
         
         echo ""
         echo "🎉 构建完成!"
         echo "输出文件: $FINAL_ISO"
+        exit 0
     else
-        echo "⚠️ 生成的ISO文件太小($FILE_SIZE字节)，可能不完整"
-        echo "文件: $ISO_FILE"
-        echo "继续执行..."
+        echo "⚠️ 生成的ISO文件太小($FILE_SIZE字节)"
     fi
+fi
+
+echo "❌ 标准构建方法失败，尝试备用方法..."
+
+# 备用方法：使用Alpine的原始ISO并修改它
+echo "尝试备用构建方法..."
+
+# 下载Alpine标准ISO
+ALPINE_ISO_URL="http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VERSION/releases/x86_64/alpine-standard-$ALPINE_VERSION-x86_64.iso"
+echo "下载Alpine标准ISO: $ALPINE_ISO_URL"
+
+cd "$WORKDIR"
+mkdir -p alpine-iso
+cd alpine-iso
+
+wget -O alpine.iso "$ALPINE_ISO_URL" || {
+    echo "❌ 下载Alpine ISO失败"
+    exit 1
+}
+
+# 解压ISO
+echo "解压ISO..."
+mkdir -p iso-extract
+cd iso-extract
+
+# 使用7z或xorriso解压
+if command -v 7z >/dev/null 2>&1; then
+    7z x ../alpine.iso
+elif command -v xorriso >/dev/null 2>&1; then
+    xorriso -osirrox on -indev ../alpine.iso -extract / .
 else
-    echo "❌ 没有生成ISO文件"
-    echo "检查输出目录: $OUTPUT_DIR"
-    ls -la "$OUTPUT_DIR/" 2>/dev/null || echo "输出目录不存在"
+    echo "❌ 没有找到解压工具"
+    exit 1
+fi
+
+# 修改启动配置
+echo "修改启动配置..."
+if [ -f "boot/grub/grub.cfg" ]; then
+    cp "boot/grub/grub.cfg" "boot/grub/grub.cfg.backup"
+    cat > "boot/grub/grub.cfg" << 'GRUBCFG'
+set default=0
+set timeout=5
+
+menuentry "OpenWRT Installer" {
+    linux /boot/vmlinuz-lts console=tty0 console=ttyS0,115200
+    initrd /boot/initramfs-lts
+}
+
+GRUBCFG
+fi
+
+# 重新打包ISO
+echo "重新打包ISO..."
+FINAL_ISO="$OUTPUT_DIR/${OUTPUT_NAME}-v${ALPINE_VERSION}-$(date +%Y%m%d).iso"
+
+if command -v xorriso >/dev/null 2>&1; then
+    xorriso -as mkisofs \
+        -iso-level 3 \
+        -full-iso9660-filenames \
+        -volid "OPENWRT_INSTALLER" \
+        -eltorito-boot boot/isolinux/isolinux.bin \
+        -eltorito-catalog boot/isolinux/boot.cat \
+        -no-emul-boot -boot-load-size 4 -boot-info-table \
+        -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
+        -eltorito-alt-boot \
+        -e boot/grub/efi.img \
+        -no-emul-boot \
+        -isohybrid-gpt-basdat \
+        -output "$FINAL_ISO" .
     
-    # 创建占位文件
-    FINAL_ISO="$OUTPUT_DIR/${OUTPUT_NAME}-v${ALPINE_VERSION}-$(date +%Y%m%d).iso"
-    echo "创建占位文件: $FINAL_ISO"
-    echo "此文件表示构建失败，请检查日志" > "$FINAL_ISO"
-    
-    echo "⚠️ 创建了占位文件，流程继续"
+    echo "✅ 备用方法构建完成!"
+    echo "文件: $FINAL_ISO"
+    echo "大小: $(du -h "$FINAL_ISO" | cut -f1)"
+else
+    echo "❌ 没有找到xorriso，无法打包ISO"
+    exit 1
 fi
