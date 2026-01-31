@@ -17,7 +17,7 @@ log_debug() { echo -e "${BLUE}[DEBUG]${NC} $1"; }
 [ "$(id -u)" -ne 0 ] && log_error "This script must be run as root"
 
 # 配置变量
-ALPINE_VERSION="3.19"
+ALPINE_VERSION="3.20"
 ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
 ARCH="x86_64"
 OUTPUT_DIR="$(pwd)/output"
@@ -47,16 +47,22 @@ prepare_dirs() {
 
 # 获取最新的 Alpine 版本
 get_latest_release() {
-    local version_file="${WORK_DIR}/latest-version.txt"
-    wget -q -O "$version_file" "${ALPINE_MIRROR}/latest-stable/releases/${ARCH}/"
-    
-    # 提取最新的 minirootfs
-    local latest_rootfs=$(grep -o "alpine-minirootfs-[0-9.]*-${ARCH}.tar.gz" "$version_file" | head -1 | sed 's/alpine-minirootfs-\(.*\)-'"${ARCH}"'.tar.gz/\1/')
-    
-    if [ -n "$latest_rootfs" ]; then
-        echo "$latest_rootfs"
+LATEST_VERSION=''
+KERNEL_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ARCH}/latest-releases.yaml"
+if command -v curl >/dev/null 2>&1; then
+    LATEST_ISO=$(curl -s "$KERNEL_URL" | grep -o "alpine-minirootfs-.*-${ARCH}.iso" | head -1)
+    if [ -z "$LATEST_ISO" ]; then
+        LATEST_ISO="alpine-minirootfs-${ALPINE_VERSION}.9-x86_64.iso"
+    fi
+    LATEST_VERSION=$(echo "$LATEST_ISO" | sed 's/alpine-minirootfs-//' | sed 's/-x86_64.iso//')
+else
+    LATEST_VERSION="${ALPINE_VERSION}.9"
+    LATEST_ISO="alpine-minirootfs-${LATEST_VERSION}-x86_64.iso"
+fi
+    if [ -n "$LATEST_VERSION" ]; then
+        echo "$LATEST_VERSION"
     else
-        echo "${ALPINE_VERSION}.1"
+        echo "${LATEST_VERSION}.1"
     fi
 }
 
@@ -68,6 +74,7 @@ download_rootfs() {
     log_info "Using Alpine version: ${RELEASE_VERSION}"
     
     local ROOTFS_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ARCH}/alpine-minirootfs-${RELEASE_VERSION}-${ARCH}.tar.gz"
+    local ROOTFS_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ARCH}/alpine-minirootfs-3.20.9-x86_64.tar.gz"
     local ROOTFS_FILE="${WORK_DIR}/alpine-minirootfs.tar.gz"
     
     if ! wget -q --show-progress -O "$ROOTFS_FILE" "$ROOTFS_URL"; then
