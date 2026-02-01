@@ -19,7 +19,7 @@ env:
 
 jobs:
   build-iso:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     
     steps:
     - name: Checkout code
@@ -49,7 +49,7 @@ jobs:
         # 标准目录结构
         mkdir -p boot/grub
         mkdir -p kernel
-        mkdir -p live
+        mkdir -p live 
         
         echo "Directory structure created"
         
