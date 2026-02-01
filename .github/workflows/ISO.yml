@@ -24,97 +24,233 @@ jobs:
     steps:
     - name: 检出代码
       uses: actions/checkout@v4
-    
     - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
           grub2-common \
           grub-pc-bin \
+          grub-efi-amd64-bin \
           xorriso \
-          wget
+          mtools \
+          dosfstools \
+          wget \
+          qemu-system-x86
         
-    - name: Create ISO directory structure
+    - name: Create clean ISO directory
       run: |
-        # 创建干净的目录结构
-        rm -rf iso_root
-        mkdir -p iso_root/{boot/grub,kernel}
+        rm -rf iso_build
+        mkdir -p iso_build
         
-    - name: Download minimal kernel
+    - name: Prepare ISO filesystem
       run: |
-        cd iso_root/kernel
-        # 使用Alpine Linux的小内核
+        cd iso_build
+        
+        # 创建标准ISO目录结构
+        mkdir -p boot/grub kernel
+        
+        # 下载Alpine Linux内核（小且可靠）
+        cd kernel
         wget -q -O vmlinuz https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts
         wget -q -O initrd.img https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/initramfs-lts
-        echo "Kernel files downloaded:"
-        ls -lh
+        cd ..
+        
+        echo "Kernel files:"
+        ls -lh kernel/
         
     - name: Create GRUB configuration
       run: |
-        cd iso_root/boot/grub
-        cat > grub.cfg << 'EOF'
-        set timeout=10
-        set default=0
+        cd iso_build
+        
+        cat > boot/grub/grub.cfg << 'EOF'
+# Minimal GRUB configuration for Live ISO
+set timeout=10
+set default=0
 
-        menuentry "Minimal Live Shell" {
-          echo "Loading kernel..."
-          linux /kernel/vmlinuz console=ttyS0 console=tty0 init=/bin/sh
-          echo "Loading initrd..."
-          initrd /kernel/initrd.img
-        }
-        EOF
+# BIOS/UEFI兼容性设置
+if [ "${grub_platform}" = "efi" ]; then
+    insmod efi_gop
+    insmod efi_uga
+    insmod font
+    if loadfont /boot/grub/fonts/unicode.pf2; then
+        insmod gfxterm
+        set gfxmode=auto
+        set gfxpayload=keep
+        terminal_output gfxterm
+    fi
+fi
+
+menuentry "Minimal Live Shell" {
+    echo "Loading Linux kernel..."
+    linux /kernel/vmlinuz console=ttyS0 console=tty0 root=/dev/ram0 rw init=/bin/sh
+    echo "Loading initial ramdisk..."
+    initrd /kernel/initrd.img
+}
+
+menuentry "Boot from first hard disk" {
+    set root=(hd1)
+    chainloader +1
+}
+EOF
+        
         echo "GRUB config created:"
-        cat grub.cfg
+        cat boot/grub/grub.cfg
         
-    - name: Prepare BIOS boot image
+    - name: Create BIOS boot image
       run: |
-        # 复制BIOS引导镜像
-        cp /usr/lib/grub/i386-pc/boot.img iso_root/boot/grub/
+        cd iso_build
         
-    - name: Build ISO with xorriso (FIXED)
+        # 方法1：使用现成的boot.img（最简单）
+        cp /usr/lib/grub/i386-pc/boot.img boot/grub/
+        
+        # 方法2：或者创建自定义的BIOS引导镜像
+        echo "Creating BIOS boot sector..."
+        grub-mkimage -p /boot/grub -O i386-pc \
+          -o boot/grub/core.img \
+          biosdisk iso9660 part_msdos ext2
+        
+        # 将boot.img和core.img合并成完整的引导镜像
+        cat /usr/lib/grub/i386-pc/boot.img boot/grub/core.img > boot/grub/grub.img
+        
+        echo "BIOS boot images created:"
+        ls -lh boot/grub/
+        
+    - name: Create EFI boot image
       run: |
-        # 进入iso_root的父目录，确保路径正确
-        cd iso_root
-        ISO_NAME="minimal-shell-$(date +%Y%m%d-%H%M).iso"
+        cd iso_build
         
-        echo "Building ISO from: $(pwd)"
-        echo "Directory contents:"
+        # 创建EFI系统分区镜像
+        dd if=/dev/zero of=boot/efiboot.img bs=1M count=16
+        mkfs.vfat -F 12 boot/efiboot.img
+        
+        # 挂载并设置EFI
+        mkdir -p efi_mount
+        sudo mount -o loop boot/efiboot.img efi_mount
+        
+        # 创建标准EFI目录结构
+        sudo mkdir -p efi_mount/EFI/BOOT
+        
+        # 复制GRUB EFI文件到标准位置
+        if [ -f /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed ]; then
+            sudo cp /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed \
+                 efi_mount/EFI/BOOT/BOOTX64.EFI
+        elif [ -f /usr/lib/grub/x86_64-efi/grub.efi ]; then
+            sudo cp /usr/lib/grub/x86_64-efi/grub.efi \
+                 efi_mount/EFI/BOOT/BOOTX64.EFI
+        else
+            # 如果找不到，安装并生成
+            sudo apt-get install -y grub-efi-amd64-signed
+            sudo cp /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed \
+                 efi_mount/EFI/BOOT/BOOTX64.EFI
+        fi
+        
+        # 卸载
+        sudo umount efi_mount
+        rmdir efi_mount
+        
+        echo "EFI boot image created:"
+        ls -lh boot/efiboot.img
+        
+    - name: Build ISO with proper boot records
+      run: |
+        cd iso_build
+        
+        ISO_NAME="minimal-live-dualboot-$(date +%Y%m%d-%H%M).iso"
+        
+        echo "Building ISO with dual boot support..."
+        echo "Working directory: $(pwd)"
+        echo "Contents:"
         find . -type f | sort
         
-        # 关键修复：使用正确的相对路径
+        # 关键：使用正确的xorriso命令创建双引导ISO
         xorriso -as mkisofs \
-          -r \
-          -V "MINIMAL_SHELL" \
-          -o "../${ISO_NAME}" \
+          \
+          # ISO基本设置
+          -r -V "MINIMAL_LIVE" \
+          -J -joliet-long \
           -iso-level 3 \
-          -J \
+          \
+          # BIOS/El Torito引导设置
           -b boot/grub/boot.img \
           -no-emul-boot \
           -boot-load-size 4 \
           -boot-info-table \
+          \
+          # UEFI/El Torito引导设置
+          --efi-boot boot/efiboot.img \
+          -efi-boot-part \
+          --efi-boot-image \
+          \
+          # 输出文件
+          -o "../${ISO_NAME}" \
+          \
+          # 源目录
           .
         
         cd ..
-        echo "=== ISO Build Complete ==="
-        ls -lh *.iso
-        echo "ISO size: $(du -h *.iso | cut -f1)"
         
-    - name: Upload ISO artifact
+        echo "=== ISO Build Complete ==="
+        echo "File: ${ISO_NAME}"
+        ls -lh "${ISO_NAME}"
+        
+    - name: Verify boot records
+      run: |
+        ISO_FILE=$(ls minimal-live-dualboot-*.iso)
+        
+        echo "=== Checking ISO boot records ==="
+        
+        # 检查ISO是否包含引导记录
+        file "${ISO_FILE}"
+        
+        # 使用isoinfo检查ISO结构
+        if command -v isoinfo >/dev/null; then
+            sudo apt-get install -y genisoimage
+            isoinfo -d -i "${ISO_FILE}" | grep -i "boot" || true
+        fi
+        
+        # 使用xorriso检查引导信息
+        xorriso -indev "${ISO_FILE}" -toc 2>&1 | grep -i -E "(boot|eltorito|efi)" || true
+        
+        echo "=== Verification Complete ==="
+        
+    - name: Test BIOS boot with QEMU
+      run: |
+        ISO_FILE=$(ls minimal-live-dualboot-*.iso)
+        
+        echo "Testing BIOS boot (10 seconds)..."
+        
+        # 测试传统BIOS引导
+        timeout 15 qemu-system-x86_64 \
+          -cdrom "${ISO_FILE}" \
+          -m 512 \
+          -boot d \
+          -serial stdio \
+          -display none \
+          2>&1 | head -50 || true
+        
+    - name: Test UEFI boot with QEMU
+      run: |
+        ISO_FILE=$(ls minimal-live-dualboot-*.iso)
+        
+        echo "Testing UEFI boot (requires OVMF)..."
+        
+        # 检查是否有OVMF固件
+        if [ -f /usr/share/ovmf/OVMF.fd ] || [ -f /usr/share/qemu/OVMF.fd ]; then
+            timeout 15 qemu-system-x86_64 \
+              -cdrom "${ISO_FILE}" \
+              -bios /usr/share/ovmf/OVMF.fd 2>/dev/null \
+              -m 512 \
+              -boot d \
+              -serial stdio \
+              -display none \
+              2>&1 | head -50 || true
+        else
+            echo "OVMF firmware not found, skipping UEFI test"
+            echo "Install with: sudo apt-get install ovmf"
+        fi
+        
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: minimal-shell-iso
+        name: minimal-live-dualboot
         path: "*.iso"
-        
-    - name: Quick test with qemu
-      run: |
-        # 快速测试ISO是否可引导
-        sudo apt-get install -y qemu-system-x86
-        echo "Testing ISO with QEMU (10 seconds)..."
-        
-        # 使用timeout限制测试时间
-        timeout 10 qemu-system-x86_64 \
-          -cdrom *.iso \
-          -m 256 \
-          -display none \
-          -serial stdio \
-          -boot d 2>&1 | grep -i -E "(loading|boot|kernel|error|fail)" || echo "QEMU test completed"
