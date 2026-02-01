@@ -64,8 +64,8 @@ setup_directories() {
 download_kernel() {
     info "下载内核文件..."
     
-    KERNEL_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/boot/vmlinuz-lts"
-    INITRD_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/boot/initramfs-lts"
+    KERNEL_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts"
+    INITRD_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/initramfs-lts"
     
     # 下载内核
     if ! wget -q -O kernel/vmlinuz "$KERNEL_URL"; then
