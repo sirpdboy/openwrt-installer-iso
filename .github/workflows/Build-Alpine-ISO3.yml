@@ -5,7 +5,7 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'scripts/docker-build3.sh'
+      - 'scripts/grub-mkrescue-iso.sh'
       - '.github/workflows/Build-Alpine-ISO3.yml'
 
 jobs:
@@ -17,69 +17,161 @@ jobs:
       uses: actions/checkout@v4
       with:
         persist-credentials: false
-        
-    - name: Install dependencies
+      
+    - name: Install GRUB and dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
           grub2-common \
           grub-pc-bin \
           grub-efi-amd64-bin \
+          grub-efi-amd64-signed \
           xorriso \
           mtools \
           dosfstools \
           wget \
-          qemu-system-x86
+          qemu-system-x86 \
+          syslinux \
+          isolinux
         
-    - name: Make script executable
+        # 验证工具安装
+        echo "=== 验证工具 ==="
+        which grub-mkrescue
+        which xorriso
+        grub-mkrescue --version
+        
+    - name: Make scripts executable
       run: |
-        chmod +x scripts/docker-build3.sh
+        chmod +x scripts/*.sh
         
-    - name: Build ISO
+    - name: Build ISO with GRUB
+      id: build
       run: |
-        # 在根目录运行脚本，这样ISO会生成在根目录
-        ./scripts/docker-build3.sh
+        # 设置环境
+        export BUILD_DIR="/tmp/grub_build_${{ github.run_id }}"
+        export OUTPUT_DIR="${{ github.workspace }}/output"
         
-        # 检查生成的文件
-        echo "=== 生成的文件 ==="
-        find . -name "*.iso" -type f | xargs ls -lh
+        # 清理并创建目录
+        rm -rf "$BUILD_DIR" "$OUTPUT_DIR"
+        mkdir -p "$OUTPUT_DIR"
+        
+        echo "::group::构建日志"
+        ./scripts/grub-mkrescue-iso.sh
+        echo "::endgroup::"
+        
+        # 获取生成的ISO
+        ISO_FILE=$(ls -t "$OUTPUT_DIR"/grub-live-*.iso 2>/dev/null | head -1)
+        if [ -f "$ISO_FILE" ]; then
+            echo "ISO_FILE=$ISO_FILE" >> $GITHUB_OUTPUT
+            echo "ISO_NAME=$(basename "$ISO_FILE")" >> $GITHUB_OUTPUT
+            echo "file://$ISO_FILE" >> $GITHUB_OUTPUT
+        fi
+        
+    - name: Verify ISO structure
+      if: success()
+      run: |
+        ISO_FILE="${{ steps.build.outputs.ISO_FILE }}"
+        
+        if [ -f "$ISO_FILE" ]; then
+            echo "=== ISO详细分析 ==="
+            
+            # 1. 检查文件类型
+            echo "1. 文件类型:"
+            file "$ISO_FILE"
+            echo ""
+            
+            # 2. 检查引导扇区
+            echo "2. 引导扇区:"
+            dd if="$ISO_FILE" bs=1 count=64 2>/dev/null | xxd | head -5
+            echo ""
+            
+            # 3. 检查ISO内容
+            echo "3. ISO内容摘要:"
+            xorriso -indev "$ISO_FILE" -find / -type d 2>&1 | head -10
+            echo ""
+            
+            # 4. 检查引导目录
+            echo "4. 引导文件:"
+            xorriso -indev "$ISO_FILE" -find /boot -type f 2>&1 || true
+            xorriso -indev "$ISO_FILE" -find /EFI -type f 2>&1 || true
+        else
+            echo "错误: ISO文件不存在"
+            ls -la output/
+        fi
+        
+    - name: Test with QEMU (BIOS mode)
+      if: success()
+      run: |
+        ISO_FILE="${{ steps.build.outputs.ISO_FILE }}"
+        
+        echo "=== 测试BIOS引导 (10秒) ==="
+        
+        # 使用更详细的参数
+        timeout 10 qemu-system-x86_64 \
+            -cdrom "$ISO_FILE" \
+            -m 512 \
+            -boot d \
+            -serial stdio \
+            -monitor none \
+            -display none \
+            -D /tmp/qemu.log \
+            2>&1 | tee /tmp/qemu_output.txt | head -50 || true
+        
         echo ""
+        echo "=== QEMU日志摘要 ==="
+        grep -i -E "(booting|bootable|CD-ROM|kernel|error|fail)" /tmp/qemu_output.txt || echo "无相关日志"
         
-        # 确认ISO位置
-        echo "=== 当前目录 ==="
-        pwd
-        ls -la
-        echo ""
+    - name: Test with QEMU (UEFI mode)
+      if: success()
+      continue-on-error: true  # UEFI测试可能失败，但继续流程
+      run: |
+        ISO_FILE="${{ steps.build.outputs.ISO_FILE }}"
         
-        # 移动所有ISO文件到当前目录
-        find . -name "*.iso" -type f -exec mv {} . \; 2>/dev/null || true
+        echo "=== 测试UEFI引导 (需要OVMF) ==="
         
-        echo "=== 移动后 ==="
-        ls -lh *.iso 2>/dev/null || echo "没有找到ISO文件"
+        # 检查是否有OVMF
+        if [ -f /usr/share/ovmf/OVMF.fd ] || [ -f /usr/share/qemu/OVMF.fd ]; then
+            OVMF_PATH=$(find /usr/share -name "OVMF.fd" -o -name "OVMF_CODE.fd" | head -1)
+            echo "使用OVMF: $OVMF_PATH"
+            
+            timeout 8 qemu-system-x86_64 \
+                -cdrom "$ISO_FILE" \
+                -bios "$OVMF_PATH" \
+                -m 512 \
+                -boot d \
+                -serial stdio \
+                -display none \
+                2>&1 | grep -i -E "(UEFI|booting|kernel|Shell)" | head -20 || true
+        else
+            echo "跳过UEFI测试: OVMF未安装"
+            echo "安装命令: sudo apt-get install ovmf"
+        fi
         
     - name: Upload ISO artifact
       uses: actions/upload-artifact@v4
       with:
-        name: minimal-live-iso
-        path: "minimal-live-*.iso"
+        name: bootable-grub-iso
+        path: output/grub-live-*.iso
         if-no-files-found: error
         retention-days: 7
         
-    - name: Quick test
+    - name: Create boot test report
+      if: always()
       run: |
-        if ls minimal-live-*.iso 1> /dev/null 2>&1; then
-            echo "=== 快速测试 ==="
-            ISO_FILE=$(ls -t minimal-live-*.iso | head -1)
-            
-            # 测试ISO是否可引导
-            timeout 3 qemu-system-x86_64 \
-                -cdrom "$ISO_FILE" \
-                -m 256 \
-                -boot d \
-                -serial stdio \
-                -display none \
-                2>&1 | grep -i -E "(booting|loading|kernel|error)" | head -10 || true
+        echo "=== 构建测试报告 ==="
+        echo "构建时间: $(date)"
+        echo "ISO文件: ${{ steps.build.outputs.ISO_NAME || '未生成' }}"
+        echo "文件大小: $(ls -lh output/*.iso 2>/dev/null | awk '{print $5}' || echo '未知')"
+        echo ""
+        echo "=== 验证结果 ==="
+        
+        if ls output/*.iso 1>/dev/null 2>&1; then
+            echo "✓ ISO文件存在"
+            if file output/*.iso | grep -q "bootable"; then
+                echo "✓ ISO标记为可引导"
+            else
+                echo "✗ ISO未标记为可引导"
+            fi
         else
-            echo "错误: 找不到ISO文件"
-            find . -name "*.iso" -type f
+            echo "✗ 未生成ISO文件"
         fi
