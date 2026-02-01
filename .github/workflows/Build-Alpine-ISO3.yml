@@ -28,7 +28,8 @@ jobs:
           xorriso \
           mtools \
           dosfstools \
-          wget
+          wget \
+          qemu-system-x86
         
     - name: Make script executable
       run: |
@@ -36,22 +37,49 @@ jobs:
         
     - name: Build ISO
       run: |
-        cd scripts
-        ./docker-build3.sh
+        # 在根目录运行脚本，这样ISO会生成在根目录
+        ./scripts/docker-build3.sh
+        
+        # 检查生成的文件
+        echo "=== 生成的文件 ==="
+        find . -name "*.iso" -type f | xargs ls -lh
+        echo ""
+        
+        # 确认ISO位置
+        echo "=== 当前目录 ==="
+        pwd
+        ls -la
+        echo ""
+        
+        # 移动所有ISO文件到当前目录
+        find . -name "*.iso" -type f -exec mv {} . \; 2>/dev/null || true
+        
+        echo "=== 移动后 ==="
+        ls -lh *.iso 2>/dev/null || echo "没有找到ISO文件"
         
     - name: Upload ISO artifact
       uses: actions/upload-artifact@v4
       with:
         name: minimal-live-iso
-        path: |
-          minimal-live-*.iso
+        path: "minimal-live-*.iso"
+        if-no-files-found: error
         retention-days: 7
         
-    - name: Display build info
+    - name: Quick test
       run: |
-        echo "=== 构建完成 ==="
-        echo "生成的ISO文件:"
-        ls -lh minimal-live-*.iso
-        echo ""
-        echo "文件详细信息:"
-        file minimal-live-*.iso
+        if ls minimal-live-*.iso 1> /dev/null 2>&1; then
+            echo "=== 快速测试 ==="
+            ISO_FILE=$(ls -t minimal-live-*.iso | head -1)
+            
+            # 测试ISO是否可引导
+            timeout 3 qemu-system-x86_64 \
+                -cdrom "$ISO_FILE" \
+                -m 256 \
+                -boot d \
+                -serial stdio \
+                -display none \
+                2>&1 | grep -i -E "(booting|loading|kernel|error)" | head -10 || true
+        else
+            echo "错误: 找不到ISO文件"
+            find . -name "*.iso" -type f
+        fi
