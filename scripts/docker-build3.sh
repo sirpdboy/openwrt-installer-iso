@@ -16,7 +16,7 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 # 获取脚本所在目录
 
 SCRIPT_DIR="iso"
-mdkir -p $SCRIPT_DIR
+mkdir -p $SCRIPT_DIR
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 设置工作目录在项目根目录
