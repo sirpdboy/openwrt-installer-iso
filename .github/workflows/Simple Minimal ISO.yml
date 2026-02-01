@@ -1,0 +1,50 @@
+name: Simple Minimal ISO
+
+on: [workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install and build
+      run: |
+        # 一键安装依赖
+        sudo apt-get update && sudo apt-get install -y \
+          grub2-common grub-pc-bin grub-efi-amd64-bin xorriso
+        
+        # 创建目录结构
+        mkdir -p myiso/{boot/grub,kernel}
+        
+        # 下载超小内核（从Alpine）
+        cd myiso/kernel
+        wget -q https://dl-cdn.alpinelinux.org/alpine/edge/releases/x86_64/netboot/vmlinuz-virt
+        wget -q https://dl-cdn.alpinelinux.org/alpine/edge/releases/x86_64/netboot/initramfs-virt
+        mv vmlinuz-virt vmlinuz
+        mv initramfs-virt initrd.img
+        
+        # 创建GRUB配置
+        cd ../boot/grub
+        cat > grub.cfg << 'EOF'
+set timeout=3
+menuentry "Boot to Shell" {
+  linux /kernel/vmlinuz console=ttyS0 init=/bin/sh
+  initrd /kernel/initrd.img
+}
+EOF
+        
+        # 创建简单的ISO（仅BIOS引导，更简单）
+        cd ../..
+        xorriso -as mkisofs -r -V "TEST" -o test.iso \
+          -b boot/grub/boot.img -no-emul-boot \
+          -boot-load-size 4 -boot-info-table \
+          myiso/
+        
+        ls -lh test.iso
+    
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: simple-iso
+        path: myiso/test.iso
