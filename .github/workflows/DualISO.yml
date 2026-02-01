@@ -1,0 +1,45 @@
+name: DualISO
+
+on: [workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y grub2-common grub-pc-bin grub-efi-amd64-bin xorriso wget
+
+    - name: Prepare files
+      run: |
+        rm -rf iso
+        mkdir -p iso/{boot/grub,efi/boot,kernel}
+
+        wget -O iso/kernel/vmlinuz https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts
+        wget -O iso/kernel/initrd.img https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/initramfs-lts
+        echo 'menuentry "Boot" { linux /kernel/vmlinuz console=ttyS0 init=/bin/sh; initrd /kernel/initrd.img }' > iso/boot/grub/grub.cfg
+        cp iso/boot/grub/grub.cfg iso/efi/boot/
+        cp /usr/lib/grub/i386-pc/boot.img iso/boot/grub/
+        cp /usr/lib/grub/x86_64-efi/monolithic/grub.efi iso/efi/boot/bootx64.efi
+
+    - name: Build ISO
+      run: |
+        cd iso
+        xorriso -as mkisofs -volid "LIVE" -b boot/grub/boot.img -no-emul-boot -eltorito-alt-boot -e efi/boot/bootx64.efi -no-emul-boot -o ../live.iso .
+
+    - name: Check result
+      run: |
+        echo "ISO created:"
+        ls -lh live.iso
+        echo ""
+        echo "Boot records:"
+        xorriso -indev live.iso -toc 2>&1 | grep -i boot || true
+
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: live-iso
+        path: live.iso
