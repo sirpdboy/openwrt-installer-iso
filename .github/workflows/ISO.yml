@@ -204,34 +204,21 @@ jobs:
         echo "Building ISO with proper boot configuration..."
         echo "Current directory: $(pwd)"
         
-        # 关键：使用这个经过验证的xorriso命令
-        xorriso -as mkisofs \
-            \
-            # 基本ISO参数
-            -iso-level 3 \
-            -volid "MINIMAL_LIVE" \
-            \
-            # Rock Ridge和Joliet扩展（提高兼容性）
-            -rock \
-            -joliet \
-            \
-            # BIOS引导设置 - 关键！
-            -b boot/grub/boot.img \
-            -no-emul-boot \
-            -boot-load-size 4 \
-            -boot-info-table \
-            \
-            # UEFI引导设置 - 关键！
-            -eltorito-alt-boot \
-            -e efi/boot/bootx64.efi \
-            -no-emul-boot \
-            -isohybrid-gpt-basdat \
-            \
-            # 输出文件
+	    xorriso -as mkisofs \
+	    -iso-level 3 \
+	    -volid "MINIMAL_LIVE" \
+	    -rock \
+	    -joliet \
+	    -b boot/grub/boot.img \
+	    -no-emul-boot \
+	    -boot-load-size 4 \
+	    -boot-info-table \
+	    -eltorito-alt-boot \
+	    -e efi/boot/bootx64.efi \
+	    -no-emul-boot \
             -o "../${ISO_NAME}" \
-            \
-            # 源目录内容
-            .
+	    .
+
         
         cd ..
         
