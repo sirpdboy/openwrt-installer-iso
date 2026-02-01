@@ -14,7 +14,9 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
 # 获取脚本所在目录
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+SCRIPT_DIR="iso"
+mdkir -p $SCRIPT_DIR
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 设置工作目录在项目根目录
@@ -48,12 +50,10 @@ setup_directories() {
 # 下载内核
 download_kernel() {
     info "下载内核文件..."
-    cd "$PROJECT_ROOT"
+    cd "$PROJECT_ROOT/$BUILD_DIR"
     # KERNEL_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts"
     # INITRD_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/initramfs-lts"
     
-    mkdir -p boot/grub kernel
-        
         # 下载Alpine Linux内核
         cd kernel
         wget -q -O vmlinuz https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts
