@@ -1,12 +1,29 @@
-name: Simple Minimal ISO
+name: ISO
 
-on: [workflow_dispatch]
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - '.github/workflows/ISO.yml'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      alpine_version:
+        description: 'Alpine版本'
+        required: true
+        default: '3.20'
+env:
+  ALPINE_VERSION: ${{ github.event.inputs.alpine_version || '3.20' }}
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
+  build-iso:
+    runs-on: ubuntu-latest
+    
     steps:
-    - uses: actions/checkout@v3
+    - name: 检出代码
+      uses: actions/checkout@v4
     
     - name: Install and build
       run: |
