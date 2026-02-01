@@ -13,14 +13,6 @@ info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
-# 获取脚本所在目录
-
-SCRIPT_DIR="iso"
-mkdir -p $SCRIPT_DIR
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-# 设置工作目录在项目根目录
-cd "$PROJECT_ROOT"
 
 check_dependencies() {
     info "检查依赖..."
@@ -30,39 +22,19 @@ check_dependencies() {
     info "所有依赖已安装"
 }
 
-setup_directories() {
-    info "设置目录结构..."
-    cd $PROJECT_ROOT
-    # 使用时间戳创建唯一目录名
-    TIMESTAMP=$(date +%s)
-    BUILD_DIR="iso_build_${TIMESTAMP}"
-    
-    # 在项目根目录创建构建目录
-    rm -rf "$BUILD_DIR"
-    mkdir -p "$BUILD_DIR"
-    cd "$BUILD_DIR"
-    
-    mkdir -p boot/grub efi/boot/grub kernel live/filesystem
-    
-    echo "$BUILD_DIR"  # 返回构建目录名
-}
+
 
 # 下载内核
 download_kernel() {
     info "下载内核文件..."
-    cd "$PROJECT_ROOT/$BUILD_DIR"
-    # KERNEL_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts"
-    # INITRD_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/initramfs-lts"
-    
-        # 下载Alpine Linux内核
-        cd kernel
-        wget -q -O vmlinuz https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts
-        wget -q -O initrd.img https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/initramfs-lts
+
+        wget -q -O ${BUILD_DIR}/kernel/vmlinuz https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts
+        wget -q -O ${BUILD_DIR}/kernel/initrd.img https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/initramfs-lts
     
     
     info "内核文件下载完成:"
-    echo "  vmlinuz: $(du -h kernel/vmlinuz | cut -f1)"
-    echo "  initrd.img: $(du -h kernel/initrd.img | cut -f1)"
+    echo "  vmlinuz: $(du -h ${BUILD_DIR}/kernel/vmlinuz | cut -f1)"
+    echo "  initrd.img: $(du -h ${BUILD_DIR}/kernel/initrd.img | cut -f1)"
 }
 
 # 创建最小rootfs
@@ -209,7 +181,7 @@ build_iso() {
         .
     
     # 返回到构建目录
-    cd "$PROJECT_ROOT/$BUILD_DIR"
+    cd "$BUILD_DIR"
     
     if [ -f "$PROJECT_ROOT/$ISO_NAME" ]; then
         info "ISO构建成功: ${ISO_NAME}"
@@ -239,13 +211,19 @@ verify_iso() {
 
 main() {
     info "开始构建最小化Live ISO"
+    
+PROJECT_ROOT="${HOME}/LIVE"
+BUILD_DIR="${PROJECT_ROOT}/iso"
+rm -rf ${PROJECT_ROOT}
+mkdir -p "${PROJECT_ROOT}"
+mkdir -p "${BUILD_DIR}"/{boot/grub efi/boot/grub kernel live/filesystem}
+
     info "项目根目录: $PROJECT_ROOT"
     
     check_dependencies
     
-    # 设置工作目录
-    BUILD_DIR=$(setup_directories)
-    info "构建目录: $PROJECT_ROOT/$BUILD_DIR"
+
+    info "构建目录:  $BUILD_DIR"
     
     # 执行构建步骤
     download_kernel
