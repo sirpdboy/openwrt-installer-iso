@@ -44,8 +44,8 @@ jobs:
       run: |
         cd iso_root/kernel
         # 使用Alpine Linux的小内核
-        wget -q -O vmlinuz https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/boot/vmlinuz-lts
-        wget -q -O initrd.img https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/boot/initramfs-lts
+        wget -q -O vmlinuz https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts
+        wget -q -O initrd.img https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/initramfs-lts
         echo "Kernel files downloaded:"
         ls -lh
         
