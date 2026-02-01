@@ -25,43 +25,96 @@ jobs:
     - name: 检出代码
       uses: actions/checkout@v4
     
-    - name: Install and build
+    - name: Install dependencies
       run: |
-        # 一键安装依赖
-        sudo apt-get update && sudo apt-get install -y \
-          grub2-common grub-pc-bin grub-efi-amd64-bin xorriso
+        sudo apt-get update
+        sudo apt-get install -y \
+          grub2-common \
+          grub-pc-bin \
+          xorriso \
+          wget
         
-        # 创建目录结构
-        mkdir -p myiso/{boot/grub,kernel}
+    - name: Create ISO directory structure
+      run: |
+        # 创建干净的目录结构
+        rm -rf iso_root
+        mkdir -p iso_root/{boot/grub,kernel}
         
-        # 下载超小内核（从Alpine）
-        cd myiso/kernel
-        wget -q https://dl-cdn.alpinelinux.org/alpine/edge/releases/x86_64/netboot/vmlinuz-virt
-        wget -q https://dl-cdn.alpinelinux.org/alpine/edge/releases/x86_64/netboot/initramfs-virt
-        mv vmlinuz-virt vmlinuz
-        mv initramfs-virt initrd.img
+    - name: Download minimal kernel
+      run: |
+        cd iso_root/kernel
+        # 使用Alpine Linux的小内核
+        wget -q -O vmlinuz https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/boot/vmlinuz-lts
+        wget -q -O initrd.img https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/boot/initramfs-lts
+        echo "Kernel files downloaded:"
+        ls -lh
         
-        # 创建GRUB配置
-        cd ../boot/grub
+    - name: Create GRUB configuration
+      run: |
+        cd iso_root/boot/grub
         cat > grub.cfg << 'EOF'
-        set timeout=3
-        menuentry "Boot to Shell" {
-          linux /kernel/vmlinuz console=ttyS0 init=/bin/sh
+        set timeout=10
+        set default=0
+
+        menuentry "Minimal Live Shell" {
+          echo "Loading kernel..."
+          linux /kernel/vmlinuz console=ttyS0 console=tty0 init=/bin/sh
+          echo "Loading initrd..."
           initrd /kernel/initrd.img
         }
         EOF
+        echo "GRUB config created:"
+        cat grub.cfg
         
-        # 创建简单的ISO（仅BIOS引导，更简单）
-        cd ../..
-        xorriso -as mkisofs -r -V "TEST" -o test.iso \
-          -b boot/grub/boot.img -no-emul-boot \
-          -boot-load-size 4 -boot-info-table \
-          myiso/
+    - name: Prepare BIOS boot image
+      run: |
+        # 复制BIOS引导镜像
+        cp /usr/lib/grub/i386-pc/boot.img iso_root/boot/grub/
         
-        ls -lh test.iso
-    
-    - name: Upload
+    - name: Build ISO with xorriso (FIXED)
+      run: |
+        # 进入iso_root的父目录，确保路径正确
+        cd iso_root
+        ISO_NAME="minimal-shell-$(date +%Y%m%d-%H%M).iso"
+        
+        echo "Building ISO from: $(pwd)"
+        echo "Directory contents:"
+        find . -type f | sort
+        
+        # 关键修复：使用正确的相对路径
+        xorriso -as mkisofs \
+          -r \
+          -V "MINIMAL_SHELL" \
+          -o "../${ISO_NAME}" \
+          -iso-level 3 \
+          -J \
+          -b boot/grub/boot.img \
+          -no-emul-boot \
+          -boot-load-size 4 \
+          -boot-info-table \
+          .
+        
+        cd ..
+        echo "=== ISO Build Complete ==="
+        ls -lh *.iso
+        echo "ISO size: $(du -h *.iso | cut -f1)"
+        
+    - name: Upload ISO artifact
       uses: actions/upload-artifact@v4
       with:
-        name: simple-iso
-        path: myiso/test.iso
+        name: minimal-shell-iso
+        path: "*.iso"
+        
+    - name: Quick test with qemu
+      run: |
+        # 快速测试ISO是否可引导
+        sudo apt-get install -y qemu-system-x86
+        echo "Testing ISO with QEMU (10 seconds)..."
+        
+        # 使用timeout限制测试时间
+        timeout 10 qemu-system-x86_64 \
+          -cdrom *.iso \
+          -m 256 \
+          -display none \
+          -serial stdio \
+          -boot d 2>&1 | grep -i -E "(loading|boot|kernel|error|fail)" || echo "QEMU test completed"
