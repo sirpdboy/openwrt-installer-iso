@@ -19,7 +19,7 @@ env:
 
 jobs:
   build-iso:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     
     steps:
     - name: Checkout code
@@ -49,7 +49,7 @@ jobs:
         # 标准目录结构
         mkdir -p boot/grub
         mkdir -p kernel
-        mkdir -p live 
+        mkdir -p live
         
         echo "Directory structure created"
         
@@ -62,7 +62,7 @@ jobs:
         wget -q -O vmlinuz "https://cloud-images.ubuntu.com/minimal/releases/jammy/release/unpacked/ubuntu-22.04-minimal-cloudimg-amd64-vmlinuz-generic"
         
         echo "Downloading initrd..."
-        wget -q -O initrd.img "https://cloud-images.ubuntu.com/minimal/releases/jammy/release/unpacked/ubuntu-22.04-minimal-cloudimg-amd64-initrd-generic"
+        wget -q -O initrd.img "https://cloud-images.ubuntu.com/minimal/releases/jammy/release/unpacked/ubuntu-22.04-minimal-cloudimg-amd64-vmlinuz-generic"
         
         # 如果下载失败，使用备用链接
         if [ ! -s vmlinuz ]; then
