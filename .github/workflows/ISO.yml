@@ -203,23 +203,20 @@ jobs:
         
         echo "Building ISO with proper boot configuration..."
         echo "Current directory: $(pwd)"
-        
-	    xorriso -as mkisofs \
-	    -iso-level 3 \
-	    -volid "MINIMAL_LIVE" \
-	    -rock \
-	    -joliet \
-	    -b boot/grub/boot.img \
-	    -no-emul-boot \
-	    -boot-load-size 4 \
-	    -boot-info-table \
-	    -eltorito-alt-boot \
-	    -e efi/boot/bootx64.efi \
-	    -no-emul-boot \
-            -o "../${ISO_NAME}" \
-	    .
+        xorriso -as mkisofs \
+        -iso-level 3 \
+        -volid "MINIMAL_LIVE" \
+        -rock \
+        -joliet \
+        -b boot/grub/boot.img \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
+        -eltorito-alt-boot \
+        -e efi/boot/bootx64.efi \
+        -no-emul-boot \
+        -o "../${ISO_NAME}" 
 
-        
         cd ..
         
         echo "=== ISO Build Complete ==="
