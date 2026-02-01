@@ -1,203 +1,57 @@
 name: Build-Alpine-ISO3
 
 on:
-  push:
-    branches: [ main, master ]
-    paths:
-      - './scripts/docker-build3.sh'
-      - '.github/workflows/Build-Alpine-ISO3.yml'
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
-    inputs:
-      openwrt_image_url:
-        description: 'OpenWRT镜像URL'
-        required: true
-        default: 'https://downloads.openwrt.org/releases/23.05.0/targets/x86/64/openwrt-23.05.0-x86-64-generic-ext4-combined.img.gz'
-      alpine_version:
-        description: 'Alpine版本'
-        required: true
-        default: '3.20'
-      iso_filename:
-        description: '输出ISO文件名'
-        required: false
-        default: 'openwrt-alpine-installer.iso'
-
-env:
-  ALPINE_VERSION: ${{ github.event.inputs.alpine_version || '3.20' }}
-  ISO_FILENAME: ${{ github.event.inputs.iso_filename || 'openwrt-alpine-installer.iso' }}
+  push:
+    branches: [ main ]
+    paths:
+      - 'scripts/docker-build3.sh'
+      - '.github/workflows/Build-Alpine-ISO3.yml'
 
 jobs:
-  build-iso:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-22.04
     
     steps:
-    - name: 检出代码
+    - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        persist-credentials: false
         
-    - name: 设置执行权限
-      run: chmod +x scripts/*.sh
-      
-    - name: 下载OpenWRT镜像
-      id: download
-      run: |
-        echo "下载OpenWRT镜像..."
-        
-        # 创建下载目录
-        mkdir -p downloads
-        cd downloads
-        echo "当前目录: $(pwd)"
-        
-        OPENWRT_URL="${{ github.event.inputs.openwrt_image_url }}"
-        OUTPUT_IMG="openwrt.img"
-        # 方法1: 尝试下载最新版本
-        REPO="sirpdboy/openwrt"
-        echo "获取最新版本..."
-        # 获取最新版本
-        LATEST_RELEASE=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.tag_name // empty')
-        if [ -z "$LATEST_RELEASE" ]; then
-            echo "无法获取最新版本，使用硬编码版本"
-            LATEST_RELEASE="v2026.01.01"
-        fi
-        echo "最新版本: $LATEST_RELEASE"
-        # 获取下载URL
-        DOWNLOAD_URLS=$(curl -sL "https://api.github.com/repos/$REPO/releases/tags/$LATEST_RELEASE" | \
-              jq -r '.assets[] | select(.name | endswith("img.gz")) | .browser_download_url' 2>/dev/null || echo "")
-        if [ -z "$DOWNLOAD_URLS" ]; then
-            echo "无法获取下载URL，使用备用方法"
-            # 备用URL
-            DOWNLOAD_URLS="https://github.com/sirpdboy/openwrt/releases/download/v2024.09.01/2024.09.01-x86-64-generic-squashfs-combined.img.gz"
-        fi
-        
-        OPENWRT_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
-        
-        # 尝试下载
-        if wget -q -O "$OUTPUT_IMG.gz" "$OPENWRT_URL"; then
-            echo "✅ 下载成功: $(du -h "$OUTPUT_IMG.gz" | cut -f1)"
-            
-            # 尝试解压
-            if gzip -t "$OUTPUT_IMG.gz" 2>/dev/null; then
-                echo "检测到gzip压缩格式，正在解压..."
-                gzip -d "$OUTPUT_IMG.gz"
-                echo "解压成功"
-            else
-                echo "不是gzip格式，直接使用"
-                mv "$OUTPUT_IMG.gz" "$OUTPUT_IMG"
-            fi
-            
-            if [ -f "$OUTPUT_IMG" ]; then
-                IMG_ABS_PATH="$(pwd)/$OUTPUT_IMG"
-                echo "镜像位置: $IMG_ABS_PATH"
-                echo "镜像大小: $(du -h "$IMG_ABS_PATH" | cut -f1)"
-                echo "img_path=$IMG_ABS_PATH" >> $GITHUB_OUTPUT
-            else
-                echo "❌ 镜像文件不存在"
-                exit 1
-            fi
-        else
-            echo "❌ 下载失败"
-            # 创建测试文件
-            dd if=/dev/zero of="$OUTPUT_IMG" bs=1M count=10
-            IMG_ABS_PATH="$(pwd)/$OUTPUT_IMG"
-            echo "创建测试文件: $IMG_ABS_PATH"
-            echo "img_path=$IMG_ABS_PATH" >> $GITHUB_OUTPUT
-        fi
-    - name: Set up QEMU for cross-platform builds
+    - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          qemu-system-x86 \
-          qemu-utils \
-          cloud-image-utils
-    
-    - name: Install build dependencies
-      run: |
-        sudo apt-get install -y \
-          wget \
-          tar \
-          gzip \
+          grub2-common \
+          grub-pc-bin \
+          grub-efi-amd64-bin \
           xorriso \
-          syslinux-common \
-          isolinux \
           mtools \
           dosfstools \
-          grub-efi-amd64-bin \
-          grub-pc-bin \
-          squashfs-tools \
-          cpio \
-          rsync \
-          e2fsprogs
+          wget
         
-    - name: 运行构建脚本
+    - name: Make script executable
       run: |
-        echo "开始构建ISO..."
+        chmod +x scripts/docker-build3.sh
         
-        mkdir -p output
-        
-        # 运行构建脚本
-        sudo ./scripts/docker-build3.sh \
-          "${{ steps.download.outputs.img_path }}" \
-          "$(pwd)/output/${{ env.ISO_FILENAME }}" \
-          "${{ env.ALPINE_VERSION }}"
-        
-    - name: 检查构建结果
+    - name: Build ISO
       run: |
-        echo "检查构建结果..."
-        ISO_FILE="output/${{ env.ISO_FILENAME }}"
+        cd scripts
+        ./docker-build3.sh
         
-        if [ -f "$ISO_FILE" ]; then
-            echo "✅ ISO构建成功!"
-            echo "文件: $ISO_FILE"
-            echo "大小: $(du -h "$ISO_FILE" | cut -f1)"
-            
-            # 验证ISO
-            if command -v file >/dev/null 2>&1; then
-                echo "文件类型:"
-                file "$ISO_FILE"
-            fi
-        else
-            echo "❌ ISO构建失败"
-            exit 1
-        fi
-        
-    - name: 上传ISO制品
+    - name: Upload ISO artifact
       uses: actions/upload-artifact@v4
       with:
-        name: openwrt-installer-iso
-        path: output/${{ env.ISO_FILENAME }}
-        retention-days: 30
+        name: minimal-live-iso
+        path: |
+          minimal-live-*.iso
+        retention-days: 7
         
-    - name: 创建GitHub Release
-      if: success()
-      uses: softprops/action-gh-release@v1
-      with:
-        files: output/${{ env.ISO_FILENAME }}
-        tag_name: openwrt-${{ env.ALPINE_VERSION }}-$(date +%Y%m%d)
-        name: "OpenWRT Alpine Installer v${{ env.ALPINE_VERSION }}"
-        body: |
-          # OpenWRT Alpine Installer
-          
-          ## 构建信息
-          - **Alpine版本**: ${{ env.ALPINE_VERSION }}
-          - **构建时间**: $(date)
-          - **OpenWRT源**: ${{ github.event.inputs.openwrt_image_url }}
-          
-          ## 使用说明
-          
-          1. **制作启动U盘**:
-             ```bash
-             dd if=${{ env.ISO_FILENAME }} of=/dev/sdX bs=4M status=progress
-             ```
-          
-          2. **从U盘启动计算机**
-          
-          3. **在启动菜单中选择安装选项**
-          
-          4. **按照屏幕提示完成安装**
-          
-          ## 文件信息
-          
-          文件: ${{ env.ISO_FILENAME }}
-          大小: $(du -h output/${{ env.ISO_FILENAME }} | cut -f1)
-        draft: false
-        prerelease: false
+    - name: Display build info
+      run: |
+        echo "=== 构建完成 ==="
+        echo "生成的ISO文件:"
+        ls -lh minimal-live-*.iso
+        echo ""
+        echo "文件详细信息:"
+        file minimal-live-*.iso
