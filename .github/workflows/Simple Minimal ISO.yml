@@ -27,12 +27,12 @@ jobs:
         # 创建GRUB配置
         cd ../boot/grub
         cat > grub.cfg << 'EOF'
-set timeout=3
-menuentry "Boot to Shell" {
-  linux /kernel/vmlinuz console=ttyS0 init=/bin/sh
-  initrd /kernel/initrd.img
-}
-EOF
+        set timeout=3
+        menuentry "Boot to Shell" {
+          linux /kernel/vmlinuz console=ttyS0 init=/bin/sh
+          initrd /kernel/initrd.img
+        }
+        EOF
         
         # 创建简单的ISO（仅BIOS引导，更简单）
         cd ../..
