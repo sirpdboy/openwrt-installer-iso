@@ -50,8 +50,8 @@ jobs:
         
         # 下载Alpine Linux内核
         cd kernel
-        wget -q -O vmlinuz https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/boot/vmlinuz-lts
-        wget -q -O initrd.img https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/boot/initramfs-lts
+        wget -q -O vmlinuz https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts
+        wget -q -O initrd.img https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/initramfs-lts
         cd ..
         
         echo "Kernel files:"
