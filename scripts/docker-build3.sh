@@ -48,21 +48,17 @@ setup_directories() {
 # 下载内核
 download_kernel() {
     info "下载内核文件..."
-    cd $PROJECT_ROOT/$BUILD_DIR
-    KERNEL_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot-3.18.9/vmlinuz-lts"
-    INITRD_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot-3.18.9/initramfs-lts"
+    cd "$PROJECT_ROOT"
+    # KERNEL_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts"
+    # INITRD_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/initramfs-lts"
     
-    # 下载内核
-    if ! wget -q -O kernel/vmlinuz "$KERNEL_URL"; then
-        error "下载内核失败"
-        exit 1
-    fi
+    mkdir -p boot/grub kernel
+        
+        # 下载Alpine Linux内核
+        cd kernel
+        wget -q -O vmlinuz https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts
+        wget -q -O initrd.img https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/initramfs-lts
     
-    # 下载initrd
-    if ! wget -q -O kernel/initrd.img "$INITRD_URL"; then
-        error "下载initrd失败"
-        exit 1
-    fi
     
     info "内核文件下载完成:"
     echo "  vmlinuz: $(du -h kernel/vmlinuz | cut -f1)"
