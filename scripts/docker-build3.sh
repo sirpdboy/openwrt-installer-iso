@@ -30,7 +30,7 @@ check_dependencies() {
 
 setup_directories() {
     info "设置目录结构..."
-    
+    cd $PROJECT_ROOT
     # 使用时间戳创建唯一目录名
     TIMESTAMP=$(date +%s)
     BUILD_DIR="iso_build_${TIMESTAMP}"
@@ -48,9 +48,9 @@ setup_directories() {
 # 下载内核
 download_kernel() {
     info "下载内核文件..."
-    
-    KERNEL_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts"
-    INITRD_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/initramfs-lts"
+    cd $PROJECT_ROOT/$BUILD_DIR
+    KERNEL_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot-3.18.9/vmlinuz-lts"
+    INITRD_URL="https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot-3.18.9/initramfs-lts"
     
     # 下载内核
     if ! wget -q -O kernel/vmlinuz "$KERNEL_URL"; then
@@ -249,7 +249,7 @@ main() {
     
     # 设置工作目录
     BUILD_DIR=$(setup_directories)
-    info "构建目录: $BUILD_DIR"
+    info "构建目录: $PROJECT_ROOT/$BUILD_DIR"
     
     # 执行构建步骤
     download_kernel
