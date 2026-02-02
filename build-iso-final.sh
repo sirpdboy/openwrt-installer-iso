@@ -141,11 +141,58 @@ sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
-apt-get install -y parted openssh-server bash-completion cifs-utils curl dbus dosfstools firmware-linux-free gddrescue gdisk iputils-ping isc-dhcp-client less nfs-common ntfs-3g openssh-client open-vm-tools procps vim wimtools wget pv grub-efi-amd64-bin dialog whiptail
+apt-get install -y parted bash-completion cifs-utils dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common procps vim wimtools pv grub-efi-amd64-bin dialog whiptail
 
 # 清理包缓存
 apt-get clean
 
+# === 第二阶段：精简内核模块 ===
+echo "精简内核模块..."
+# 保留基本的内核模块
+KEEP_MODULES="
+ext4
+fat
+vfat
+isofs
+usb-storage
+usbhid
+uhci-hcd
+ehci-hcd
+ohci-hcd
+xhci-hcd
+sd_mod
+sr_mod
+cdrom
+ata_generic
+ata_piix
+ahci
+nvme
+scsi_mod
+sg
+dm-mod
+dm-crypt
+cryptd
+loop
+"
+
+# 清理不必要的内核模块
+mkdir -p /lib/modules-backup
+KERNEL_VERSION=$(ls /lib/modules/ | head -n1)
+MODULES_DIR="/lib/modules/${KERNEL_VERSION}/kernel"
+
+for dir in drivers/net/wireless drivers/media drivers/video drivers/gpu; do
+    rm -rf ${MODULES_DIR}/${dir} 2>/dev/null || true
+done
+# 保留网卡驱动 (最小化)
+for dir in drivers/net/ethernet/intel drivers/net/ethernet/realtek drivers/net/ethernet/broadcom; do
+    mkdir -p /lib/modules-backup/${dir}
+    mv ${MODULES_DIR}/${dir}/* /lib/modules-backup/${dir}/ 2>/dev/null || true
+done
+
+# 清理不常用的文件系统驱动
+for fs in cifs nfs nfsd afs ceph coda ecryptfs f2fs hfs hfsplus jffs2 minix nilfs2 omfs orangefs qnx4 qnx6 reiserfs romfs sysv ubifs udf ufs; do
+    rm -rf ${MODULES_DIR}/fs/${fs} 2>/dev/null || true
+done
 # 配置网络
 systemctl enable systemd-networkd
 
