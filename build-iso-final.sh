@@ -131,17 +131,45 @@ apt-get update
 apt-get -y install apt || true
 apt-get -y upgrade
 echo "Setting locale..."
-apt-get -y install locales \
+
+apt-get update
+apt-get install -y --no-install-recommends \
+    locales \
+    fonts-wqy-zenhei \
     fonts-wqy-microhei \
+    console-setup \
     console-data \
     keyboard-configuration
-    
-export LANG=zh_CN.UTF-8
-export LANGUAGE=zh_CN:zh
-export LC_ALL=zh_CN.UTF-8
 
+# 生成中文locale
 sed -i 's/# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen
-locale-gen zh_CN.UTF-8
+sed -i 's/# zh_CN.GBK GBK/zh_CN.GBK GBK/' /etc/locale.gen
+locale-gen
+
+# 设置默认locale
+update-locale LANG=zh_CN.UTF-8
+
+# 配置控制台
+cat > /etc/default/console-setup << 'CONSOLE'
+ACTIVE_CONSOLES="/dev/tty[1-6]"
+CHARMAP="UTF-8"
+CODESET="Uni2"
+FONTFACE="Fixed"
+FONTSIZE="8x16"
+VIDEOMODE=
+
+CONSOLE
+
+# 创建中文键盘映射
+cat > /etc/default/keyboard << 'KEYBOARD'
+XKBMODEL="pc105"
+XKBLAYOUT="cn"
+XKBVARIANT=""
+XKBOPTIONS=""
+
+KEYMAP="cn"
+
+KEYBOARD
 
  # sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 dpkg-reconfigure --frontend=noninteractive locales
@@ -152,15 +180,6 @@ apt-get install -y openssh-server bash-completion dbus dosfstools firmware-linux
 # 清理包缓存
 apt-get clean
 
-
-cat > /etc/default/console-setup << 'EOF'
-ACTIVE_CONSOLES="/dev/tty[1-6]"
-CHARMAP="UTF-8"
-CODESET="Uni2"
-FONTFACE="Fixed"
-FONTSIZE="8x16"
-VIDEOMODE=
-EOF
 # 配置网络
 systemctl enable systemd-networkd
 
