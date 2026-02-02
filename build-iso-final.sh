@@ -82,7 +82,7 @@ log_success "OpenWRT镜像已复制 (${OPENWRT_SIZE} bytes)"
 log_info "引导极简Debian系统（修复版）..."
 
 # 先尝试官方源
-DEBIAN_MIRROR="http://deb.debian.org/debian"
+DEBIAN_MIRROR="http://archive.debian.org/debian"
 
 # 使用更小的包列表
 DEBOOTSTRAP_PACKAGES="locales,linux-image-amd64,live-boot,systemd-sysv,parted,ssh"
