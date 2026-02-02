@@ -140,6 +140,7 @@ apt-get -y install locales \
     fonts-wqy-microhei \
     console-data \
     keyboard-configuration
+    
 sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
@@ -148,9 +149,15 @@ apt-get install -y openssh-server bash-completion dbus dosfstools firmware-linux
 
 # 清理包缓存
 apt-get clean
+cat > /etc/default/console-setup << 'EOF'
+ACTIVE_CONSOLES="/dev/tty[1-6]"
+CHARMAP="UTF-8"
+CODESET="Uni2"
+FONTFACE="Fixed"
+FONTSIZE="8x16"
+VIDEOMODE=
+EOF
 
-# === 第二阶段：精简内核模块 ===
-echo "精简内核模块..."
 # 保留基本的内核模块
 KEEP_MODULES="
 ext4
@@ -395,7 +402,7 @@ echo -e "\n═══════════════════════
 
 while true; do
     read -p "输入 'YES' 确认 / 'NO' 取消: " CONFIRM
-    
+    echo "5Lit5paH" | base64 -d
     case $CONFIRM in
         YES|yes|Y|y)
             echo -e "\nProceeding with installation...\n"
@@ -599,7 +606,6 @@ chroot "$CHROOT_DIR" /install-chroot.sh 2>&1
 rm -f "$CHROOT_DIR/install-chroot.sh"
 
 # === 第六阶段：额外的精简步骤 ===
-log_info "执行额外精简..."
 
 # 1. 清理chroot中的缓存和临时文件
 chroot "${CHROOT_DIR}" /bin/bash -c "
