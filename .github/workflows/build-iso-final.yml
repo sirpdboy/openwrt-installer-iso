@@ -5,8 +5,8 @@ on:
   push:
     branches: [ main, master ]
     paths:
-      - 'build-iso.sh'
-      - '.github/workflows/build-iso.yml'
+      - 'build-iso-final.sh'
+      - '.github/workflows/build-iso-final.yml'
   workflow_dispatch:
     inputs:
       alpine_version:
@@ -95,10 +95,7 @@ jobs:
         chmod 777 output
     - name: Build ISO with proper rootfs
       run: |
-        # 1. 确保脚本有权限
         chmod +x build-iso-final.sh
-    
-        # 2. 复制脚本到容器内执行
         docker run --privileged --rm \
         -v $(pwd)/output:/output \
         -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
@@ -109,8 +106,7 @@ jobs:
         echo 'deb http://archive.debian.org/debian buster main' > /etc/apt/sources.list
         echo 'Acquire::Check-Valid-Until \"false\";' > /etc/apt/apt.conf.d/99no-check-valid-until
         echo 'APT::Get::AllowUnauthenticated \"true\";' >> /etc/apt/apt.conf.d/99no-check-valid-until
-      
-        # 安装必要工具
+
         apt-get update
         apt-get install -y --allow-unauthenticated \
         debootstrap squashfs-tools xorriso isolinux syslinux-efi \
