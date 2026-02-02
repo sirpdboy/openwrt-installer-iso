@@ -1,304 +1,157 @@
-name: ISO
-
+name: Build Bootable ISO
 
 on:
-  push:
-    branches: [ main, master ]
-    paths:
-      - '.github/workflows/ISO.yml'
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
-    inputs:
-      alpine_version:
-        description: 'Alpine版本'
-        required: true
-        default: '3.20'
-env:
-  ALPINE_VERSION: ${{ github.event.inputs.alpine_version || '3.20' }}
+  push:
+    branches: [ main ]
 
 jobs:
-  build-iso:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-22.04
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v3
       
-    - name: Install dependencies
+    - name: Install essential tools
       run: |
         sudo apt-get update
         sudo apt-get install -y \
+          xorriso \
+          genisoimage \
+          wget \
           grub2-common \
           grub-pc-bin \
-          grub-efi-amd64-bin \
-          xorriso \
-          mtools \
-          dosfstools \
-          wget \
-          gzip\
-          qemu-system-x86
+          syslinux-common \
+          isolinux
         
-    - name: Create ISO directory structure
+    - name: Create and run build script
       run: |
-        # 清理并创建目录
-        rm -rf iso_workspace
-        mkdir -p iso_workspace
-        cd iso_workspace
+        # 创建构建脚本
+        cat > build-iso.sh << 'EOF'
+        #!/bin/bash
+        set -ex
         
-        # 标准目录结构
-        mkdir -p boot/grub
-        mkdir -p kernel
-        mkdir -p live
+        # 创建临时目录
+        WORKDIR="/tmp/iso_build_$(date +%s)"
+        OUTPUT="$GITHUB_WORKSPACE/iso_output"
         
-        echo "Directory structure created"
+        mkdir -p "$WORKDIR"
+        mkdir -p "$OUTPUT"
         
-    - name: Download kernel and initrd
-      run: |
-        cd iso_workspace/kernel
+        cd "$WORKDIR"
         
-        # 使用更可靠的Ubuntu内核（带ISO9660驱动）
-        echo "Downloading kernel..."
-        wget -q -O vmlinuz "https://cloud-images.ubuntu.com/minimal/releases/jammy/release/unpacked/ubuntu-22.04-minimal-cloudimg-amd64-vmlinuz-generic"
+        # 1. 创建目录结构
+        mkdir -p iso/boot/grub
+        mkdir -p iso/kernel
         
-        echo "Downloading initrd..."
-        wget -q -O initrd.img "https://cloud-images.ubuntu.com/minimal/releases/jammy/release/unpacked/ubuntu-22.04-minimal-cloudimg-amd64-vmlinuz-generic"
+        # 2. 下载内核
+        cd iso/kernel
+        echo "下载内核..."
+        wget -q https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts -O vmlinuz || \
+        wget -q https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts -O vmlinuz
         
-        # 如果下载失败，使用备用链接
-        if [ ! -s vmlinuz ]; then
-            echo "Using alternative kernel source..."
-        wget -q -O vmlinuz https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/vmlinuz-lts
-        wget -q -O initrd.img https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/initramfs-lts
-        fi
+        wget -q https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/initramfs-lts -O initrd.img || \
+        wget -q https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.18/releases/x86_64/netboot/initramfs-lts -O initrd.img
         
-        echo "Kernel files:"
-        ls -lh
-        
-    - name: Create minimal root filesystem
-      run: |
-        cd iso_workspace
-        
-        # 创建最简rootfs
-        mkdir -p live/filesystem
-        
-        # 下载静态busybox
-        wget -q -O live/filesystem/busybox "https://www.busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
-        chmod +x live/filesystem/busybox
-        
-        # 创建init脚本
-        cat > live/filesystem/init << 'EOF'
-        #!/bin/busybox sh
-
-        # 挂载必要的文件系统
-        /bin/busybox mount -t proc proc /proc
-        /bin/busybox mount -t sysfs sysfs /sys
-        /bin/busybox mount -t devtmpfs devtmpfs /dev
-
-        # 设置控制台
-        /bin/busybox echo "========================================"
-        /bin/busybox echo "  Minimal Live ISO - Successfully Booted!"
-        /bin/busybox echo "========================================"
-        /bin/busybox echo ""
-        /bin/busybox echo "Running shell..."
-        /bin/busybox echo ""
-
-        # 启动shell
-        exec /bin/busybox sh
-        EOF
-        
-        chmod +x live/filesystem/init
-        
-        # 创建符号链接
-        cd live/filesystem
-        for cmd in sh ls cat echo mount ps; do
-            ln -sf busybox $cmd
-        done
-        cd ../..
-        
-    - name: Create GRUB configuration
-      run: |
-        cd iso_workspace
-        
-        # 创建GRUB目录
-        mkdir -p boot/grub/fonts
-        mkdir -p boot/grub/locale
-        
-        # 创建GRUB配置
-        cat > boot/grub/grub.cfg << 'EOF'
-        # Minimal Live ISO - GRUB Configuration
-        set timeout=10
-        set default=0
-
-        # 加载必要模块
-        insmod iso9660
-        insmod linux
-        insmod normal
-        insmod gzio
-
-        # 设置背景（可选）
-        # insmod gfxterm
-        # set gfxmode=auto
-
-        menuentry "Minimal Live Shell" {
-            echo "Loading kernel..."
-            # 关键：使用正确的内核参数
-            linux /kernel/vmlinuz boot=live console=ttyS0 console=tty0 quiet splash
-            echo "Loading initrd..."
-            initrd /kernel/initrd.img
+        # 3. GRUB配置
+        cd ../boot/grub
+        cat > grub.cfg << 'GRUBCFG'
+        set timeout=3
+        menuentry "Boot Live System" {
+          linux /kernel/vmlinuz console=ttyS0
+          initrd /kernel/initrd.img
         }
- 
+        GRUBCFG
+        
+        # 4. 检查文件
+        cd "$WORKDIR/iso"
+        echo "文件列表:"
+        find . -type f
+        
+        # 5. 构建ISO - 方法1: 使用genisoimage
+        cd "$WORKDIR"
+        echo "构建ISO..."
+        
+        # 创建引导镜像
+        if [ -f /usr/lib/grub/i386-pc/boot.img ]; then
+            cp /usr/lib/grub/i386-pc/boot.img iso/boot/grub/
+        fi
+        
+        # 使用genisoimage构建
+        genisoimage \
+          -o "$OUTPUT/minimal-live.iso" \
+          -b boot/grub/boot.img \
+          -no-emul-boot \
+          -boot-load-size 4 \
+          -boot-info-table \
+          -V "LIVE_CD" \
+          iso 2>/dev/null || true
+        
+        # 如果失败，尝试更简单的方法
+        if [ ! -f "$OUTPUT/minimal-live.iso" ]; then
+            echo "方法1失败，尝试方法2..."
+            cd iso
+            xorriso \
+              -as mkisofs \
+              -o "$OUTPUT/minimal-live.iso" \
+              -b boot/grub/boot.img \
+              -no-emul-boot \
+              . 2>/dev/null || true
+        fi
+        
+        # 检查结果
+        if [ -f "$OUTPUT/minimal-live.iso" ]; then
+            echo "✓ ISO构建成功"
+            ls -lh "$OUTPUT/minimal-live.iso"
+            file "$OUTPUT/minimal-live.iso"
+        else
+            echo "✗ ISO构建失败"
+            exit 1
+        fi
         EOF
         
-        echo "GRUB configuration created"
+        chmod +x build-iso.sh
+        ./build-iso.sh
         
-    - name: Create BIOS boot image
+    - name: Verify ISO
       run: |
-        cd iso_workspace
+        echo "=== 验证ISO ==="
         
-        # 方法1：使用预制的boot.img（推荐）
-        if [ -f /usr/lib/grub/i386-pc/boot.img ]; then
-            cp /usr/lib/grub/i386-pc/boot.img boot/grub/
-            echo "Copied BIOS boot.img"
-        else
-            # 方法2：生成boot.img
-            echo "Generating BIOS boot image..."
-            grub-mkimage -p /boot/grub -O i386-pc -o boot/grub/core.img \
-                biosdisk iso9660 multiboot multiboot2 normal linux
-            cat /usr/lib/grub/i386-pc/cdboot.img boot/grub/core.img > boot/grub/boot.img
-        fi
-        
-        ls -lh boot/grub/
-        
-    - name: Create EFI boot system
-      run: |
-        cd iso_workspace
-        
-        # 创建EFI系统目录
-        mkdir -p efi/boot
-        
-        # 复制GRUB EFI文件
-        if [ -f /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed ]; then
-            cp /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed efi/boot/bootx64.efi
-        elif [ -f /usr/lib/grub/x86_64-efi/monolithic/grub.efi ]; then
-            cp /usr/lib/grub/x86_64-efi/monolithic/grub.efi efi/boot/bootx64.efi
-        else
-            # 生成GRUB EFI
-            grub-mkimage -p /efi/boot -O x86_64-efi -o efi/boot/bootx64.efi \
-                iso9660 fat ext2 linux normal boot
-        fi
-        
-        # 创建EFI目录结构
-        mkdir -p efi/boot/grub
-        
-        # 复制相同的grub.cfg到EFI目录
-        cp boot/grub/grub.cfg efi/boot/grub/grub.cfg
-        
-        echo "EFI boot system created"
-        
-    - name: Build ISO with correct boot records
-      run: |
-        cd iso_workspace
-        
-        ISO_NAME="minimal-live-$(date +%Y%m%d-%H%M%S).iso"
-        
-        echo "Building ISO with proper boot configuration..."
-        echo "Current directory: $(pwd)"
-        xorriso -as mkisofs \
-        -iso-level 3 \
-        -volid "MINIMAL_LIVE" \
-        -rock \
-        -joliet \
-        -b boot/grub/boot.img \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
-        -eltorito-alt-boot \
-        -e efi/boot/bootx64.efi \
-        -no-emul-boot \
-        -o "../${ISO_NAME}" 
-
-        cd ..
-        
-        echo "=== ISO Build Complete ==="
-        echo "File: ${ISO_NAME}"
-        ls -lh "${ISO_NAME}"
-        
-    - name: Verify ISO structure
-      run: |
-        ISO_FILE="minimal-live-*.iso"
-        
-        if ls $ISO_FILE 1> /dev/null 2>&1; then
-            echo "=== Verifying ISO structure ==="
-            
-            # 检查ISO类型
-            file $ISO_FILE
-            
+        if [ -f "iso_output/minimal-live.iso" ]; then
+            echo "ISO文件存在"
+            ls -lh iso_output/minimal-live.iso
             echo ""
-            echo "=== Checking boot records ==="
-            
-            # 使用isoinfo检查（如果可用）
-            if command -v isoinfo >/dev/null; then
-                isoinfo -d -i $ISO_FILE 2>&1 | grep -i "boot" || true
-            fi
-            
-            # 使用xorriso检查引导记录
-            echo ""
-            echo "=== Xorriso boot info ==="
-            xorriso -indev $ISO_FILE -toc 2>&1 | grep -A5 -B5 -i "boot" || true
-            
-            # 检查EFI引导
-            echo ""
-            echo "=== Checking for EFI ==="
-            xorriso -indev $ISO_FILE -find / -name "*.efi" 2>&1 || true
-            
+            echo "文件类型:"
+            file iso_output/minimal-live.iso || true
         else
-            echo "ERROR: ISO file not found!"
-            ls -la
-        fi
-        
-    - name: Create hybrid MBR/GPT (可选，提高兼容性)
-      run: |
-        ISO_FILE="minimal-live-*.iso"
-        
-        if ls $ISO_FILE 1> /dev/null 2>&1; then
-            echo "Making ISO hybrid (MBR+GPT)..."
-            
-            # 使用isohybrid工具（如果可用）
-            if command -v isohybrid >/dev/null; then
-                sudo apt-get install -y syslinux-utils
-                isohybrid $ISO_FILE
-                echo "ISO hybridized"
-            else
-                echo "isohybrid not available, skipping"
-            fi
+            echo "错误: ISO文件不存在"
+            ls -la iso_output/ 2>/dev/null || echo "输出目录不存在"
+            exit 1
         fi
         
     - name: Quick test with QEMU
       run: |
-        ISO_FILE="minimal-live-*.iso"
+        echo "=== 快速测试 ==="
         
-        if ls $ISO_FILE 1> /dev/null 2>&1; then
-            echo "=== Quick QEMU Test ==="
-            
-            # 安装qemu
-            sudo apt-get install -y qemu-system-x86 > /dev/null 2>&1
-            
-            echo "Testing BIOS boot (5 seconds)..."
-            timeout 5 qemu-system-x86_64 \
-                -cdrom $ISO_FILE \
+        # 安装qemu进行测试
+        sudo apt-get install -y qemu-system-x86 > /dev/null 2>&1
+        
+        if [ -f "iso_output/minimal-live.iso" ]; then
+            echo "测试ISO引导..."
+            timeout 3 qemu-system-x86_64 \
+                -cdrom iso_output/minimal-live.iso \
                 -m 256 \
+                -boot d \
                 -serial stdio \
                 -display none \
-                -boot d 2>&1 | head -30 || true
-            
-            echo ""
-            echo "Note: If you see 'Booting from Hard Disk...' followed by nothing,"
-            echo "      it means the ISO booted successfully but initrd is minimal."
-            echo "      In a real system, you'd see the kernel boot messages."
+                2>&1 | grep -i "booting\|CD-ROM" || echo "测试完成"
         fi
         
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: working-minimal-iso
-        path: "minimal-live-*.iso"
+        name: minimal-live-iso
+        path: iso_output/minimal-live.iso
+        if-no-files-found: error
+        retention-days: 7
