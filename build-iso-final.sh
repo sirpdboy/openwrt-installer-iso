@@ -166,6 +166,8 @@ apt-get install -y --no-install-recommends \
     dosfstools \
     firmware-linux-free \
     gddrescue \
+    iputils-ping \
+    isc-dhcp-client \
     less \
     nfs-common \
 
