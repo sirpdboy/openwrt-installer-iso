@@ -5,8 +5,8 @@ on:
   push:
     branches: [ main, master ]
     paths:
-      - 'build-iso-final.sh'
-      - '.github/workflows/build-iso-final.yml'
+      - 'build-iso.sh'
+      - '.github/workflows/build-iso.yml'
   workflow_dispatch:
     inputs:
       alpine_version:
@@ -59,73 +59,36 @@ jobs:
         # 验证
         docker --version
         echo "✅ Docker安装成功"
-    
-    - name: 获取OpenWRT镜像
-      id: download
+
+    - name: Download OpenWRT image
       run: |
-        echo "下载OpenWRT镜像..."
-        
-        # 创建下载目录
         mkdir -p assets
-        cd assets
-        echo "当前目录: $(pwd)"
         
-        # OPENWRT_URL="${{ github.event.inputs.openwrt_image_url }}"
-        OUTPUT_IMG="ezopwrt.img"
-        # 方法1: 尝试下载最新版本
-        REPO="sirpdboy/openwrt"
-        echo "获取最新版本..."
-        # 获取最新版本
-        LATEST_RELEASE=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.tag_name // empty')
-        if [ -z "$LATEST_RELEASE" ]; then
-            echo "无法获取最新版本，使用硬编码版本"
-            LATEST_RELEASE="v202602011416-6.6.121-Vip_Super"
-        fi
-        echo "最新版本: $LATEST_RELEASE"
-        # 获取下载URL
-        DOWNLOAD_URLS=$(curl -sL "https://api.github.com/repos/$REPO/releases/tags/$LATEST_RELEASE" | \
-              jq -r '.assets[] | select(.name | endswith("img.gz")) | .browser_download_url' 2>/dev/null || echo "")
-        if [ -z "$DOWNLOAD_URLS" ]; then
-            echo "无法获取下载URL，使用备用方法"
-            # 备用URL
-            DOWNLOAD_URLS="https://github.com/sirpdboy/openwrt/releases/download/v2024.09.01/2024.09.01-x86-64-generic-squashfs-combined.img.gz"
-        fi
-        
-        OPENWRT_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
-        
-        # 尝试下载
-        if wget -q -O "$OUTPUT_IMG.gz" "$OPENWRT_URL"; then
-            echo "✅ 下载成功: $(du -h "$OUTPUT_IMG.gz" | cut -f1)"
-            
-            # 尝试解压
-            if gzip -t "$OUTPUT_IMG.gz" 2>/dev/null; then
-                echo "检测到gzip压缩格式，正在解压..."
-                gzip -d "$OUTPUT_IMG.gz"
-                echo "解压成功"
-            else
-                echo "不是gzip格式，直接使用"
-                mv "$OUTPUT_IMG.gz" "$OUTPUT_IMG"
-            fi
-            
-            if [ -f "$OUTPUT_IMG" ]; then
-                IMG_ABS_PATH="$(pwd)/$OUTPUT_IMG"
-                echo "镜像位置: $IMG_ABS_PATH"
-                echo "镜像大小: $(du -h "$IMG_ABS_PATH" | cut -f1)"
-                echo "img_path=$IMG_ABS_PATH" >> $GITHUB_OUTPUT
-            else
-                echo "❌ 镜像文件不存在"
-                exit 1
-            fi
+        # 使用你的下载脚本或直接下载
+        if [ -f scripts/download-image.sh ]; then
+          chmod +x scripts/download-image.sh
+          ./scripts/download-image.sh
         else
-            echo "❌ 下载失败"
-            # 创建测试文件
-            dd if=/dev/zero of="$OUTPUT_IMG" bs=1M count=10
-            IMG_ABS_PATH="$(pwd)/$OUTPUT_IMG"
-            echo "创建测试文件: $IMG_ABS_PATH"
-            echo "img_path=$IMG_ABS_PATH" >> $GITHUB_OUTPUT
+          echo "下载OpenWRT镜像..."
+          REPO="sirpdboy/openwrt"
+          TAG=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.tag_name // empty')
+          DOWNLOAD_URLS=$(curl -sL "https://api.github.com/repos/$REPO/releases/tags/$TAG" | \
+                jq -r '.assets[] | select(.name | endswith("img.gz")) | .browser_download_url')
+          FIRST_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
+          echo "下载: $FIRST_URL"
+          wget -q $FIRST_URL  -O assets/ezopwrt.img.gz
+           if [ ! -f "assets/ezopwrt.img.gz" ]; then
+             curl -L -o "$OUTPUT_FILE"  --progress-bar --retry 3 "$FIRST_URL" 
+           fi
+        
+           if [ $? -eq 0 ]; then
+               echo "✅ 下载完成"
+               gzip -d assets/ezopwrt.img.gz
+            fi
+            
         fi
-    
         echo "✅ 镜像大小: $(stat -c%s assets/ezopwrt.img | numfmt --to=iec)"
+
     - name: Create output directory
       run: |
         mkdir -p output
@@ -135,27 +98,35 @@ jobs:
             # 1. 确保脚本有权限
             chmod +x build-iso-final.sh
     
-            # 2. 复制脚本到容器内执行
-            docker run --privileged --rm \
-              -v $(pwd)/output:/output \
-              -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
-              -v $(pwd)/build-iso-final.sh:/build-iso.sh:ro \
-              debian:buster \
-              bash -c "
-              # 安装必要工具
-              apt-get update
-              apt-get install -y \
-                debootstrap squashfs-tools xorriso isolinux syslinux-efi \
-                grub-pc-bin grub-efi-amd64-bin mtools dosfstools parted wget curl
+        # 2. 复制脚本到容器内执行
+        docker run --privileged --rm \
+        -v $(pwd)/output:/output \
+        -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
+        -v $(pwd)/build-iso-final.sh:/build-iso.sh:ro \
+        debian:buster-slim \
+        bash -c "
+        # 配置archive源
+        echo 'deb http://archive.debian.org/debian buster main' > /etc/apt/sources.list
+        echo 'Acquire::Check-Valid-Until \"false\";' > /etc/apt/apt.conf.d/99no-check-valid-until
+        echo 'APT::Get::AllowUnauthenticated \"true\";' >> /etc/apt/apt.conf.d/99no-check-valid-until
+      
+        # 安装必要工具
+        apt-get update
+        apt-get install -y --allow-unauthenticated \
+        debootstrap squashfs-tools xorriso isolinux syslinux-efi \
+        grub-pc-bin grub-efi-amd64-bin mtools dosfstools parted wget curl
        
-              /build-iso.sh
-              "
+        /build-iso.sh
+        "
+
+
     - name: Upload ISO artifact
       uses: actions/upload-artifact@v4
       with:
         name: ezopwrt-installer
         path: output/*.iso
         retention-days: 30
+
     - name: Create GitHub Release (tag触发)
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v1
