@@ -120,7 +120,9 @@ else
         log_success "获取内核和initrd成功"
     fi
 fi
-
+log_info 内核vmlinuz大小：$(du -h "${WORK_DIR}/iso/boot/vmlinuz" 2>/dev/null | cut -f1)
+ls -l ${WORK_DIR}/iso/boot
+log_info 内核initrd大小：$(du -h "${WORK_DIR}/iso/boot/initrd" 2>/dev/null | cut -f1)
 # 创建最小化的根文件系统（基于busybox）
 log_info "创建最小化根文件系统..."
 mkdir -p "${WORK_DIR}/rootfs"
