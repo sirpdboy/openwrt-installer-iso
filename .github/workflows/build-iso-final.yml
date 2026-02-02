@@ -67,7 +67,7 @@ jobs:
         
         # 创建下载目录
         mkdir -p assets
-        cd downloads
+        cd assets
         echo "当前目录: $(pwd)"
         
         # OPENWRT_URL="${{ github.event.inputs.openwrt_image_url }}"
