@@ -122,7 +122,7 @@ cat > "${CHROOT_DIR}/install-chroot.sh" << 'CHROOT_EOF'
 # OpenWRT安装系统chroot配置脚本
 set -e
 
-echo "🔧 开始配置chroot环境..."
+echo "� 开始配置chroot环境..."
 
 # 设置非交互模式
 export DEBIAN_FRONTEND=noninteractive
@@ -643,12 +643,12 @@ if [ -f "$ISO_PATH" ]; then
     echo ""
     log_success "✅ ISO构建成功！"
     echo ""
-    echo "📊 构建信息："
+    echo "� 构建信息："
     echo "  文件: $ISO_PATH"
     echo "  大小: $ISO_SIZE"
     echo "  卷标: OPENWRT_INSTALL"
     echo ""
-    echo "🎉 构建完成！"
+    echo "� 构建完成！"
     echo ""
     echo "使用方法："
     echo "  1. 刻录到U盘: dd if=$ISO_NAME of=/dev/sdX bs=4M status=progress"
