@@ -48,7 +48,7 @@ echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check-
 # 安装必要工具
 log_info "安装构建工具..."
 apt-get update
-apt-get -y install \
+apt-get -y install --no-install-recommends \
     debootstrap \
     squashfs-tools \
     xorriso \
@@ -62,20 +62,9 @@ apt-get -y install \
     parted \
     wget \
     curl \
-    gnupg \
-    dialog \
     live-boot \
     live-boot-initramfs-tools \
-    git \
-    pv \
-    file \
-    gddrescue \
-    gdisk \
-    cifs-utils \
-    nfs-common \
-    ntfs-3g \
-    open-vm-tools \
-    wimtools
+    pv
 
 # 创建目录结构
 log_info "创建工作目录..."
@@ -99,6 +88,7 @@ fi
 log_info "引导Debian最小系统..."
 DEBIAN_MIRROR="http://archive.debian.org/debian"
 if debootstrap --arch=amd64 --variant=minbase \
+    --include=apt,apt-utils,locales \
     buster "${CHROOT_DIR}" \
     "${DEBIAN_MIRROR}" 2>&1 | tee /tmp/debootstrap.log; then
     log_success "Debian最小系统引导成功"
@@ -106,6 +96,7 @@ else
     log_warning "第一次引导失败，尝试备用源..."
     DEBIAN_MIRROR="http://deb.debian.org/debian"
     if debootstrap --arch=amd64 --variant=minbase \
+        --include=apt,apt-utils,locales \
         buster "${CHROOT_DIR}" \
         "${DEBIAN_MIRROR}" 2>&1 | tee -a /tmp/debootstrap.log; then
         log_success "备用源引导成功"
@@ -154,32 +145,22 @@ apt-get update
 
 echo "安装基本系统..."
 apt-get install -y --no-install-recommends \
-    apt \
-    locales \
     linux-image-amd64 \
     live-boot \
     systemd-sysv \
     parted \
-    openssh-server \
     bash-completion \
-    cifs-utils \
     curl \
     dbus \
     dosfstools \
     firmware-linux-free \
     gddrescue \
     gdisk \
-    iputils-ping \
-    isc-dhcp-client \
     less \
     nfs-common \
-    ntfs-3g \
-    openssh-client \
-    open-vm-tools \
+
     procps \
-    vim \
-    wimtools \
-    wget \
+
     dialog \
     pv
 
@@ -192,9 +173,83 @@ update-locale LANG=en_US.UTF-8
 # 清理包缓存
 apt-get clean
 
-# 配置网络
-echo "配置网络..."
+# === 第二阶段：精简内核模块 ===
+echo "精简内核模块..."
+# 保留基本的内核模块
+KEEP_MODULES="
+ext4
+fat
+vfat
+ntfs
+isofs
+usb-storage
+usbhid
+uhci-hcd
+ehci-hcd
+ohci-hcd
+xhci-hcd
+sd_mod
+sr_mod
+cdrom
+ata_generic
+ata_piix
+ahci
+nvme
+scsi_mod
+sg
+dm-mod
+dm-crypt
+cryptd
+loop
+"
+
+# 清理不必要的内核模块
+mkdir -p /lib/modules-backup
+KERNEL_VERSION=$(ls /lib/modules/ | head -n1)
+MODULES_DIR="/lib/modules/${KERNEL_VERSION}/kernel"
+
+for dir in drivers/net/wireless drivers/media drivers/video drivers/gpu; do
+    rm -rf ${MODULES_DIR}/${dir} 2>/dev/null || true
+done
+
+# 保留网卡驱动 (最小化)
+for dir in drivers/net/ethernet/intel drivers/net/ethernet/realtek drivers/net/ethernet/broadcom; do
+    mkdir -p /lib/modules-backup/${dir}
+    mv ${MODULES_DIR}/${dir}/* /lib/modules-backup/${dir}/ 2>/dev/null || true
+done
+
+# 清理不常用的文件系统驱动
+for fs in cifs nfs nfsd afs ceph coda ecryptfs f2fs hfs hfsplus jffs2 minix nilfs2 omfs orangefs qnx4 qnx6 reiserfs romfs sysv ubifs udf ufs; do
+    rm -rf ${MODULES_DIR}/fs/${fs} 2>/dev/null || true
+done
+
+# === 第三阶段：创建最小化系统服务 ===
+echo "配置系统服务..."
+
+# 禁用不必要的服务
+systemctl mask \
+    systemd-timesyncd.service \
+    systemd-resolved.service \
+    apt-daily.service \
+    apt-daily-upgrade.service \
+    e2scrub_all.service \
+    e2scrub_reap.service \
+    logrotate.service \
+    man-db.service \
+    plymouth.service \
+    ssh.service
+
+# 配置网络 (仅dhcp)
+cat > /etc/systemd/network/eth.network <<EOF
+[Match]
+Name=e*
+
+[Network]
+DHCP=yes
+EOF
+
 systemctl enable systemd-networkd
+
 
 # 配置SSH允许root登录
 echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
@@ -245,6 +300,52 @@ AUTOINSTALL_SERVICE
 cat > /opt/start-installer.sh << 'START_SCRIPT'
 #!/bin/bash
 # OpenWRT安装系统启动脚本
+
+sleep 3
+clear
+
+cat << "WELCOME"
+
+╔═══════════════════════════════════════════════════════╗
+║       OpenWRT Auto Install System                     ║
+╚═══════════════════════════════════════════════════════╝
+
+System is starting up, please wait...
+WELCOME
+
+sleep 2
+
+if [ ! -f "/openwrt.img" ]; then
+    clear
+    echo ""
+    echo "❌ Error: OpenWRT image not found"
+    echo ""
+    echo "Image file should be at: /openwrt.img"
+    echo ""
+    echo "Press Enter to enter shell..."
+    read
+    exec /bin/bash
+fi
+
+exec /opt/install-openwrt.sh
+START_SCRIPT
+chmod +x /opt/start-installer.sh
+
+# 启用服务
+systemctl enable autoinstall.service
+
+# 4. 配置agetty自动登录
+mkdir -p /etc/systemd/system/getty@tty1.service.d/
+cat > /etc/systemd/system/getty@tty1.service.d/override.conf << 'GETTY_OVERRIDE'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear %I linux
+Type=idle
+GETTY_OVERRIDE
+
+# 5. 创建OpenWRT安装脚本
+cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
+#!/bin/bash
 clear
 echo "========================================"
 echo "    OpenWRT 自动安装程序"
@@ -605,7 +706,6 @@ if [ -f "$ISO_PATH" ]; then
     echo "  3. 系统将自动启动安装程序"
     echo "  4. 选择目标磁盘并确认安装"
     echo "  5. 等待安装完成自动重启"
-
     echo ""
     
     # 创建构建摘要
@@ -618,7 +718,6 @@ ISO文件: $ISO_NAME
 支持引导: BIOS + UEFI
 引导菜单: 自动安装OpenWRT
 注意事项: 安装会完全擦除目标磁盘数据
-构建源码： https://github.com/sirpdboy/openwrt-installer-iso.git
 BUILD_INFO
     
     log_success "构建摘要已保存到: ${OUTPUT_DIR}/build-info.txt"
