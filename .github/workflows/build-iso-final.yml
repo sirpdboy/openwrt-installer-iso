@@ -96,6 +96,7 @@ jobs:
     - name: Build ISO with proper rootfs
       run: |
         chmod +x build-iso-final.sh
+    
         docker run --privileged --rm \
         -v $(pwd)/output:/output \
         -v $(pwd)/assets/ezopwrt.img:/mnt/ezopwrt.img:ro \
@@ -106,15 +107,15 @@ jobs:
         echo 'deb http://archive.debian.org/debian buster main' > /etc/apt/sources.list
         echo 'Acquire::Check-Valid-Until \"false\";' > /etc/apt/apt.conf.d/99no-check-valid-until
         echo 'APT::Get::AllowUnauthenticated \"true\";' >> /etc/apt/apt.conf.d/99no-check-valid-until
-
+      
+        # 安装必要工具（不安装live-boot）
         apt-get update
         apt-get install -y --allow-unauthenticated \
-        debootstrap squashfs-tools xorriso isolinux syslinux-efi \
+        debootstrap squashfs-tools xorriso isolinux \
         grub-pc-bin grub-efi-amd64-bin mtools dosfstools parted wget curl
        
         /build-iso.sh
         "
-
 
     - name: Upload ISO artifact
       uses: actions/upload-artifact@v4
