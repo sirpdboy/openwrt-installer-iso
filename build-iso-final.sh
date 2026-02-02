@@ -363,26 +363,29 @@ GRUB_CFG
 
 # 复制引导文件
 log_info "复制引导文件..."
-
-# ISOLINUX
-if [ -f /usr/lib/ISOLINUX/isolinux.bin ]; then
-    cp /usr/lib/ISOLINUX/isolinux.bin "${STAGING_DIR}/isolinux/"
-elif [ -f /usr/lib/syslinux/isolinux.bin ]; then
-    cp /usr/lib/syslinux/isolinux.bin "${STAGING_DIR}/isolinux/"
-else
-    log_warning "找不到isolinux.bin，尝试使用tinycore的..."
-    if [ -f "/mnt/tinycore/boot/isolinux/isolinux.bin" ]; then
-        cp "/mnt/tinycore/boot/isolinux/isolinux.bin" "${STAGING_DIR}/isolinux/"
-    fi
+# 确保syslinux已安装
+if ! command -v syslinux >/dev/null 2>&1; then
+    apk add --no-cache syslinux 2>/dev/null || true
 fi
 
-# 如果还没有isolinux.bin，尝试简单的方法
-if [ ! -f "${STAGING_DIR}/isolinux/isolinux.bin" ]; then
-    log_warning "无法获取isolinux.bin，创建简单ISO..."
-    # 创建简单ISO（可能不可引导，但至少能创建文件）
-    touch "${STAGING_DIR}/isolinux/isolinux.bin"
-fi
+# 复制SYSLINUX文件
+SYS_BOOT_FILES=(
+    "isolinux.bin"
+    "ldlinux.c32"
+    "libcom32.c32"
+    "libutil.c32"
+    "vesamenu.c32"
+    "reboot.c32"
+)
 
+for file in "${SYS_BOOT_FILES[@]}"; do
+    for path in /usr/lib/ISOLINUX /usr/share/syslinux /usr/lib/syslinux ; do
+        if [ -f "$path/$file" ]; then
+            cp "$path/$file" "${STAGING_DIR}/isolinux/" 2>/dev/null || true
+            break
+        fi
+    done
+done
 # 创建GRUB EFI引导
 log_info "创建EFI引导..."
 mkdir -p "${STAGING_DIR}/EFI/BOOT"
