@@ -773,7 +773,6 @@ if [ -f "$ISO_PATH" ]; then
     
     # 显示ISO信息
     echo "🔍 ISO信息："
-    file "$ISO_PATH"
     echo ""
     
     # 创建构建信息文件
