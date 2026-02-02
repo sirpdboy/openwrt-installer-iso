@@ -519,7 +519,7 @@ fi
 # 选择最新的内核文件
 KERNEL_FILE=$(echo "$KERNEL_FILES" | sort -V | tail -1)
 INITRD_FILE=$(echo "$INITRD_FILES" | sort -V | tail -1)
-
+echo  "test:  ============= $KERNEL_FILE  $INITRD_FILE"
 if [ ! -f "$KERNEL_FILE" ]; then
     log_error "内核文件不存在: $KERNEL_FILE"
     exit 1
@@ -619,7 +619,7 @@ else
         exit 1
     fi
 fi
-
+INITRD_FILE=/boot/initrd.img-4.19.0-21-amd64
 if [ -f "$INITRD_FILE" ]; then
     cp "$INITRD_FILE" "${STAGING_DIR}/live/initrd"
     log_success "initrd复制成功: $(basename $INITRD_FILE)"
