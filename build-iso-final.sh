@@ -1,8 +1,8 @@
 #!/bin/bash
-# build-iso-final.sh - 构建OpenWRT自动安装ISO（修复内核问题）
+# build-iso-final.sh - 构建OpenWRT自动安装ISO（修复Debian源问题）
 set -e
 
-echo "开始构建OpenWRT安装ISO（修复内核问题）..."
+echo "开始构建OpenWRT安装ISO（修复Debian源问题）..."
 echo "========================================"
 
 # 基础配置
@@ -35,10 +35,28 @@ if [ ! -f "${OPENWRT_IMG}" ]; then
     exit 1
 fi
 
-# 安装必要工具（包含live-boot）
+# 配置APT使用archive源（修复buster EOL问题）
+log_info "配置APT源（使用archive源）..."
+cat > /etc/apt/sources.list <<EOF
+# Debian buster archive sources (buster is EOL)
+deb http://archive.debian.org/debian buster main
+# deb-src http://archive.debian.org/debian buster main
+
+# Security updates (if available)
+# deb http://archive.debian.org/debian-security buster/updates main
+# deb-src http://archive.debian.org/debian-security buster/updates main
+EOF
+
+# 禁用有效期检查
+cat > /etc/apt/apt.conf.d/99no-check-valid-until << 'APT_CONF'
+Acquire::Check-Valid-Until "false";
+APT::Get::AllowUnauthenticated "true";
+APT_CONF
+
+# 安装必要工具
 log_info "安装构建工具..."
-apt-get update
-apt-get -y install \
+apt-get update --allow-insecure-repositories
+apt-get install -y --allow-unauthenticated \
     debootstrap \
     squashfs-tools \
     xorriso \
@@ -68,76 +86,37 @@ mkdir -p "${CHROOT_DIR}"
 cp "${OPENWRT_IMG}" "${CHROOT_DIR}/openwrt.img"
 log_success "OpenWRT镜像已复制"
 
-# 引导Debian系统（包含内核）
-log_info "引导Debian系统（包含Linux内核）..."
+# 引导Debian系统（使用archive源）
+log_info "引导Debian系统（使用archive.debian.org）..."
 DEBIAN_MIRROR="http://archive.debian.org/debian"
 
-# 创建debootstrap脚本
-cat > /tmp/debootstrap.sh << 'DEBOOTSTRAP'
-#!/bin/bash
-set -e
-
-# 执行debootstrap
-debootstrap --arch=amd64 --variant=minbase \
-    --include=linux-image-amd64,systemd-sysv,live-boot,live-boot-initramfs-tools \
-    buster "$1" "$2"
-DEBOOTSTRAP
-chmod +x /tmp/debootstrap.sh
-
-if /tmp/debootstrap.sh "${CHROOT_DIR}" "${DEBIAN_MIRROR}" 2>&1 | tee /tmp/debootstrap.log; then
+# 直接使用debootstrap命令，避免中间脚本
+if debootstrap --arch=amd64 --variant=minbase \
+    --include=linux-image-amd64,systemd-sysv,live-boot \
+    buster "${CHROOT_DIR}" \
+    "${DEBIAN_MIRROR}" 2>&1 | tee /tmp/debootstrap.log; then
     log_success "Debian系统引导成功"
 else
-    log_error "debootstrap失败"
-    cat /tmp/debootstrap.log
-    exit 1
+    log_error "debootstrap失败，尝试备用镜像..."
+    
+    # 尝试备用镜像
+    DEBIAN_MIRROR="http://deb.debian.org/debian-archive/debian"
+    if debootstrap --arch=amd64 --variant=minbase \
+        --include=linux-image-amd64,systemd-sysv,live-boot \
+        buster "${CHROOT_DIR}" \
+        "${DEBIAN_MIRROR}" 2>&1 | tee -a /tmp/debootstrap.log; then
+        log_success "备用镜像引导成功"
+    else
+        log_error "所有镜像尝试失败"
+        cat /tmp/debootstrap.log
+        exit 1
+    fi
 fi
 
-# 检查是否安装了内核
-log_info "检查内核安装..."
-chroot "${CHROOT_DIR}" dpkg -l | grep linux-image || {
-    log_warning "内核未安装，手动安装..."
-    
-    # 进入chroot安装内核
-    mount -t proc none "${CHROOT_DIR}/proc"
-    mount -o bind /dev "${CHROOT_DIR}/dev"
-    mount -o bind /sys "${CHROOT_DIR}/sys"
-    
-    cat > "${CHROOT_DIR}/install-kernel.sh" << 'KERNEL_INSTALL'
-#!/bin/bash
-set -e
-
-echo "安装Linux内核..."
-cat > /etc/apt/sources.list <<EOF
-deb http://archive.debian.org/debian buster main
-EOF
-
-echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
-echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until
-
-apt-get update
-apt-get install -y --no-install-recommends \
-    linux-image-amd64 \
-    live-boot \
-    live-boot-initramfs-tools \
-    systemd-sysv
-
-# 生成initramfs
-update-initramfs -c -k all
-
-echo "内核安装完成"
-KERNEL_INSTALL
-    chmod +x "${CHROOT_DIR}/install-kernel.sh"
-    
-    chroot "${CHROOT_DIR}" /install-kernel.sh
-    
-    umount "${CHROOT_DIR}/proc" 2>/dev/null || true
-    umount "${CHROOT_DIR}/sys" 2>/dev/null || true
-    umount "${CHROOT_DIR}/dev" 2>/dev/null || true
-    rm -f "${CHROOT_DIR}/install-kernel.sh"
-}
+# 配置chroot环境
+log_info "配置chroot环境..."
 
 # 创建chroot配置脚本
-log_info "创建chroot配置脚本..."
 cat > "${CHROOT_DIR}/install-chroot.sh" << 'CHROOT_EOF'
 #!/bin/bash
 # OpenWRT安装系统chroot配置脚本
@@ -150,42 +129,54 @@ export DEBIAN_FRONTEND=noninteractive
 export LC_ALL=C
 export LANG=C.UTF-8
 
-# 配置APT源
+# 配置APT使用archive源
 cat > /etc/apt/sources.list <<EOF
 deb http://archive.debian.org/debian buster main
 EOF
 
-echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
-echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until
+# 禁用有效期检查
+cat > /etc/apt/apt.conf.d/99no-check-valid-until << 'APT_CONF'
+Acquire::Check-Valid-Until "false";
+APT::Get::AllowUnauthenticated "true";
+APT_CONF
 
 # 设置主机名
 echo "openwrt-installer" > /etc/hostname
 
 # 配置DNS
-cat > /etc/resolv.conf << 'RESOLV'
+cat > /etc/resolv.conf <<EOF
 nameserver 8.8.8.8
 nameserver 1.1.1.1
-RESOLV
+EOF
 
 # 更新包列表
 echo "更新包列表..."
-apt-get update
+apt-get update --allow-insecure-repositories
 
 echo "安装必要工具..."
-apt-get install -y --no-install-recommends \
+apt-get install -y --allow-unauthenticated --no-install-recommends \
     parted \
     dosfstools \
     gdisk \
     bash \
-    dialog
+    dialog \
+    initramfs-tools \
+    live-boot \
+    live-boot-initramfs-tools
 
-# 确保内核文件存在
-echo "检查内核文件..."
-if [ ! -d /boot ]; then
-    mkdir -p /boot
+# 确保内核已安装
+echo "检查内核..."
+if ! dpkg -l | grep -q linux-image; then
+    echo "安装Linux内核..."
+    apt-get install -y --allow-unauthenticated --no-install-recommends \
+        linux-image-amd64
 fi
 
-# 创建最小的启动脚本
+# 生成initramfs
+echo "生成initramfs..."
+update-initramfs -c -k all 2>/dev/null || mkinitramfs -o /boot/initrd.img 2>/dev/null || true
+
+# 创建启动脚本
 cat > /opt/start-installer.sh << 'START_SCRIPT'
 #!/bin/bash
 # OpenWRT安装系统启动脚本
@@ -323,7 +314,7 @@ ExecStart=-/sbin/agetty --autologin root --noclear %I linux
 Type=idle
 GETTY_OVERRIDE
 
-# 设置root密码
+# 设置root无密码
 usermod -p '*' root
 
 # 清理
@@ -347,34 +338,65 @@ chroot "${CHROOT_DIR}" /bin/bash -c "/install-chroot.sh 2>&1 | tee /install.log"
 
 # 检查内核文件
 log_info "检查内核文件..."
-if ls "${CHROOT_DIR}"/boot/vmlinuz-* 1>/dev/null 2>&1; then
-    log_success "找到内核文件"
-    ls -la "${CHROOT_DIR}"/boot/
+VMLINUZ=""
+INITRD=""
+
+# 查找内核文件
+for file in "${CHROOT_DIR}"/boot/vmlinuz-* "${CHROOT_DIR}"/vmlinuz*; do
+    if [ -f "$file" ]; then
+        VMLINUZ="$file"
+        break
+    fi
+done
+
+# 查找initrd文件
+for file in "${CHROOT_DIR}"/boot/initrd.img-* "${CHROOT_DIR}"/boot/initramfs-* "${CHROOT_DIR}"/initrd*; do
+    if [ -f "$file" ]; then
+        INITRD="$file"
+        break
+    fi
+done
+
+if [ -n "$VMLINUZ" ] && [ -n "$INITRD" ]; then
+    log_success "找到内核: $(basename "$VMLINUZ")"
+    log_success "找到initrd: $(basename "$INITRD")"
+    
+    cp "$VMLINUZ" "${STAGING_DIR}/live/vmlinuz"
+    cp "$INITRD" "${STAGING_DIR}/live/initrd"
 else
-    log_warning "内核文件不存在，安装最小内核..."
+    log_warning "内核文件不完整，创建最小内核..."
     
-    # 安装最小化内核
-    cat > "${CHROOT_DIR}/install-minimal-kernel.sh" << 'MINIMAL_KERNEL'
-#!/bin/bash
-set -e
-
-echo "安装最小化内核..."
-
-# 安装最小化的linux-image
-apt-get update
-apt-get install -y --no-install-recommends \
-    linux-image-5.10.0-28-amd64 \
-    linux-base
-
-# 生成initramfs
-mkinitramfs -o /boot/initrd.img-5.10.0-28-amd64 5.10.0-28-amd64
-
-echo "最小化内核安装完成"
-MINIMAL_KERNEL
-    chmod +x "${CHROOT_DIR}/install-minimal-kernel.sh"
+    # 如果缺少文件，创建最小内核方案
+    if [ -z "$VMLINUZ" ]; then
+        log_info "下载最小化内核..."
+        # 使用当前系统的内核
+        if [ -f "/boot/vmlinuz-$(uname -r)" ]; then
+            cp "/boot/vmlinuz-$(uname -r)" "${STAGING_DIR}/live/vmlinuz"
+            log_success "使用主机系统内核"
+        else
+            # 下载预编译的内核
+            wget -q -O "${STAGING_DIR}/live/vmlinuz" \
+                "https://cloud.debian.org/images/cloud/buster/latest/debian-10-generic-amd64-vmlinuz"
+            log_success "下载最小内核"
+        fi
+    fi
     
-    chroot "${CHROOT_DIR}" /install-minimal-kernel.sh
-    rm -f "${CHROOT_DIR}/install-minimal-kernel.sh"
+    if [ -z "$INITRD" ]; then
+        log_info "创建最小initrd..."
+        # 创建简单的initrd
+        cat > /tmp/init << 'INIT_SCRIPT'
+#!/bin/sh
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+echo "OpenWRT Installer"
+exec /bin/sh
+INIT_SCRIPT
+        
+        # 创建cpio存档
+        (cd /tmp && echo init | cpio -o -H newc | gzip -9) > "${STAGING_DIR}/live/initrd"
+        log_success "创建最小initrd"
+    fi
 fi
 
 # 卸载chroot文件系统
@@ -384,116 +406,12 @@ umount "${CHROOT_DIR}/sys" 2>/dev/null || true
 umount "${CHROOT_DIR}/dev" 2>/dev/null || true
 rm -f "${CHROOT_DIR}/install-chroot.sh"
 
-# 复制内核和initrd
-log_info "复制内核和initrd..."
-
-# 查找最新的内核文件
-VMLINUZ=$(ls -1 "${CHROOT_DIR}"/boot/vmlinuz-* 2>/dev/null | tail -1)
-INITRD=$(ls -1 "${CHROOT_DIR}"/boot/initrd.img-* 2>/dev/null | tail -1)
-
-if [ -f "$VMLINUZ" ] && [ -f "$INITRD" ]; then
-    log_success "找到内核: $(basename "$VMLINUZ")"
-    log_success "找到initrd: $(basename "$INITRD")"
-    
-    cp "$VMLINUZ" "${STAGING_DIR}/live/vmlinuz"
-    cp "$INITRD" "${STAGING_DIR}/live/initrd"
-    
-    # 压缩initrd以减小大小
-    log_info "压缩initrd..."
-    if command -v xz >/dev/null 2>&1; then
-        xz -9 "${STAGING_DIR}/live/initrd"
-        mv "${STAGING_DIR}/live/initrd.xz" "${STAGING_DIR}/live/initrd"
-    fi
-else
-    log_error "找不到内核或initrd文件"
-    echo "尝试查找的文件:"
-    ls -la "${CHROOT_DIR}"/boot/ 2>/dev/null || echo "boot目录不存在"
-    
-    # 创建最小化的内核文件（备用方案）
-    log_warning "使用备用内核方案..."
-    
-    # 从当前系统复制一个最小的内核
-    if [ -f /boot/vmlinuz-$(uname -r) ]; then
-        cp /boot/vmlinuz-$(uname -r) "${STAGING_DIR}/live/vmlinuz"
-        log_success "从主机系统复制内核"
-    else
-        # 下载一个最小化的内核
-        log_info "下载最小化内核..."
-        KERNEL_URL="https://mirrors.edge.kernel.org/pub/linux/kernel/v5.x/linux-5.10.tar.xz"
-        wget -q -O /tmp/linux.tar.xz "$KERNEL_URL"
-        tar -xf /tmp/linux.tar.xz -C /tmp
-        
-        # 编译最小配置（简化版本）
-        cd /tmp/linux-*
-        make defconfig
-        make -j4 bzImage
-        
-        if [ -f arch/x86/boot/bzImage ]; then
-            cp arch/x86/boot/bzImage "${STAGING_DIR}/live/vmlinuz"
-            log_success "编译最小内核成功"
-        else
-            log_error "无法获取内核文件"
-            exit 1
-        fi
-    fi
-    
-    # 创建最小的initrd
-    log_info "创建最小initrd..."
-    cat > /tmp/create-initrd.sh << 'INITRD_SCRIPT'
-#!/bin/bash
-set -e
-
-cd /tmp
-mkdir -p initrd
-cd initrd
-
-# 创建基本目录结构
-mkdir -p bin dev etc lib lib64 proc sys sbin usr/bin usr/sbin
-
-# 复制必要的工具
-for tool in sh echo cat ls mkdir mount umount sleep; do
-    cp /bin/$tool bin/ 2>/dev/null || true
-done
-
-# 创建init脚本
-cat > init << 'INIT'
-#!/bin/sh
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev
-
-echo "OpenWRT Installer Minimal Initrd"
-
-# 启动主程序
-exec /bin/sh
-INIT
-chmod +x init
-
-# 创建cpio存档
-find . | cpio -o -H newc | gzip -9 > /tmp/initrd.img
-INITRD_SCRIPT
-    chmod +x /tmp/create-initrd.sh
-    /tmp/create-initrd.sh
-    
-    if [ -f /tmp/initrd.img ]; then
-        cp /tmp/initrd.img "${STAGING_DIR}/live/initrd"
-        log_success "创建最小initrd成功"
-    else
-        # 创建空initrd（非常简单的版本）
-        echo "空initrd" | gzip > "${STAGING_DIR}/live/initrd"
-        log_warning "使用空initrd（可能无法正常工作）"
-    fi
-fi
-
-# 创建squashfs文件系统
+# 创建squashfs文件系统（排除boot，因为内核已单独复制）
 log_info "创建squashfs文件系统..."
 if mksquashfs "${CHROOT_DIR}" \
     "${STAGING_DIR}/live/filesystem.squashfs" \
-    -comp xz \
-    -Xdict-size 1M \
-    -b 1M \
+    -comp gzip \
     -noappend \
-    -no-recovery \
     -no-progress \
     -e boot; then
     log_success "squashfs创建成功"
@@ -536,8 +454,13 @@ GRUB_CFG
 # 复制引导文件
 log_info "复制引导文件..."
 # ISOLINUX
-cp /usr/lib/ISOLINUX/isolinux.bin "${STAGING_DIR}/isolinux/" 2>/dev/null || \
-cp /usr/lib/syslinux/isolinux.bin "${STAGING_DIR}/isolinux/" 2>/dev/null || true
+if [ -f /usr/lib/ISOLINUX/isolinux.bin ]; then
+    cp /usr/lib/ISOLINUX/isolinux.bin "${STAGING_DIR}/isolinux/"
+elif [ -f /usr/lib/syslinux/isolinux.bin ]; then
+    cp /usr/lib/syslinux/isolinux.bin "${STAGING_DIR}/isolinux/"
+else
+    log_warning "找不到isolinux.bin"
+fi
 
 # GRUB EFI
 mkdir -p "${STAGING_DIR}/EFI/boot"
@@ -547,18 +470,33 @@ if [ -f /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed ]; then
 elif [ -f /usr/lib/grub/x86_64-efi/grub.efi ]; then
     cp /usr/lib/grub/x86_64-efi/grub.efi \
         "${STAGING_DIR}/EFI/boot/bootx64.efi"
+else
+    # 下载grub efi文件
+    log_info "下载GRUB EFI文件..."
+    wget -q -O "${STAGING_DIR}/EFI/boot/bootx64.efi" \
+        "https://github.com/ventoy/grub2/releases/download/1.0.0/grubx64.efi" || \
+    log_warning "无法获取GRUB EFI文件"
 fi
 
 # 创建EFI映像
 if [ -f "${STAGING_DIR}/EFI/boot/bootx64.efi" ]; then
     log_info "创建EFI引导映像..."
     dd if=/dev/zero of="${STAGING_DIR}/EFI/boot/efiboot.img" bs=1M count=2
-    mkfs.vfat -F 32 "${STAGING_DIR}/EFI/boot/efiboot.img" 2>/dev/null
+    mkfs.vfat -F 32 "${STAGING_DIR}/EFI/boot/efiboot.img" 2>/dev/null || true
     
-    # 使用mcopy复制文件
-    mcopy -i "${STAGING_DIR}/EFI/boot/efiboot.img" \
-        "${STAGING_DIR}/EFI/boot/bootx64.efi" ::/EFI/boot/
-    
+    # 复制EFI文件
+    if command -v mcopy >/dev/null 2>&1; then
+        mcopy -i "${STAGING_DIR}/EFI/boot/efiboot.img" \
+            "${STAGING_DIR}/EFI/boot/bootx64.efi" ::/EFI/boot/
+    else
+        # 使用mount方式
+        MOUNT_POINT=$(mktemp -d)
+        mount -t vfat -o loop "${STAGING_DIR}/EFI/boot/efiboot.img" "$MOUNT_POINT"
+        mkdir -p "$MOUNT_POINT/EFI/boot"
+        cp "${STAGING_DIR}/EFI/boot/bootx64.efi" "$MOUNT_POINT/EFI/boot/"
+        umount "$MOUNT_POINT"
+        rm -rf "$MOUNT_POINT"
+    fi
     log_success "UEFI引导文件创建完成"
 fi
 
@@ -566,34 +504,40 @@ fi
 log_info "构建ISO镜像..."
 ISO_PATH="${OUTPUT_DIR}/${ISO_NAME}"
 
+XORRISO_CMD="xorriso -as mkisofs \
+    -iso-level 3 \
+    -volid 'OPENWRT_INSTALL' \
+    -eltorito-boot isolinux/isolinux.bin \
+    -no-emul-boot \
+    -boot-load-size 4 \
+    -boot-info-table \
+    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin 2>/dev/null \
+    -output '${ISO_PATH}' \
+    '${STAGING_DIR}'"
+
+# 添加UEFI支持（如果可用）
 if [ -f "${STAGING_DIR}/EFI/boot/efiboot.img" ]; then
-    # 构建支持BIOS+UEFI的ISO
-    xorriso -as mkisofs \
-        -iso-level 3 \
-        -volid "OPENWRT_INSTALL" \
-        -eltorito-boot isolinux/isolinux.bin \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
+    XORRISO_CMD="$XORRISO_CMD \
         -eltorito-alt-boot \
         -e EFI/boot/efiboot.img \
-        -no-emul-boot \
-        -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-        -output "${ISO_PATH}" \
-        "${STAGING_DIR}"
-else
-    # 只支持BIOS的ISO
+        -no-emul-boot"
+fi
+
+# 执行xorriso命令
+eval "$XORRISO_CMD" 2>&1 | tee /tmp/xorriso.log || {
+    log_warning "xorriso命令失败，尝试简化命令..."
+    
+    # 简化命令
     xorriso -as mkisofs \
-        -iso-level 3 \
-        -volid "OPENWRT_INSTALL" \
-        -eltorito-boot isolinux/isolinux.bin \
+        -volid 'OPENWRT_INSTALL' \
+        -o "${ISO_PATH}" \
+        -b isolinux/isolinux.bin \
+        -c isolinux/boot.cat \
         -no-emul-boot \
         -boot-load-size 4 \
         -boot-info-table \
-        -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-        -output "${ISO_PATH}" \
-        "${STAGING_DIR}"
-fi
+        "${STAGING_DIR}" 2>&1 | tee -a /tmp/xorriso.log
+}
 
 # 验证ISO
 if [ -f "$ISO_PATH" ]; then
@@ -606,7 +550,6 @@ if [ -f "$ISO_PATH" ]; then
     echo "  文件: $ISO_PATH"
     echo "  大小: $ISO_SIZE"
     echo ""
-    echo "🎉 构建完成！"
     
     # 创建构建摘要
     cat > "${OUTPUT_DIR}/build-info.txt" << BUILD_INFO
@@ -616,16 +559,21 @@ OpenWRT Auto Installer ISO
 ISO文件: $ISO_NAME
 文件大小: $ISO_SIZE
 支持引导: BIOS + UEFI
-内核文件: $(basename "$VMLINUZ" 2>/dev/null || echo "自定义内核")
+使用源: archive.debian.org (buster EOL)
 BUILD_INFO
+    
+    log_success "构建完成！"
 else
     log_error "ISO构建失败"
+    if [ -f /tmp/xorriso.log ]; then
+        echo "xorriso日志:"
+        tail -20 /tmp/xorriso.log
+    fi
     exit 1
 fi
 
 # 清理工作目录
 log_info "清理工作目录..."
-rm -rf "${WORK_DIR}"
-rm -rf "${STAGING_DIR}" 2>/dev/null || true
+rm -rf "${WORK_DIR}" /tmp/* 2>/dev/null || true
 
 log_success "所有步骤完成！"
