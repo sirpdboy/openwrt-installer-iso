@@ -1,8 +1,8 @@
 #!/bin/bash
-# build.sh - OpenWRT ISO构建脚本（在Docker容器内运行） sirpdboy  https://github.com/sirpdboy/openwrt-installer-iso.git
+# build.sh - OpenWRT ISO构建脚本（在Docker容器内运行） sirpdboy 2025-2026  https://github.com/sirpdboy/openwrt-installer-iso.git
 set -e
 
-echo "� Starting OpenWRT ISO build inside Docker container..."
+echo "🚀 Starting OpenWRT ISO build inside Docker container..."
 echo "========================================================"
 
 # 从环境变量获取参数，或使用默认值
@@ -109,7 +109,7 @@ cat > "$CHROOT_DIR/install-chroot.sh" << 'CHROOT_EOF'
 #!/bin/bash
 set -e
 
-echo "� Configuring chroot environment..."
+echo "🔧 Configuring chroot environment..."
 
 # 基本设置
 export DEBIAN_FRONTEND=noninteractive
@@ -308,7 +308,7 @@ while true; do
     fi
     
     echo -e "\n══════════════════════════════════════════════════════════"
-    echo -e "请选择需要写盘的硬盘序号 (1-$TOTAL_DISKS):"
+    echo -e "Please select target disk (1-$TOTAL_DISKS):"
     echo -e "══════════════════════════════════════════════════════════\n"
     
     # 获取用户选择
@@ -346,7 +346,7 @@ echo -e "\nALL existing partitions and data will be permanently deleted!"
 echo -e "\n══════════════════════════════════════════════════════════\n"
 
 while true; do
-    read -p "输入 'YES' 确认 / 'NO' 取消: " CONFIRM
+    read -p "Type 'YES' to continue or 'NO' to cancel: " CONFIRM
     
     case $CONFIRM in
         YES|yes|Y|y)
@@ -667,10 +667,15 @@ EOF
 # 创建squashfs，使用排除列表
 if mksquashfs "$CHROOT_DIR" "$STAGING_DIR/live/filesystem.squashfs" \
     -comp xz \
+    -Xbcj x86 \
     -b 1M \
     -noappend \
     -no-progress \
-    -wildcards \
+    -no-recovery \
+    -always-use-fragments \
+    -all-root \
+    -processors 2 \
+    -mem 1G \
     -ef "$WORK_DIR/squashfs-exclude.txt"; then
     SQUASHFS_SIZE=$(ls -lh "$STAGING_DIR/live/filesystem.squashfs" | awk '{print $5}')
     log_success "Squashfs created successfully: $SQUASHFS_SIZE"
@@ -693,17 +698,7 @@ UI vesamenu.c32
 
 MENU TITLE OpenWRT Auto Installer
 DEFAULT linux
-TIMEOUT 10
-MENU RESOLUTION 640 480
-MENU COLOR border       30;44   #40ffffff #a0000000 std
-MENU COLOR title        1;36;44 #9033ccff #a0000000 std
-MENU COLOR sel          7;37;40 #e0ffffff #20ffffff all
-MENU COLOR unsel        37;44   #50ffffff #a0000000 std
-MENU COLOR help         37;40   #c0ffffff #a0000000 std
-MENU COLOR timeout_msg  37;40   #80ffffff #00000000 std
-MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
-MENU COLOR msg07        37;40   #90ffffff #a0000000 std
-MENU COLOR tabmsg       31;40   #30ffffff #00000000 std
+TIMEOUT 3
 
 LABEL linux
   MENU LABEL ^Install OpenWRT
@@ -717,7 +712,7 @@ cat > "$STAGING_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 search --set=root --file /DEBIAN_CUSTOM
 
 set default="0"
-set timeout=10
+set timeout=3
 
 insmod efi_gop
 insmod font
@@ -932,7 +927,7 @@ EOF
     
     echo ""
     echo "================================================================================"
-    echo "� ISO Build Complete!"
+    echo "📦 ISO Build Complete!"
     echo "================================================================================"
     echo "Key improvements in this version:"
     echo "  ✓ Clean, minimal installation output (no verbose logs)"
@@ -942,9 +937,11 @@ EOF
     echo ""
     echo "To create bootable USB:"
     echo "  sudo dd if='$ISO_PATH' of=/dev/sdX bs=4M status=progress && sync"
+    echo ""
+    echo "  souce https://github.com/sirpdboy/openwrt-installer-iso.git"
     echo "================================================================================"
     
-    log_success "� All steps completed successfully!"
+    log_success "🎉 All steps completed successfully!"
 else
     log_error "❌ ISO file not created: $ISO_PATH"
     exit 1
