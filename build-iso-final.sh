@@ -299,7 +299,7 @@ wget -q -O "${STAGING_DIR}/live/vmlinuz" https://dl-cdn.alpinelinux.org/alpine/v
 wget -q -O "${STAGING_DIR}/live/initrd.img" https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/netboot/initramfs-lts
     
     
-    info "内核文件下载完成:"
+log_info "内核文件下载完成:"
 echo "  vmlinuz: $(du -h ${STAGING_DIR}/live/vmlinuz | cut -f1)"
 echo "  initrd.img: $(du -h ${STAGING_DIR}/live/initrd.img | cut -f1)"
     
