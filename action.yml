@@ -1,4 +1,4 @@
-name: "Build OpenWRT Installer alpine-iso"
+name: "Build OpenWRT Installer ISO"
 author: "sirpdboy"
 description: "Convert OpenWRT IMG to bootable auto-installer ISO"
 branding:
@@ -17,7 +17,7 @@ inputs:
   OUTPUT_ISO_NAME:
     description: "Name of output ISO file"
     required: false
-    default: "openwrt-alpine-iso.iso"
+    default: "openwrt-autoinstall.iso"
 
 runs:
   using: "composite"
@@ -30,8 +30,8 @@ runs:
           cp "${{ github.action_path }}/docker-build.sh" ./dockerrun.sh
           chmod +x ./dockerrun.sh
         fi
-        if [ -f "${{ github.action_path }}/build-openwrt-alpine-iso.sh" ]; then
-          cp "${{ github.action_path }}/build-openwrt-alpine-iso.sh" ./build.sh
+        if [ -f "${{ github.action_path }}/build.sh" ]; then
+          cp "${{ github.action_path }}/build.sh" ./build.sh
           chmod +x ./build.sh
         fi
         
@@ -48,15 +48,15 @@ runs:
     - name: Run Docker Build
       shell: bash
       run: |
-        if [ ! -f "./dockerrun.sh" ]; then
-          echo "❌ dockerrun.sh not found!"
+        if [ ! -f "./docker-build.sh" ]; then
+          echo "❌ docker-build.sh not found!"
           echo "Current directory contents:"
           ls -la
           exit 1
         fi
         
         # 执行Docker构建
-        ./dockerrun.sh \
+        ./docker-build.sh \
           "${{ inputs.INPUT_IMG }}" \
           "${{ inputs.OUTPUT_DIR }}" \
           "${{ inputs.OUTPUT_ISO_NAME }}"
