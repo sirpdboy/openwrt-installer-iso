@@ -154,14 +154,11 @@ apt-get update
 
 echo "安装基本系统..."
 apt-get install -y --no-install-recommends \
-    apt \
-    locales \
     linux-image-amd64 \
     live-boot \
     systemd-sysv \
-    parted \
+
     bash-completion \
-    curl \
     dbus \
     dosfstools \
     firmware-linux-free \
@@ -170,9 +167,10 @@ apt-get install -y --no-install-recommends \
     isc-dhcp-client \
     less \
     nfs-common \
-
+    openssh-client \
+    open-vm-tools \
     procps \
-
+    wimtools \
     dialog \
     pv
 
