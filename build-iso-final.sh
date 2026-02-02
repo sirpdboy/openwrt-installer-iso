@@ -66,6 +66,8 @@ apt-get install -y --allow-unauthenticated \
     grub-efi-amd64-bin \
     mtools \
     dosfstools \
+    initramfs-tools \
+    udev \
     parted \
     wget \
     curl \
