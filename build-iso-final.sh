@@ -1,8 +1,8 @@
 #!/bin/bash
-# build-iso-final.sh - 构建OpenWRT自动安装ISO（优化版）
+# build-iso-final.sh - 构建OpenWRT自动安装ISO（修复内核问题）
 set -e
 
-echo "开始构建OpenWRT安装ISO（优化版）..."
+echo "开始构建OpenWRT安装ISO（修复内核问题）..."
 echo "========================================"
 
 # 基础配置
@@ -35,19 +35,10 @@ if [ ! -f "${OPENWRT_IMG}" ]; then
     exit 1
 fi
 
-# 修复Debian buster源
-log_info "配置Debian buster源..."
-cat > /etc/apt/sources.list <<EOF
-deb http://archive.debian.org/debian buster main
-EOF
-
-echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
-echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until
-
-# 安装必要工具（最小化）
-log_info "安装最小构建工具集..."
+# 安装必要工具（包含live-boot）
+log_info "安装构建工具..."
 apt-get update
-apt-get -y install --no-install-recommends \
+apt-get -y install \
     debootstrap \
     squashfs-tools \
     xorriso \
@@ -59,7 +50,9 @@ apt-get -y install --no-install-recommends \
     dosfstools \
     parted \
     wget \
-    curl
+    curl \
+    live-boot \
+    live-boot-initramfs-tools
 
 # 创建目录结构
 log_info "创建工作目录..."
@@ -75,24 +68,79 @@ mkdir -p "${CHROOT_DIR}"
 cp "${OPENWRT_IMG}" "${CHROOT_DIR}/openwrt.img"
 log_success "OpenWRT镜像已复制"
 
-# 引导Debian最小系统（使用buildd变体，更小）
-log_info "引导Debian最小系统..."
+# 引导Debian系统（包含内核）
+log_info "引导Debian系统（包含Linux内核）..."
 DEBIAN_MIRROR="http://archive.debian.org/debian"
-if ! debootstrap --arch=amd64 --variant=minbase \
-    --include=apt,locales,linux-image-amd64,systemd-sysv,live-boot,bash,dash \
-    buster "${CHROOT_DIR}" \
-    "${DEBIAN_MIRROR}" 2>&1 | tee /tmp/debootstrap.log; then
+
+# 创建debootstrap脚本
+cat > /tmp/debootstrap.sh << 'DEBOOTSTRAP'
+#!/bin/bash
+set -e
+
+# 执行debootstrap
+debootstrap --arch=amd64 --variant=minbase \
+    --include=linux-image-amd64,systemd-sysv,live-boot,live-boot-initramfs-tools \
+    buster "$1" "$2"
+DEBOOTSTRAP
+chmod +x /tmp/debootstrap.sh
+
+if /tmp/debootstrap.sh "${CHROOT_DIR}" "${DEBIAN_MIRROR}" 2>&1 | tee /tmp/debootstrap.log; then
+    log_success "Debian系统引导成功"
+else
     log_error "debootstrap失败"
     cat /tmp/debootstrap.log
     exit 1
 fi
-log_success "Debian最小系统引导成功"
 
-# 创建chroot安装脚本（优化版）
+# 检查是否安装了内核
+log_info "检查内核安装..."
+chroot "${CHROOT_DIR}" dpkg -l | grep linux-image || {
+    log_warning "内核未安装，手动安装..."
+    
+    # 进入chroot安装内核
+    mount -t proc none "${CHROOT_DIR}/proc"
+    mount -o bind /dev "${CHROOT_DIR}/dev"
+    mount -o bind /sys "${CHROOT_DIR}/sys"
+    
+    cat > "${CHROOT_DIR}/install-kernel.sh" << 'KERNEL_INSTALL'
+#!/bin/bash
+set -e
+
+echo "安装Linux内核..."
+cat > /etc/apt/sources.list <<EOF
+deb http://archive.debian.org/debian buster main
+EOF
+
+echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
+echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until
+
+apt-get update
+apt-get install -y --no-install-recommends \
+    linux-image-amd64 \
+    live-boot \
+    live-boot-initramfs-tools \
+    systemd-sysv
+
+# 生成initramfs
+update-initramfs -c -k all
+
+echo "内核安装完成"
+KERNEL_INSTALL
+    chmod +x "${CHROOT_DIR}/install-kernel.sh"
+    
+    chroot "${CHROOT_DIR}" /install-kernel.sh
+    
+    umount "${CHROOT_DIR}/proc" 2>/dev/null || true
+    umount "${CHROOT_DIR}/sys" 2>/dev/null || true
+    umount "${CHROOT_DIR}/dev" 2>/dev/null || true
+    rm -f "${CHROOT_DIR}/install-kernel.sh"
+}
+
+# 创建chroot配置脚本
 log_info "创建chroot配置脚本..."
 cat > "${CHROOT_DIR}/install-chroot.sh" << 'CHROOT_EOF'
 #!/bin/bash
-# OpenWRT安装系统chroot配置脚本（优化版）
+# OpenWRT安装系统chroot配置脚本
 set -e
 
 echo "🔧 开始配置chroot环境..."
@@ -102,7 +150,7 @@ export DEBIAN_FRONTEND=noninteractive
 export LC_ALL=C
 export LANG=C.UTF-8
 
-# 配置APT源（最小化）
+# 配置APT源
 cat > /etc/apt/sources.list <<EOF
 deb http://archive.debian.org/debian buster main
 EOF
@@ -123,48 +171,21 @@ RESOLV
 echo "更新包列表..."
 apt-get update
 
-echo "安装最小系统..."
-# 只安装绝对必要的包
+echo "安装必要工具..."
 apt-get install -y --no-install-recommends \
-    live-boot \
-    systemd-sysv \
     parted \
     dosfstools \
     gdisk \
     bash \
-    dash
+    dialog
 
-# 清理不必要的包
-echo "清理不必要的包..."
-apt-get purge -y --auto-remove \
-    man-db \
-    info \
-    perl \
-    python* \
-    ruby* \
-    lua* \
-    texinfo \
-    docbook* \
-    sgml-base \
-    xml-core \
-    2>/dev/null || true
+# 确保内核文件存在
+echo "检查内核文件..."
+if [ ! -d /boot ]; then
+    mkdir -p /boot
+fi
 
-# 配置locale（最小化）
-echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
-locale-gen en_US.UTF-8
-update-locale LANG=en_US.UTF-8 LC_MESSAGES=C
-
-# 清理包缓存
-apt-get clean
-rm -rf /var/lib/apt/lists/*
-
-# 创建最小化的自动登录和启动配置
-echo "配置自动启动..."
-
-# 1. 设置root无密码登录
-usermod -p '*' root
-
-# 2. 创建最小化的启动脚本
+# 创建最小的启动脚本
 cat > /opt/start-installer.sh << 'START_SCRIPT'
 #!/bin/bash
 # OpenWRT安装系统启动脚本
@@ -191,7 +212,7 @@ exec /opt/install-openwrt.sh
 START_SCRIPT
 chmod +x /opt/start-installer.sh
 
-# 3. 创建OpenWRT安装脚本
+# 创建OpenWRT安装脚本
 cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/bash
 # OpenWRT自动安装脚本
@@ -219,7 +240,6 @@ echo "✅ OpenWRT image found"
 echo ""
 
 while true; do
-    # 显示磁盘
     echo "Available disks:"
     echo "================="
     lsblk -d -n -o NAME,SIZE 2>/dev/null | grep -E '^(sd|hd|nvme|vd)' || echo "No disks found"
@@ -237,7 +257,6 @@ while true; do
         continue
     fi
     
-    # 确认
     echo ""
     echo "⚠️  WARNING: This will erase ALL data on /dev/$DISK!"
     echo ""
@@ -248,7 +267,6 @@ while true; do
         continue
     fi
     
-    # 安装
     clear
     echo ""
     echo "Installing OpenWRT to /dev/$DISK..."
@@ -276,7 +294,7 @@ done
 INSTALL_SCRIPT
 chmod +x /opt/install-openwrt.sh
 
-# 4. 配置systemd自动启动
+# 配置systemd自动启动
 cat > /etc/systemd/system/openwrt-installer.service << 'SERVICE'
 [Unit]
 Description=OpenWRT Auto Installer
@@ -294,10 +312,9 @@ TTYPath=/dev/tty1
 WantedBy=multi-user.target
 SERVICE
 
-# 启用服务
 systemctl enable openwrt-installer.service
 
-# 5. 配置agetty自动登录
+# 配置自动登录
 mkdir -p /etc/systemd/system/getty@tty1.service.d/
 cat > /etc/systemd/system/getty@tty1.service.d/override.conf << 'GETTY_OVERRIDE'
 [Service]
@@ -306,46 +323,12 @@ ExecStart=-/sbin/agetty --autologin root --noclear %I linux
 Type=idle
 GETTY_OVERRIDE
 
-# 6. 最小化bash配置
-cat > /root/.bashrc << 'BASHRC'
-if [ "$(tty)" = "/dev/tty1" ]; then
-    echo ""
-    echo "Welcome to OpenWRT Installer System"
-    echo "Type 'install-openwrt' to start installer"
-    echo ""
-fi
-alias install-openwrt='/opt/install-openwrt.sh'
-BASHRC
+# 设置root密码
+usermod -p '*' root
 
-# 7. 删除machine-id
-rm -f /etc/machine-id
-
-# 8. 删除不必要的文档和文件
-echo "清理系统文件..."
-rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* /usr/share/locale/* /var/cache/*
-find /usr/share -name '*.gz' -delete
-find /usr/share -name '*.pyc' -delete
-find /usr/share -name '*.mo' -delete
-
-# 9. 删除不必要的内核模块（只保留最基本的）
-if [ -d /lib/modules ]; then
-    KERNEL_VERSION=$(ls /lib/modules | head -1)
-    if [ -n "$KERNEL_VERSION" ]; then
-        # 只保留必要的内核模块
-        KEEP_MODULES="kernel/drivers/block kernel/drivers/ata kernel/drivers/scsi kernel/drivers/usb/storage kernel/fs kernel/lib"
-        for module in $KEEP_MODULES; do
-            mkdir -p "/lib/modules/$KERNEL_VERSION/$module"
-        done
-        # 删除其他模块
-        find /lib/modules/$KERNEL_VERSION -type f -name '*.ko' | \
-            grep -v -E '(block|ata|scsi|usb-storage|ext[234]|fat|ntfs|vfat|iso9660|nls_)' | \
-            xargs rm -f 2>/dev/null || true
-        depmod $KERNEL_VERSION
-    fi
-fi
-
-# 10. 配置live-boot
-echo "live" > /etc/live/boot.conf
+# 清理
+apt-get clean
+rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 echo "✅ chroot配置完成"
 CHROOT_EOF
@@ -362,6 +345,38 @@ mount -o bind /sys "${CHROOT_DIR}/sys"
 log_info "在chroot内执行安装..."
 chroot "${CHROOT_DIR}" /bin/bash -c "/install-chroot.sh 2>&1 | tee /install.log"
 
+# 检查内核文件
+log_info "检查内核文件..."
+if ls "${CHROOT_DIR}"/boot/vmlinuz-* 1>/dev/null 2>&1; then
+    log_success "找到内核文件"
+    ls -la "${CHROOT_DIR}"/boot/
+else
+    log_warning "内核文件不存在，安装最小内核..."
+    
+    # 安装最小化内核
+    cat > "${CHROOT_DIR}/install-minimal-kernel.sh" << 'MINIMAL_KERNEL'
+#!/bin/bash
+set -e
+
+echo "安装最小化内核..."
+
+# 安装最小化的linux-image
+apt-get update
+apt-get install -y --no-install-recommends \
+    linux-image-5.10.0-28-amd64 \
+    linux-base
+
+# 生成initramfs
+mkinitramfs -o /boot/initrd.img-5.10.0-28-amd64 5.10.0-28-amd64
+
+echo "最小化内核安装完成"
+MINIMAL_KERNEL
+    chmod +x "${CHROOT_DIR}/install-minimal-kernel.sh"
+    
+    chroot "${CHROOT_DIR}" /install-minimal-kernel.sh
+    rm -f "${CHROOT_DIR}/install-minimal-kernel.sh"
+fi
+
 # 卸载chroot文件系统
 log_info "卸载chroot文件系统..."
 umount "${CHROOT_DIR}/proc" 2>/dev/null || true
@@ -369,18 +384,109 @@ umount "${CHROOT_DIR}/sys" 2>/dev/null || true
 umount "${CHROOT_DIR}/dev" 2>/dev/null || true
 rm -f "${CHROOT_DIR}/install-chroot.sh"
 
-# 额外清理chroot目录
-log_info "执行额外清理..."
-# 删除缓存文件
-rm -rf "${CHROOT_DIR}"/var/cache/apt/*
-rm -rf "${CHROOT_DIR}"/var/lib/apt/lists/*
-rm -rf "${CHROOT_DIR}"/tmp/*
+# 复制内核和initrd
+log_info "复制内核和initrd..."
 
-# 删除日志文件
-find "${CHROOT_DIR}/var/log" -type f -exec truncate -s 0 {} \;
+# 查找最新的内核文件
+VMLINUZ=$(ls -1 "${CHROOT_DIR}"/boot/vmlinuz-* 2>/dev/null | tail -1)
+INITRD=$(ls -1 "${CHROOT_DIR}"/boot/initrd.img-* 2>/dev/null | tail -1)
 
-# 创建squashfs文件系统（高压缩）
-log_info "创建squashfs文件系统（使用xz高压缩）..."
+if [ -f "$VMLINUZ" ] && [ -f "$INITRD" ]; then
+    log_success "找到内核: $(basename "$VMLINUZ")"
+    log_success "找到initrd: $(basename "$INITRD")"
+    
+    cp "$VMLINUZ" "${STAGING_DIR}/live/vmlinuz"
+    cp "$INITRD" "${STAGING_DIR}/live/initrd"
+    
+    # 压缩initrd以减小大小
+    log_info "压缩initrd..."
+    if command -v xz >/dev/null 2>&1; then
+        xz -9 "${STAGING_DIR}/live/initrd"
+        mv "${STAGING_DIR}/live/initrd.xz" "${STAGING_DIR}/live/initrd"
+    fi
+else
+    log_error "找不到内核或initrd文件"
+    echo "尝试查找的文件:"
+    ls -la "${CHROOT_DIR}"/boot/ 2>/dev/null || echo "boot目录不存在"
+    
+    # 创建最小化的内核文件（备用方案）
+    log_warning "使用备用内核方案..."
+    
+    # 从当前系统复制一个最小的内核
+    if [ -f /boot/vmlinuz-$(uname -r) ]; then
+        cp /boot/vmlinuz-$(uname -r) "${STAGING_DIR}/live/vmlinuz"
+        log_success "从主机系统复制内核"
+    else
+        # 下载一个最小化的内核
+        log_info "下载最小化内核..."
+        KERNEL_URL="https://mirrors.edge.kernel.org/pub/linux/kernel/v5.x/linux-5.10.tar.xz"
+        wget -q -O /tmp/linux.tar.xz "$KERNEL_URL"
+        tar -xf /tmp/linux.tar.xz -C /tmp
+        
+        # 编译最小配置（简化版本）
+        cd /tmp/linux-*
+        make defconfig
+        make -j4 bzImage
+        
+        if [ -f arch/x86/boot/bzImage ]; then
+            cp arch/x86/boot/bzImage "${STAGING_DIR}/live/vmlinuz"
+            log_success "编译最小内核成功"
+        else
+            log_error "无法获取内核文件"
+            exit 1
+        fi
+    fi
+    
+    # 创建最小的initrd
+    log_info "创建最小initrd..."
+    cat > /tmp/create-initrd.sh << 'INITRD_SCRIPT'
+#!/bin/bash
+set -e
+
+cd /tmp
+mkdir -p initrd
+cd initrd
+
+# 创建基本目录结构
+mkdir -p bin dev etc lib lib64 proc sys sbin usr/bin usr/sbin
+
+# 复制必要的工具
+for tool in sh echo cat ls mkdir mount umount sleep; do
+    cp /bin/$tool bin/ 2>/dev/null || true
+done
+
+# 创建init脚本
+cat > init << 'INIT'
+#!/bin/sh
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+
+echo "OpenWRT Installer Minimal Initrd"
+
+# 启动主程序
+exec /bin/sh
+INIT
+chmod +x init
+
+# 创建cpio存档
+find . | cpio -o -H newc | gzip -9 > /tmp/initrd.img
+INITRD_SCRIPT
+    chmod +x /tmp/create-initrd.sh
+    /tmp/create-initrd.sh
+    
+    if [ -f /tmp/initrd.img ]; then
+        cp /tmp/initrd.img "${STAGING_DIR}/live/initrd"
+        log_success "创建最小initrd成功"
+    else
+        # 创建空initrd（非常简单的版本）
+        echo "空initrd" | gzip > "${STAGING_DIR}/live/initrd"
+        log_warning "使用空initrd（可能无法正常工作）"
+    fi
+fi
+
+# 创建squashfs文件系统
+log_info "创建squashfs文件系统..."
 if mksquashfs "${CHROOT_DIR}" \
     "${STAGING_DIR}/live/filesystem.squashfs" \
     -comp xz \
@@ -389,11 +495,7 @@ if mksquashfs "${CHROOT_DIR}" \
     -noappend \
     -no-recovery \
     -no-progress \
-    -e boot \
-    -e usr/share/doc \
-    -e usr/share/man \
-    -e usr/share/info \
-    -e var/cache/apt; then
+    -e boot; then
     log_success "squashfs创建成功"
     
     # 删除chroot目录以释放空间
@@ -403,50 +505,16 @@ else
     exit 1
 fi
 
-# 复制最小化的内核和initrd
-log_info "复制内核和initrd..."
-KERNEL_IMG=$(ls "${STAGING_DIR}/live/filesystem.squashfs" 2>/dev/null)
-if [ -f "$KERNEL_IMG" ]; then
-    # 使用unmkinitramfs从squashfs中提取（更小）
-    unsquashfs -f -d /tmp/squashfs-root "${STAGING_DIR}/live/filesystem.squashfs" \
-        boot/vmlinuz-* boot/initrd.img-* 2>/dev/null || true
-    
-    if ls /tmp/squashfs-root/boot/vmlinuz-* 1>/dev/null 2>&1; then
-        VMLINUZ=$(ls /tmp/squashfs-root/boot/vmlinuz-* | head -1)
-        INITRD=$(ls /tmp/squashfs-root/boot/initrd.img-* | head -1)
-        
-        cp "$VMLINUZ" "${STAGING_DIR}/live/vmlinuz"
-        cp "$INITRD" "${STAGING_DIR}/live/initrd"
-        
-        # 压缩initrd
-        if command -v xz >/dev/null 2>&1; then
-            log_info "压缩initrd..."
-            xz -9 -T0 "${STAGING_DIR}/live/initrd"
-            mv "${STAGING_DIR}/live/initrd.xz" "${STAGING_DIR}/live/initrd"
-        fi
-        
-        log_success "内核和initrd复制成功"
-    else
-        # 备用方案：使用最小的内核
-        log_warning "无法从squashfs提取内核，使用备用方案"
-        # 这里可以添加下载最小内核的代码
-        log_error "需要内核文件"
-        exit 1
-    fi
-    rm -rf /tmp/squashfs-root
-fi
-
 echo "live" > "${STAGING_DIR}/live/filesystem.squashfs.type"
 
-# 创建最小引导配置
-log_info "创建最小引导配置..."
+# 创建引导配置
+log_info "创建引导配置..."
 
 # 1. ISOLINUX配置
 cat > "${STAGING_DIR}/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
 DEFAULT live
 TIMEOUT 30
 PROMPT 0
-SERIAL 0 115200
 
 LABEL live
   MENU LABEL Install OpenWRT
@@ -481,36 +549,21 @@ elif [ -f /usr/lib/grub/x86_64-efi/grub.efi ]; then
         "${STAGING_DIR}/EFI/boot/bootx64.efi"
 fi
 
-# 创建EFI映像（优化大小）
+# 创建EFI映像
 if [ -f "${STAGING_DIR}/EFI/boot/bootx64.efi" ]; then
     log_info "创建EFI引导映像..."
-    EFI_SIZE=2048  # 2MB足够
-    dd if=/dev/zero of="${STAGING_DIR}/EFI/boot/efiboot.img" \
-        bs=1M count=${EFI_SIZE} 2>/dev/null
+    dd if=/dev/zero of="${STAGING_DIR}/EFI/boot/efiboot.img" bs=1M count=2
     mkfs.vfat -F 32 "${STAGING_DIR}/EFI/boot/efiboot.img" 2>/dev/null
     
-    # 挂载并复制文件
-    MOUNT_POINT=$(mktemp -d)
-    mount -t vfat -o loop "${STAGING_DIR}/EFI/boot/efiboot.img" "${MOUNT_POINT}"
-    mkdir -p "${MOUNT_POINT}/EFI/boot"
-    cp "${STAGING_DIR}/EFI/boot/bootx64.efi" "${MOUNT_POINT}/EFI/boot/"
-    umount "${MOUNT_POINT}"
-    rm -rf "${MOUNT_POINT}"
+    # 使用mcopy复制文件
+    mcopy -i "${STAGING_DIR}/EFI/boot/efiboot.img" \
+        "${STAGING_DIR}/EFI/boot/bootx64.efi" ::/EFI/boot/
     
     log_success "UEFI引导文件创建完成"
 fi
 
-# 清理不需要的文件
-log_info "清理staging目录..."
-find "${STAGING_DIR}" -name "*.md" -delete
-find "${STAGING_DIR}" -name "*.txt" -delete
-find "${STAGING_DIR}" -name "README*" -delete
-rm -rf "${STAGING_DIR}"/usr/share/doc
-rm -rf "${STAGING_DIR}"/usr/share/man
-rm -rf "${STAGING_DIR}"/usr/share/info
-
-# 构建优化的ISO镜像
-log_info "构建优化的ISO镜像..."
+# 构建ISO镜像
+log_info "构建ISO镜像..."
 ISO_PATH="${OUTPUT_DIR}/${ISO_NAME}"
 
 if [ -f "${STAGING_DIR}/EFI/boot/efiboot.img" ]; then
@@ -527,7 +580,7 @@ if [ -f "${STAGING_DIR}/EFI/boot/efiboot.img" ]; then
         -no-emul-boot \
         -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
         -output "${ISO_PATH}" \
-        "${STAGING_DIR}" 2>&1 | tee /tmp/xorriso.log
+        "${STAGING_DIR}"
 else
     # 只支持BIOS的ISO
     xorriso -as mkisofs \
@@ -539,32 +592,21 @@ else
         -boot-info-table \
         -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
         -output "${ISO_PATH}" \
-        "${STAGING_DIR}" 2>&1 | tee /tmp/xorriso.log
+        "${STAGING_DIR}"
 fi
 
 # 验证ISO
 if [ -f "$ISO_PATH" ]; then
-    # 可选：进一步压缩ISO
-    log_info "优化ISO文件..."
-    
-    # 1. 使用isohybrid使其可直接dd到USB
-    if command -v isohybrid >/dev/null 2>&1; then
-        isohybrid "${ISO_PATH}" 2>/dev/null || true
-    fi
-    
-    # 2. 记录大小
     ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
-    ISO_SIZE_BYTES=$(stat -c%s "$ISO_PATH")
     
     echo ""
     log_success "✅ ISO构建成功！"
     echo ""
     echo "📊 构建信息："
     echo "  文件: $ISO_PATH"
-    echo "  大小: $ISO_SIZE ($ISO_SIZE_BYTES 字节)"
-    echo "  压缩比: $(echo "scale=2; $(du -sb "${STAGING_DIR}" 2>/dev/null | awk '{print $1}') / $ISO_SIZE_BYTES" | bc)x"
+    echo "  大小: $ISO_SIZE"
     echo ""
-    echo "🎉 优化完成！文件大小已最小化。"
+    echo "🎉 构建完成！"
     
     # 创建构建摘要
     cat > "${OUTPUT_DIR}/build-info.txt" << BUILD_INFO
@@ -572,19 +614,12 @@ OpenWRT Auto Installer ISO
 ===========================
 构建时间: $(date)
 ISO文件: $ISO_NAME
-文件大小: $ISO_SIZE ($ISO_SIZE_BYTES 字节)
+文件大小: $ISO_SIZE
 支持引导: BIOS + UEFI
-引导菜单: 自动安装OpenWRT
-注意事项: 安装会完全擦除目标磁盘数据
+内核文件: $(basename "$VMLINUZ" 2>/dev/null || echo "自定义内核")
 BUILD_INFO
-    
-    log_success "构建摘要已保存到: ${OUTPUT_DIR}/build-info.txt"
 else
     log_error "ISO构建失败"
-    if [ -f /tmp/xorriso.log ]; then
-        echo "xorriso error:"
-        tail -20 /tmp/xorriso.log
-    fi
     exit 1
 fi
 
