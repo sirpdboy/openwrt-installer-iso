@@ -95,8 +95,8 @@ jobs:
         chmod 777 output
     - name: Build ISO with proper rootfs
       run: |
-            # 1. 确保脚本有权限
-            chmod +x build-iso-final.sh
+        # 1. 确保脚本有权限
+        chmod +x build-iso-final.sh
     
         # 2. 复制脚本到容器内执行
         docker run --privileged --rm \
