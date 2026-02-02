@@ -137,9 +137,7 @@ apt-get -y install apt || true
 apt-get -y upgrade
 echo "Setting locale..."
 apt-get -y install locales \
-    fonts-wqy-microhei \
-    console-data \
-    keyboard-configuration
+    fonts-wqy-microhei 
 sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
