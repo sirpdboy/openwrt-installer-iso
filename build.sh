@@ -1,5 +1,5 @@
 #!/bin/bash
-# build.sh - OpenWRT ISO构建脚本（在Docker容器内运行） sirpdboy  https://github.com/sirpdboy/openwrt-installer-iso.git
+# build.sh - OpenWRT ISO构建脚本（在Docker容器内运行） sirpdboy 2025-2026  https://github.com/sirpdboy/openwrt-installer-iso.git
 set -e
 
 echo "🚀 Starting OpenWRT ISO build inside Docker container..."
@@ -136,13 +136,18 @@ apt-get update
 apt-get -y install apt || true
 apt-get -y upgrade
 echo "Setting locale..."
-apt-get -y install locales
+apt-get -y install locales \
+    fonts-wqy-microhei \
+    console-data \
+    keyboard-configuration
 sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
-apt-get install -y parted openssh-server bash-completion cifs-utils curl dbus dosfstools firmware-linux-free gddrescue gdisk iputils-ping isc-dhcp-client less nfs-common ntfs-3g openssh-client open-vm-tools procps vim wimtools wget pv grub-efi-amd64-bin dialog whiptail
+apt-get install -y openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail \
 
+    
+    
 # 清理包缓存
 apt-get clean
 
@@ -195,6 +200,7 @@ AUTOINSTALL_SERVICE
 cat > /opt/start-installer.sh << 'START_SCRIPT'
 #!/bin/bash
 # OpenWRT安装系统启动脚本
+sleep 3
 
 clear
 
@@ -207,7 +213,7 @@ cat << "WELCOME"
 System is starting up, please wait...
 WELCOME
 
-sleep 2
+sleep 5
 
 if [ ! -f "/openwrt.img" ]; then
     clear
@@ -241,11 +247,19 @@ GETTY_OVERRIDE
 cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/bash
 
+export LANG=zh_CN.UTF-8
+export LANGUAGE=zh_CN:zh
+export LC_ALL=zh_CN.UTF-8
 pkill -9 systemd-timesyncd 2>/dev/null
 pkill -9 journald 2>/dev/null
 echo 0 > /proc/sys/kernel/printk 2>/dev/null
-    
+
+sleep 5
 clear
+
+# 获取磁盘列表函数
+get_disk_list() {
+
 cat << "EOF"
 
 ╔═══════════════════════════════════════════════════════╗
@@ -253,10 +267,9 @@ cat << "EOF"
 ╚═══════════════════════════════════════════════════════╝
 
 EOF
-
 echo -e "\nChecking OpenWRT image..."
 if [ ! -f "/openwrt.img" ]; then
-    echo -e "\n❌ ERROR: OpenWRT image not found!"
+    echo -e "\nERROR: OpenWRT image not found!"
     echo -e "\nImage file should be at: /openwrt.img"
     echo -e "\nPress Enter for shell..."
     read
@@ -264,15 +277,11 @@ if [ ! -f "/openwrt.img" ]; then
 fi
 
 IMG_SIZE=$(ls -lh /openwrt.img | awk '{print $5}')
-echo -e "✅ OpenWRT image found: $IMG_SIZE\n"
+echo -e "OpenWRT image found: $IMG_SIZE\n"
 
-# 获取磁盘列表函数
-get_disk_list() {
-    # 获取所有磁盘，排除loop设备和只读设备
     DISK_LIST=()
     DISK_INDEX=1
-    
-    echo "Scanning available disks..."
+    echo "检测到的存储设备："
     
     # 使用lsblk获取磁盘信息
     while IFS= read -r line; do
@@ -291,6 +300,9 @@ get_disk_list() {
     done < <(lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^(sd|hd|nvme|vd)')
     
     TOTAL_DISKS=$((DISK_INDEX - 1))
+
+    echo -e "══════════════════════════════════════════════════════════\n"
+    
 }
 
 # 主循环
@@ -298,8 +310,9 @@ while true; do
     # 获取磁盘列表
     get_disk_list
     
+    
     if [ $TOTAL_DISKS -eq 0 ]; then
-        echo -e "\n❌ No disks detected!"
+        echo -e "\nNo disks detected!"
         echo -e "Please check your storage devices and try again."
 	echo ""
         read -p "Press Enter to rescan..." _
@@ -307,29 +320,24 @@ while true; do
         continue
     fi
     
-    echo -e "\n══════════════════════════════════════════════════════════"
-    echo -e "Please select target disk (1-$TOTAL_DISKS):"
-    echo -e "══════════════════════════════════════════════════════════\n"
-    
     # 获取用户选择
     while true; do
         read -p "Select disk number (1-$TOTAL_DISKS) or 'r' to rescan: " SELECTION
         
         case $SELECTION in
             [Rr])
-                clear
-                break 2  # 跳出两层循环，重新扫描
+                get_disk_list
                 ;;
             [0-9]*)
                 if [[ $SELECTION -ge 1 && $SELECTION -le $TOTAL_DISKS ]]; then
                     TARGET_DISK=${DISK_LIST[$SELECTION]}
                     break 2  # 跳出两层循环，继续安装
                 else
-                    echo "❌ Invalid selection. Please choose between 1 and $TOTAL_DISKS."
+                    echo "Invalid selection. Please choose between 1 and $TOTAL_DISKS."
                 fi
                 ;;
             *)
-                echo "❌ Invalid input. Please enter a number or 'r' to rescan."
+                echo "Invalid input. Please enter a number or 'r' to rescan."
                 ;;
         esac
     done
@@ -341,7 +349,7 @@ echo -e "\n═══════════════════════
 echo -e "           CONFIRM INSTALLATION"
 echo -e "══════════════════════════════════════════════════════════\n"
 echo -e "Target disk: /dev/$TARGET_DISK"
-echo -e "\n⚠️  ⚠️  ⚠️   WARNING: This will ERASE ALL DATA on /dev/$TARGET_DISK!  ⚠️  ⚠️  ⚠️"
+echo -e "\n     WARNING: This will ERASE ALL DATA on /dev/$TARGET_DISK!   "
 echo -e "\nALL existing partitions and data will be permanently deleted!"
 echo -e "\n══════════════════════════════════════════════════════════\n"
 
@@ -418,7 +426,7 @@ show_progress() {
                     for ((i=0; i<empty; i++)); do
                         echo -n " "
                     done
-                    echo -ne "] ${percentage}%"
+                    echo -ne "] \n     ${percentage}%"
                 fi
             fi
         fi
@@ -452,7 +460,7 @@ fi
 if [ $DD_EXIT -eq 0 ]; then
     # 同步磁盘
     sync
-    echo -e "\n\n✅ Installation successful!"
+    echo -e "\n\nInstallation successful!"
     echo -e "\nOpenWRT has been installed to /dev/$TARGET_DISK"
     
     # 显示安装后信息
@@ -478,7 +486,7 @@ if [ $DD_EXIT -eq 0 ]; then
     reboot -f
     
 else
-    echo -e "\n\n❌ Installation failed! Error code: $DD_EXIT"
+    echo -e "\n\nInstallation failed! Error code: $DD_EXIT"
     echo -e "\nPossible issues:"
     echo -e "1. Disk may be in use or mounted"
     echo -e "2. Disk may be failing"
@@ -545,11 +553,79 @@ mount -o bind /dev "${CHROOT_DIR}/dev"
 mount -o bind /sys "${CHROOT_DIR}/sys"
 
 log_info "Running chroot configuration..."
-chroot "$CHROOT_DIR" /install-chroot.sh
+chroot "$CHROOT_DIR" /install-chroot.sh 2>&1 
 
 # 清理chroot
 rm -f "$CHROOT_DIR/install-chroot.sh"
 
+# === 第六阶段：额外的精简步骤 ===
+
+# 1. 清理chroot中的缓存和临时文件
+chroot "${CHROOT_DIR}" /bin/bash -c "
+# 清理APT缓存
+apt-get clean 2>/dev/null || true
+
+# 清理日志
+find /var/log -type f -delete 2>/dev/null || true
+
+# 清理临时文件
+rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
+
+# 清理bash历史
+rm -f /root/.bash_history 2>/dev/null || true
+
+# 清理包管理器状态文件
+rm -f /var/lib/dpkg/status-old 2>/dev/null || true
+rm -f /var/lib/apt/lists/* 2>/dev/null || true
+
+# 清理系统d-bus缓存
+rm -rf /var/lib/dbus/machine-id 2>/dev/null || true
+
+# 清理网络配置缓存
+rm -rf /var/lib/systemd/random-seed 2>/dev/null || true
+"
+
+# 2. 手动清理不需要的文件
+for dir in "${CHROOT_DIR}/usr/share/locale" "${CHROOT_DIR}/usr/share/doc" \
+           "${CHROOT_DIR}/usr/share/man" "${CHROOT_DIR}/usr/share/info"; do
+    if [ -d "$dir" ]; then
+        rm -rf "$dir"
+    fi
+done
+
+# 3. 清理不必要的内核模块 (再次确保)
+if [ -d "${CHROOT_DIR}/lib/modules" ]; then
+    KERNEL_VERSION=$(ls "${CHROOT_DIR}/lib/modules/" | head -n1)
+    MODULES_PATH="${CHROOT_DIR}/lib/modules/${KERNEL_VERSION}"
+    
+    # 创建必要的模块列表
+    KEEP_MODS="
+kernel/fs/ext4
+kernel/fs/fat
+kernel/fs/vfat
+kernel/drivers/usb/storage
+kernel/drivers/ata
+kernel/drivers/scsi
+kernel/drivers/nvme
+kernel/drivers/block
+kernel/drivers/hid
+kernel/drivers/input
+kernel/drivers/net/ethernet
+"
+    
+    # 备份然后清理
+    mkdir -p "${MODULES_PATH}/kernel-keep"
+    for mod in $KEEP_MODS; do
+        if [ -d "${MODULES_PATH}/kernel/${mod}" ]; then
+            mkdir -p "${MODULES_PATH}/kernel-keep/${mod}"
+            mv "${MODULES_PATH}/kernel/${mod}"/* "${MODULES_PATH}/kernel-keep/${mod}/" 2>/dev/null || true
+        fi
+    done
+    
+    # 替换模块目录
+    rm -rf "${MODULES_PATH}/kernel"
+    mv "${MODULES_PATH}/kernel-keep" "${MODULES_PATH}/kernel"
+fi
 # 创建网络配置文件
 cat > "${CHROOT_DIR}/etc/systemd/network/99-dhcp.network" <<EOF
 [Match]
@@ -598,10 +674,15 @@ EOF
 # 创建squashfs，使用排除列表
 if mksquashfs "$CHROOT_DIR" "$STAGING_DIR/live/filesystem.squashfs" \
     -comp xz \
+    -Xbcj x86 \
     -b 1M \
     -noappend \
     -no-progress \
-    -wildcards \
+    -no-recovery \
+    -always-use-fragments \
+    -all-root \
+    -processors 2 \
+    -mem 1G \
     -ef "$WORK_DIR/squashfs-exclude.txt"; then
     SQUASHFS_SIZE=$(ls -lh "$STAGING_DIR/live/filesystem.squashfs" | awk '{print $5}')
     log_success "Squashfs created successfully: $SQUASHFS_SIZE"
@@ -624,17 +705,7 @@ UI vesamenu.c32
 
 MENU TITLE OpenWRT Auto Installer
 DEFAULT linux
-TIMEOUT 10
-MENU RESOLUTION 640 480
-MENU COLOR border       30;44   #40ffffff #a0000000 std
-MENU COLOR title        1;36;44 #9033ccff #a0000000 std
-MENU COLOR sel          7;37;40 #e0ffffff #20ffffff all
-MENU COLOR unsel        37;44   #50ffffff #a0000000 std
-MENU COLOR help         37;40   #c0ffffff #a0000000 std
-MENU COLOR timeout_msg  37;40   #80ffffff #00000000 std
-MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
-MENU COLOR msg07        37;40   #90ffffff #a0000000 std
-MENU COLOR tabmsg       31;40   #30ffffff #00000000 std
+TIMEOUT 3
 
 LABEL linux
   MENU LABEL ^Install OpenWRT
@@ -648,7 +719,7 @@ cat > "$STAGING_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 search --set=root --file /DEBIAN_CUSTOM
 
 set default="0"
-set timeout=10
+set timeout=3
 
 insmod efi_gop
 insmod font
@@ -873,6 +944,8 @@ EOF
     echo ""
     echo "To create bootable USB:"
     echo "  sudo dd if='$ISO_PATH' of=/dev/sdX bs=4M status=progress && sync"
+    echo ""
+    echo "  souce https://github.com/sirpdboy/openwrt-installer-iso.git"
     echo "================================================================================"
     
     log_success "🎉 All steps completed successfully!"
