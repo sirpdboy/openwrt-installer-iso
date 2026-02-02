@@ -9,10 +9,9 @@ echo "========================================"
 WORK_DIR="${HOME}/OPENWRT_LIVE"
 CHROOT_DIR="${WORK_DIR}/chroot"
 STAGING_DIR="${WORK_DIR}/staging"
-
-OPENWRT_IMG="${INPUT_IMG:-/mnt/ezopwrt.img}"
-OUTPUT_DIR="${OUTPUT_DIR:-/output}"
-ISO_NAME="${ISO_NAME:-openwrt-autoinstall.iso}"
+OUTPUT_DIR="/output"
+OPENWRT_IMG="/mnt/ezopwrt.img"
+ISO_NAME="openwrt-autoinstall.iso"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -139,6 +138,15 @@ EOF
 echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
 echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until
 
+# 设置主机名
+echo "openwrt-installer" > /etc/hostname
+
+# 配置DNS
+cat > /etc/resolv.conf << 'RESOLV'
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+RESOLV
+
 # 更新包列表并安装
 echo "更新包列表..."
 apt-get update
@@ -151,15 +159,26 @@ apt-get install -y --no-install-recommends \
     live-boot \
     systemd-sysv \
     parted \
+    openssh-server \
     bash-completion \
+    cifs-utils \
     curl \
     dbus \
     dosfstools \
     firmware-linux-free \
+    gddrescue \
+    gdisk \
+    iputils-ping \
+    isc-dhcp-client \
+    less \
     nfs-common \
+    ntfs-3g \
     openssh-client \
+    open-vm-tools \
     procps \
+    vim \
     wimtools \
+    wget \
     dialog \
     pv
 
@@ -238,6 +257,7 @@ cat << "WELCOME"
 System is starting up, please wait...
 WELCOME
 
+sleep 2
 
 if [ ! -f "/openwrt.img" ]; then
     clear
@@ -271,86 +291,91 @@ GETTY_OVERRIDE
 cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/bash
 # OpenWRT自动安装脚本
+
 clear
-echo "========================================"
-echo "    OpenWRT 自动安装程序"
-echo "========================================"
+cat << "EOF"
+
+╔═══════════════════════════════════════════════════════╗
+║               OpenWRT Auto Installer                  ║
+╚═══════════════════════════════════════════════════════╝
+
+EOF
+
 echo ""
-
-# 等待网络
-echo "等待网络连接..."
-for i in {1..20}; do
-    if ping -c1 -W1 8.8.8.8 &>/dev/null; then
-        echo "网络就绪"
-        break
-    fi
-    sleep 1
-done
-
-# 检查OpenWRT镜像
-if [ -f /mnt/openwrt/image.img ]; then
-    cp /mnt/openwrt/image.img /openwrt.img
-    echo "✅ 找到OpenWRT镜像"
-    echo "大小: $(ls -lh /openwrt.img | awk '{print $5}')"
-else
-    echo "❌ 找不到OpenWRT镜像"
-    echo "按回车键进入shell..."
+echo "Checking OpenWRT image..."
+if [ ! -f "/openwrt.img" ]; then
+    echo "❌ ERROR: OpenWRT image not found!"
+    echo ""
+    echo "Press Enter for shell..."
     read
     exec /bin/bash
 fi
 
+echo "✅ OpenWRT image found: $(ls -lh /openwrt.img | awk '{print $5}')"
+echo ""
+
 while true; do
-    echo ""
-    echo "可用磁盘:"
-    lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^[sh]d|^nvme|^vd' || echo "未找到磁盘"
+    # 显示磁盘
+    echo "Available disks:"
+    echo "================="
+    lsblk -d -n -o NAME,SIZE,MODEL | grep -E '^(sd|hd|nvme)' 2>/dev/null || echo "No disks found"
+    echo "================="
     echo ""
     
-    read -p "输入磁盘名称 (如: sda): " DISK
+    read -p "Enter target disk (e.g., sda): " DISK
     
     if [ -z "$DISK" ]; then
+        echo "Please enter a disk name"
         continue
     fi
     
     if [ ! -b "/dev/$DISK" ]; then
-        echo "❌ 磁盘 /dev/$DISK 不存在"
+        echo "❌ Disk /dev/$DISK not found!"
         continue
     fi
     
-    # 显示磁盘信息
+    # 确认
     echo ""
-    echo "磁盘信息 /dev/$DISK:"
-    fdisk -l "/dev/$DISK" 2>/dev/null | head -10
-    
+    echo "⚠️  WARNING: This will erase ALL data on /dev/$DISK!"
     echo ""
-    echo "⚠️ ⚠️ ⚠️  警告: 将擦除 /dev/$DISK 上的所有数据！ ⚠️ ⚠️ ⚠️"
-    read -p "输入 'YES' 确认: " CONFIRM
+    read -p "Type 'YES' to confirm: " CONFIRM
     
-    if [ "$CONFIRM" = "YES" ]; then
-        echo ""
-        echo "正在安装到 /dev/$DISK ..."
-        
-        if command -v pv >/dev/null; then
-            pv -pet /openwrt.img | dd of="/dev/$DISK" bs=4M status=none
-        else
-            dd if=/openwrt.img of="/dev/$DISK" bs=4M status=progress
-        fi
-        
-        sync
-        echo ""
-        echo "✅ 安装完成！"
-        echo "系统将在10秒后重启..."
-        
-        for i in {10..1}; do
-            echo -ne "倒计时: ${i}秒\r"
-            sleep 1
-        done
-        
-        reboot -f
-    else
-        echo "已取消"
+    if [ "$CONFIRM" != "YES" ]; then
+        echo "Cancelled."
+        continue
     fi
-done
+    
+    # 安装 - 修复：使用大写的$DISK变量
+    clear
+    echo ""
+    echo "Installing OpenWRT to /dev/$DISK..."
+    echo ""
 
+    if command -v pv >/dev/null 2>&1; then
+        pv -pet /openwrt.img | dd of="/dev/$DISK" bs=4M status=none
+    else
+        dd if=/openwrt.img of="/dev/$DISK" bs=4M status=progress
+    fi
+    
+    sync
+    echo ""
+    echo "✅ Installation complete!"
+    echo ""
+    echo "System will reboot in 10 seconds..."
+    echo "Press any key to cancel."
+    
+    for i in {10..1}; do
+        echo -ne "Rebooting in $i seconds...\r"
+        if read -t 1 -n 1; then
+            echo ""
+            echo "Reboot cancelled."
+            echo "Type 'reboot' to restart."
+            exec /bin/bash
+        fi
+    done
+    
+    reboot -f
+done
 INSTALL_SCRIPT
 
 chmod +x /opt/install-openwrt.sh
@@ -358,12 +383,37 @@ chmod +x /opt/install-openwrt.sh
 # 6. 创建bash配置
 cat > /root/.bashrc << 'BASHRC'
 # OpenWRT安装系统bash配置
-export PS1='\[\e[1;32m\]\u@openwrt-installer\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
 
+# 如果不是交互式shell，直接退出
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+
+# 设置PS1
+PS1='\[\e[1;32m\]\u@openwrt-installer\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
+
+# 别名
+alias ll='ls -la'
+alias l='ls -l'
+alias cls='clear'
+
+if [ "$(tty)" = "/dev/tty1" ]; then
+    echo ""
+    echo "Welcome to OpenWRT Installer System"
+    echo ""
+    echo "If installer doesn't start automatically, run:"
+    echo "  /opt/install-openwrt.sh"
+    echo ""
+fi
 BASHRC
 
 # 7. 删除machine-id（重要！每次启动重新生成）
 rm -f /etc/machine-id
+
+# 8. 记录安装的包
+echo "记录安装的包..."
+dpkg --get-selections > /packages.txt
 
 # 9. 配置live-boot
 echo "配置live-boot..."
@@ -375,11 +425,6 @@ echo "清理系统..."
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# 删除不必要的文档
-rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* 2>/dev/null || true
-
-# 保留必要的locale
-find /usr/share/locale -mindepth 1 -maxdepth 1 ! -name 'en*' ! -name 'locale.alias' -exec rm -rf {} + 2>/dev/null || true
 echo "✅ chroot配置完成"
 CHROOT_EOF
 
@@ -398,6 +443,9 @@ chroot "${CHROOT_DIR}" /bin/bash -c "/install-chroot.sh 2>&1 | tee /install.log"
 # 清理chroot
 log_info "清理chroot..."
 rm -f "${CHROOT_DIR}/install-chroot.sh"
+if [ -f "${CHROOT_DIR}/packages.txt" ]; then
+    mv "${CHROOT_DIR}/packages.txt" "/output/packages.txt"
+fi
 
 # 配置网络
 cat > "${CHROOT_DIR}/etc/systemd/network/99-dhcp-en.network" <<EOF
@@ -457,9 +505,6 @@ else
     log_error "initrd复制失败"
     exit 1
 fi
-
-log_success "找到内核: $(basename $KERNEL_FILE) ($(numfmt --to=iec-i --suffix=B $(stat -c%s "$KERNEL_FILE")))"
-log_success "找到initrd: $(basename $INITRD_FILE) ($(numfmt --to=iec-i --suffix=B $(stat -c%s "$INITRD_FILE")))"
 
 # 创建引导配置文件
 log_info "创建引导配置..."
