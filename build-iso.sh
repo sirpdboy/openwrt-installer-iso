@@ -141,7 +141,7 @@ sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
-apt-get install -y openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtoolspv grub-efi-amd64-bin dialog whiptail
+apt-get install -y openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail
 
 # 清理包缓存
 apt-get clean
@@ -271,7 +271,7 @@ get_disk_list() {
     # 获取所有磁盘，排除loop设备和只读设备
     DISK_LIST=()
     DISK_INDEX=1
-    
+    clear
     echo "Scanning available disks..."
     
     # 使用lsblk获取磁盘信息
@@ -291,12 +291,6 @@ get_disk_list() {
     done < <(lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^(sd|hd|nvme|vd)')
     
     TOTAL_DISKS=$((DISK_INDEX - 1))
-}
-
-# 主循环
-while true; do
-    # 获取磁盘列表
-    get_disk_list
     
     if [ $TOTAL_DISKS -eq 0 ]; then
         echo -e "\n❌ No disks detected!"
@@ -311,14 +305,20 @@ while true; do
     echo -e "Please select target disk (1-$TOTAL_DISKS):"
     echo -e "══════════════════════════════════════════════════════════\n"
     
+}
+
+# 主循环
+while true; do
+    # 获取磁盘列表
+    get_disk_list
+    
     # 获取用户选择
     while true; do
         read -p "Select disk number (1-$TOTAL_DISKS) or 'r' to rescan: " SELECTION
         
         case $SELECTION in
             [Rr])
-                clear
-                break 2  # 跳出两层循环，重新扫描
+                get_disk_list
                 ;;
             [0-9]*)
                 if [[ $SELECTION -ge 1 && $SELECTION -le $TOTAL_DISKS ]]; then
