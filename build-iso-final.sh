@@ -137,7 +137,9 @@ apt-get -y install apt || true
 apt-get -y upgrade
 echo "Setting locale..."
 apt-get -y install locales \
-    fonts-wqy-microhei 
+    fonts-wqy-microhei \
+    console-data \
+    keyboard-configuration
 sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
@@ -358,29 +360,24 @@ while true; do
         continue
     fi
     
-    echo -e "\n══════════════════════════════════════════════════════════"
-    echo -e "请选择需要写盘的硬盘序号 (1-$TOTAL_DISKS):"
-    echo -e "══════════════════════════════════════════════════════════\n"
-    
     # 获取用户选择
     while true; do
         read -p "Select disk number (1-$TOTAL_DISKS) or 'r' to rescan: " SELECTION
         
         case $SELECTION in
             [Rr])
-                clear
-                break 2  # 跳出两层循环，重新扫描
+                get_disk_list
                 ;;
             [0-9]*)
                 if [[ $SELECTION -ge 1 && $SELECTION -le $TOTAL_DISKS ]]; then
                     TARGET_DISK=${DISK_LIST[$SELECTION]}
                     break 2  # 跳出两层循环，继续安装
                 else
-                    echo "❌ Invalid selection. Please choose between 1 and $TOTAL_DISKS."
+                    echo "Invalid selection. Please choose between 1 and $TOTAL_DISKS."
                 fi
                 ;;
             *)
-                echo "❌ Invalid input. Please enter a number or 'r' to rescan."
+                echo "Invalid input. Please enter a number or 'r' to rescan."
                 ;;
         esac
     done
@@ -392,7 +389,7 @@ echo -e "\n═══════════════════════
 echo -e "           CONFIRM INSTALLATION"
 echo -e "══════════════════════════════════════════════════════════\n"
 echo -e "Target disk: /dev/$TARGET_DISK"
-echo -e "\n⚠️  ⚠️  ⚠️   WARNING: This will ERASE ALL DATA on /dev/$TARGET_DISK!  ⚠️  ⚠️  ⚠️"
+echo -e "\n     WARNING: This will ERASE ALL DATA on /dev/$TARGET_DISK!   "
 echo -e "\nALL existing partitions and data will be permanently deleted!"
 echo -e "\n══════════════════════════════════════════════════════════\n"
 
@@ -718,10 +715,15 @@ EOF
 # 创建squashfs，使用排除列表
 if mksquashfs "$CHROOT_DIR" "$STAGING_DIR/live/filesystem.squashfs" \
     -comp xz \
+    -Xbcj x86 \
     -b 1M \
     -noappend \
     -no-progress \
-    -wildcards \
+    -no-recovery \
+    -always-use-fragments \
+    -all-root \
+    -processors 2 \
+    -mem 1G \
     -ef "$WORK_DIR/squashfs-exclude.txt"; then
     SQUASHFS_SIZE=$(ls -lh "$STAGING_DIR/live/filesystem.squashfs" | awk '{print $5}')
     log_success "Squashfs created successfully: $SQUASHFS_SIZE"
@@ -744,17 +746,7 @@ UI vesamenu.c32
 
 MENU TITLE OpenWRT Auto Installer
 DEFAULT linux
-TIMEOUT 10
-MENU RESOLUTION 640 480
-MENU COLOR border       30;44   #40ffffff #a0000000 std
-MENU COLOR title        1;36;44 #9033ccff #a0000000 std
-MENU COLOR sel          7;37;40 #e0ffffff #20ffffff all
-MENU COLOR unsel        37;44   #50ffffff #a0000000 std
-MENU COLOR help         37;40   #c0ffffff #a0000000 std
-MENU COLOR timeout_msg  37;40   #80ffffff #00000000 std
-MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
-MENU COLOR msg07        37;40   #90ffffff #a0000000 std
-MENU COLOR tabmsg       31;40   #30ffffff #00000000 std
+TIMEOUT 3
 
 LABEL linux
   MENU LABEL ^Install OpenWRT
@@ -768,7 +760,7 @@ cat > "$STAGING_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 search --set=root --file /DEBIAN_CUSTOM
 
 set default="0"
-set timeout=10
+set timeout=3
 
 insmod efi_gop
 insmod font
@@ -983,7 +975,7 @@ EOF
     
     echo ""
     echo "================================================================================"
-    echo "� ISO Build Complete!"
+    echo "📦 ISO Build Complete!"
     echo "================================================================================"
     echo "Key improvements in this version:"
     echo "  ✓ Clean, minimal installation output (no verbose logs)"
@@ -993,9 +985,11 @@ EOF
     echo ""
     echo "To create bootable USB:"
     echo "  sudo dd if='$ISO_PATH' of=/dev/sdX bs=4M status=progress && sync"
+    echo ""
+    echo "  souce https://github.com/sirpdboy/openwrt-installer-iso.git"
     echo "================================================================================"
     
-    log_success "� All steps completed successfully!"
+    log_success "🎉 All steps completed successfully!"
 else
     log_error "❌ ISO file not created: $ISO_PATH"
     exit 1
