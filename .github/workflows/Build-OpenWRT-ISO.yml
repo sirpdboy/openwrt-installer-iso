@@ -87,7 +87,7 @@ jobs:
         echo "✅ 镜像大小: $(stat -c%s assets/ezopwrt.img | numfmt --to=iec)"
 
     - name: Build ISO
-      uses: sirpdboy/openwrt-installer-iso@main
+      uses: sirpdboy/openwrt-installer-iso@v2
       with:
         INPUT_IMG: "./assets/ezopwrt.img"
         OUTPUT_DIR: "./output"
