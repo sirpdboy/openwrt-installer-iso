@@ -136,16 +136,8 @@ apt-get update
 apt-get -y install apt || true
 apt-get -y upgrade
 echo "Setting locale..."
-apt-get -y install locales \
-    fonts-wqy-microhei \
-    console-data \
-    keyboard-configuration
-
-# 设置默认locale
-update-locale LANG=zh_CN.UTF-8
-sed -i 's/# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen
-sed -i 's/# zh_CN.GBK GBK/zh_CN.GBK GBK/' /etc/locale.gen
-
+apt-get -y install locales
+sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
