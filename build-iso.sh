@@ -256,7 +256,7 @@ EOF
 
 echo -e "\nChecking OpenWRT image..."
 if [ ! -f "/openwrt.img" ]; then
-    echo -e "\n❌ ERROR: OpenWRT image not found!"
+    echo -e "\nERROR: OpenWRT image not found!"
     echo -e "\nImage file should be at: /openwrt.img"
     echo -e "\nPress Enter for shell..."
     read
@@ -264,7 +264,7 @@ if [ ! -f "/openwrt.img" ]; then
 fi
 
 IMG_SIZE=$(ls -lh /openwrt.img | awk '{print $5}')
-echo -e "✅ OpenWRT image found: $IMG_SIZE\n"
+echo -e "OpenWRT image found: $IMG_SIZE\n"
 
 # 获取磁盘列表函数
 get_disk_list() {
@@ -293,7 +293,7 @@ get_disk_list() {
     TOTAL_DISKS=$((DISK_INDEX - 1))
     
     if [ $TOTAL_DISKS -eq 0 ]; then
-        echo -e "\n❌ No disks detected!"
+        echo -e "\nNo disks detected!"
         echo -e "Please check your storage devices and try again."
 	echo ""
         read -p "Press Enter to rescan..." _
@@ -301,8 +301,6 @@ get_disk_list() {
         continue
     fi
     
-    echo -e "\n══════════════════════════════════════════════════════════"
-    echo -e "Please select target disk (1-$TOTAL_DISKS):"
     echo -e "══════════════════════════════════════════════════════════\n"
     
 }
@@ -325,11 +323,11 @@ while true; do
                     TARGET_DISK=${DISK_LIST[$SELECTION]}
                     break 2  # 跳出两层循环，继续安装
                 else
-                    echo "❌ Invalid selection. Please choose between 1 and $TOTAL_DISKS."
+                    echo "Invalid selection. Please choose between 1 and $TOTAL_DISKS."
                 fi
                 ;;
             *)
-                echo "❌ Invalid input. Please enter a number or 'r' to rescan."
+                echo "Invalid input. Please enter a number or 'r' to rescan."
                 ;;
         esac
     done
@@ -341,7 +339,7 @@ echo -e "\n═══════════════════════
 echo -e "           CONFIRM INSTALLATION"
 echo -e "══════════════════════════════════════════════════════════\n"
 echo -e "Target disk: /dev/$TARGET_DISK"
-echo -e "\n⚠️  ⚠️  ⚠️   WARNING: This will ERASE ALL DATA on /dev/$TARGET_DISK!  ⚠️  ⚠️  ⚠️"
+echo -e "\n     WARNING: This will ERASE ALL DATA on /dev/$TARGET_DISK!   "
 echo -e "\nALL existing partitions and data will be permanently deleted!"
 echo -e "\n══════════════════════════════════════════════════════════\n"
 
@@ -418,7 +416,7 @@ show_progress() {
                     for ((i=0; i<empty; i++)); do
                         echo -n " "
                     done
-                    echo -ne "] ${percentage}%"
+                    echo -ne "] \n     ${percentage}%"
                 fi
             fi
         fi
@@ -452,7 +450,7 @@ fi
 if [ $DD_EXIT -eq 0 ]; then
     # 同步磁盘
     sync
-    echo -e "\n\n✅ Installation successful!"
+    echo -e "\n\nInstallation successful!"
     echo -e "\nOpenWRT has been installed to /dev/$TARGET_DISK"
     
     # 显示安装后信息
@@ -478,7 +476,7 @@ if [ $DD_EXIT -eq 0 ]; then
     reboot -f
     
 else
-    echo -e "\n\n❌ Installation failed! Error code: $DD_EXIT"
+    echo -e "\n\nInstallation failed! Error code: $DD_EXIT"
     echo -e "\nPossible issues:"
     echo -e "1. Disk may be in use or mounted"
     echo -e "2. Disk may be failing"
