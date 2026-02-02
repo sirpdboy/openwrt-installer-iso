@@ -136,12 +136,22 @@ apt-get update
 apt-get -y install apt || true
 apt-get -y upgrade
 echo "Setting locale..."
-apt-get -y install locales
-sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+apt-get -y install locales \
+    fonts-wqy-microhei \
+    console-setup \
+    console-data \
+    keyboard-configuration
+
+# 设置默认locale
+update-locale LANG=zh_CN.UTF-8
+sed -i 's/# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen
+sed -i 's/# zh_CN.GBK GBK/zh_CN.GBK GBK/' /etc/locale.gen
+locale-gen
+
 dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
-apt-get install -y parted openssh-server bash-completion cifs-utils dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common openssh-client open-vm-tools procps vim wimtools pv grub-efi-amd64-bin dialog whiptail
+apt-get install -y openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail \
 
 # 清理包缓存
 apt-get clean
@@ -288,11 +298,17 @@ GETTY_OVERRIDE
 cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/bash
 
+export LANG=zh_CN.UTF-8
+export LANGUAGE=zh_CN:zh
+export LC_ALL=zh_CN.UTF-8
 pkill -9 systemd-timesyncd 2>/dev/null
 pkill -9 journald 2>/dev/null
 echo 0 > /proc/sys/kernel/printk 2>/dev/null
     
 clear
+# 获取磁盘列表函数
+get_disk_list() {
+
 cat << "EOF"
 
 ╔═══════════════════════════════════════════════════════╗
@@ -303,7 +319,7 @@ EOF
 
 echo -e "\nChecking OpenWRT image..."
 if [ ! -f "/openwrt.img" ]; then
-    echo -e "\n❌ ERROR: OpenWRT image not found!"
+    echo -e "\nERROR: OpenWRT image not found!"
     echo -e "\nImage file should be at: /openwrt.img"
     echo -e "\nPress Enter for shell..."
     read
@@ -311,15 +327,11 @@ if [ ! -f "/openwrt.img" ]; then
 fi
 
 IMG_SIZE=$(ls -lh /openwrt.img | awk '{print $5}')
-echo -e "✅ OpenWRT image found: $IMG_SIZE\n"
+echo -e "OpenWRT image found: $IMG_SIZE\n"
 
-# 获取磁盘列表函数
-get_disk_list() {
-    # 获取所有磁盘，排除loop设备和只读设备
     DISK_LIST=()
     DISK_INDEX=1
-    
-    echo "Scanning available disks..."
+    echo "检测到的存储设备："
     
     # 使用lsblk获取磁盘信息
     while IFS= read -r line; do
@@ -338,6 +350,7 @@ get_disk_list() {
     done < <(lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^(sd|hd|nvme|vd)')
     
     TOTAL_DISKS=$((DISK_INDEX - 1))
+    echo -e "══════════════════════════════════════════════════════════\n"
 }
 
 # 主循环
@@ -346,7 +359,7 @@ while true; do
     get_disk_list
     
     if [ $TOTAL_DISKS -eq 0 ]; then
-        echo -e "\n❌ No disks detected!"
+        echo -e "\nNo disks detected!"
         echo -e "Please check your storage devices and try again."
 	echo ""
         read -p "Press Enter to rescan..." _
