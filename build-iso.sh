@@ -151,6 +151,51 @@ apt-get install -y openssh-server bash-completion dbus dosfstools firmware-linux
 # 清理包缓存
 apt-get clean
 
+# 保留基本的内核模块
+KEEP_MODULES="
+ext4
+fat
+vfat
+isofs
+usb-storage
+usbhid
+uhci-hcd
+ehci-hcd
+ohci-hcd
+xhci-hcd
+sd_mod
+sr_mod
+cdrom
+ata_generic
+ata_piix
+ahci
+nvme
+scsi_mod
+sg
+dm-mod
+dm-crypt
+cryptd
+loop
+"
+
+# 清理不必要的内核模块
+mkdir -p /lib/modules-backup
+KERNEL_VERSION=$(ls /lib/modules/ | head -n1)
+MODULES_DIR="/lib/modules/${KERNEL_VERSION}/kernel"
+
+for dir in drivers/net/wireless drivers/media drivers/video drivers/gpu; do
+    rm -rf ${MODULES_DIR}/${dir} 2>/dev/null || true
+done
+# 保留网卡驱动 (最小化)
+for dir in drivers/net/ethernet/intel drivers/net/ethernet/realtek drivers/net/ethernet/broadcom; do
+    mkdir -p /lib/modules-backup/${dir}
+    mv ${MODULES_DIR}/${dir}/* /lib/modules-backup/${dir}/ 2>/dev/null || true
+done
+
+# 清理不常用的文件系统驱动
+for fs in cifs nfs nfsd afs ceph coda ecryptfs f2fs hfs hfsplus jffs2 minix nilfs2 omfs orangefs qnx4 qnx6 reiserfs romfs sysv ubifs udf ufs; do
+    rm -rf ${MODULES_DIR}/fs/${fs} 2>/dev/null || true
+done
 # 配置网络
 systemctl enable systemd-networkd
 
