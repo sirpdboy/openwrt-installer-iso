@@ -48,7 +48,7 @@ echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check-
 # 安装必要工具
 log_info "安装构建工具..."
 apt-get update
-apt-get -y install --no-install-recommends \
+apt-get -y install \
     debootstrap \
     squashfs-tools \
     xorriso \
@@ -62,9 +62,20 @@ apt-get -y install --no-install-recommends \
     parted \
     wget \
     curl \
+    gnupg \
+    dialog \
     live-boot \
     live-boot-initramfs-tools \
-    pv
+    git \
+    pv \
+    file \
+    gddrescue \
+    gdisk \
+    cifs-utils \
+    nfs-common \
+    ntfs-3g \
+    open-vm-tools \
+    wimtools
 
 # 创建目录结构
 log_info "创建工作目录..."
@@ -88,7 +99,6 @@ fi
 log_info "引导Debian最小系统..."
 DEBIAN_MIRROR="http://archive.debian.org/debian"
 if debootstrap --arch=amd64 --variant=minbase \
-    --include=apt,apt-utils,locales \
     buster "${CHROOT_DIR}" \
     "${DEBIAN_MIRROR}" 2>&1 | tee /tmp/debootstrap.log; then
     log_success "Debian最小系统引导成功"
@@ -96,7 +106,6 @@ else
     log_warning "第一次引导失败，尝试备用源..."
     DEBIAN_MIRROR="http://deb.debian.org/debian"
     if debootstrap --arch=amd64 --variant=minbase \
-        --include=apt,apt-utils,locales \
         buster "${CHROOT_DIR}" \
         "${DEBIAN_MIRROR}" 2>&1 | tee -a /tmp/debootstrap.log; then
         log_success "备用源引导成功"
@@ -145,6 +154,8 @@ apt-get update
 
 echo "安装基本系统..."
 apt-get install -y --no-install-recommends \
+    apt \
+    locales \
     linux-image-amd64 \
     live-boot \
     systemd-sysv \
@@ -155,7 +166,6 @@ apt-get install -y --no-install-recommends \
     dosfstools \
     firmware-linux-free \
     gddrescue \
-    gdisk \
     less \
     nfs-common \
 
@@ -346,84 +356,90 @@ GETTY_OVERRIDE
 # 5. 创建OpenWRT安装脚本
 cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/bash
+
 clear
-echo "========================================"
-echo "    OpenWRT 自动安装程序"
-echo "========================================"
+cat << "EOF"
+
+╔═══════════════════════════════════════════════════════╗
+║               OpenWRT Auto Installer                  ║
+╚═══════════════════════════════════════════════════════╝
+
+EOF
+
 echo ""
-
-# 等待网络
-echo "等待网络连接..."
-for i in {1..20}; do
-    if ping -c1 -W1 8.8.8.8 &>/dev/null; then
-        echo "网络就绪"
-        break
-    fi
-    sleep 1
-done
-
-# 检查OpenWRT镜像
-if [ -f /mnt/openwrt/image.img ]; then
-    cp /mnt/openwrt/image.img /openwrt.img
-    echo "✅ 找到OpenWRT镜像"
-    echo "大小: $(ls -lh /openwrt.img | awk '{print $5}')"
-else
-    echo "❌ 找不到OpenWRT镜像"
-    echo "按回车键进入shell..."
+echo "Checking OpenWRT image..."
+if [ ! -f "/openwrt.img" ]; then
+    echo "❌ ERROR: OpenWRT image not found!"
+    echo ""
+    echo "Press Enter for shell..."
     read
     exec /bin/bash
 fi
 
+echo "✅ OpenWRT image found: $(ls -lh /openwrt.img | awk '{print $5}')"
+echo ""
+
 while true; do
-    echo ""
-    echo "可用磁盘:"
-    lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^[sh]d|^nvme|^vd' || echo "未找到磁盘"
+    # 显示磁盘
+    echo "Available disks:"
+    echo "================="
+    lsblk -d -n -o NAME,SIZE,MODEL | grep -E '^(sd|hd|nvme)' 2>/dev/null || echo "No disks found"
+    echo "================="
     echo ""
     
-    read -p "输入磁盘名称 (如: sda): " DISK
+    read -p "Enter target disk (e.g., sda): " DISK
     
     if [ -z "$DISK" ]; then
+        echo "Please enter a disk name"
         continue
     fi
     
     if [ ! -b "/dev/$DISK" ]; then
-        echo "❌ 磁盘 /dev/$DISK 不存在"
+        echo "❌ Disk /dev/$DISK not found!"
         continue
     fi
     
-    # 显示磁盘信息
+    # 确认
     echo ""
-    echo "磁盘信息 /dev/$DISK:"
-    fdisk -l "/dev/$DISK" 2>/dev/null | head -10
-    
+    echo "⚠️  WARNING: This will erase ALL data on /dev/$DISK!"
     echo ""
-    echo "⚠️ ⚠️ ⚠️  警告: 将擦除 /dev/$DISK 上的所有数据！ ⚠️ ⚠️ ⚠️"
-    read -p "输入 'YES' 确认: " CONFIRM
+    read -p "Type 'YES' to confirm: " CONFIRM
     
-    if [ "$CONFIRM" = "YES" ]; then
-        echo ""
-        echo "正在安装到 /dev/$DISK ..."
-        
-        if command -v pv >/dev/null; then
-            pv -pet /openwrt.img | dd of="/dev/$DISK" bs=4M status=none
-        else
-            dd if=/openwrt.img of="/dev/$DISK" bs=4M status=progress
-        fi
-        
-        sync
-        echo ""
-        echo "✅ 安装完成！"
-        echo "系统将在10秒后重启..."
-        
-        for i in {10..1}; do
-            echo -ne "倒计时: ${i}秒\r"
-            sleep 1
-        done
-        
-        reboot -f
-    else
-        echo "已取消"
+    if [ "$CONFIRM" != "YES" ]; then
+        echo "Cancelled."
+        continue
     fi
+    
+    # 安装 - 修复：使用大写的$DISK变量
+    clear
+    echo ""
+    echo "Installing OpenWRT to /dev/$DISK..."
+    echo ""
+
+    if command -v pv >/dev/null 2>&1; then
+        pv -pet /openwrt.img | dd of="/dev/$DISK" bs=4M status=none
+    else
+        dd if=/openwrt.img of="/dev/$DISK" bs=4M status=progress
+    fi
+    
+    sync
+    echo ""
+    echo "✅ Installation complete!"
+    echo ""
+    echo "System will reboot in 10 seconds..."
+    echo "Press any key to cancel."
+    
+    for i in {10..1}; do
+        echo -ne "Rebooting in $i seconds...\r"
+        if read -t 1 -n 1; then
+            echo ""
+            echo "Reboot cancelled."
+            echo "Type 'reboot' to restart."
+            exec /bin/bash
+        fi
+    done
+    
+    reboot -f
 done
 
 INSTALL_SCRIPT
@@ -483,19 +499,86 @@ chmod +x "${CHROOT_DIR}/install-chroot.sh"
 # 挂载文件系统到chroot
 log_info "挂载文件系统到chroot..."
 mount -t proc none "${CHROOT_DIR}/proc"
+mount -t sysfs none "${CHROOT_DIR}/sys"
 mount -o bind /dev "${CHROOT_DIR}/dev"
-mount -o bind /sys "${CHROOT_DIR}/sys"
 
 # 在chroot内执行安装脚本
-log_info "在chroot内执行安装..."
+log_info "在chroot内执行精简安装..."
 chroot "${CHROOT_DIR}" /bin/bash -c "/install-chroot.sh 2>&1 | tee /install.log"
 
-# 清理chroot
-log_info "清理chroot..."
+# 清理chroot脚本
 rm -f "${CHROOT_DIR}/install-chroot.sh"
-if [ -f "${CHROOT_DIR}/packages.txt" ]; then
-    mv "${CHROOT_DIR}/packages.txt" "/output/packages.txt"
+
+# === 第六阶段：额外的精简步骤 ===
+log_info "执行额外精简..."
+
+# 1. 清理chroot中的缓存和临时文件
+chroot "${CHROOT_DIR}" /bin/bash -c "
+# 清理APT缓存
+apt-get clean 2>/dev/null || true
+
+# 清理日志
+find /var/log -type f -delete 2>/dev/null || true
+
+# 清理临时文件
+rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
+
+# 清理bash历史
+rm -f /root/.bash_history 2>/dev/null || true
+
+# 清理包管理器状态文件
+rm -f /var/lib/dpkg/status-old 2>/dev/null || true
+rm -f /var/lib/apt/lists/* 2>/dev/null || true
+
+# 清理系统d-bus缓存
+rm -rf /var/lib/dbus/machine-id 2>/dev/null || true
+
+# 清理网络配置缓存
+rm -rf /var/lib/systemd/random-seed 2>/dev/null || true
+"
+
+# 2. 手动清理不需要的文件
+for dir in "${CHROOT_DIR}/usr/share/locale" "${CHROOT_DIR}/usr/share/doc" \
+           "${CHROOT_DIR}/usr/share/man" "${CHROOT_DIR}/usr/share/info"; do
+    if [ -d "$dir" ]; then
+        rm -rf "$dir"
+    fi
+done
+
+# 3. 清理不必要的内核模块 (再次确保)
+if [ -d "${CHROOT_DIR}/lib/modules" ]; then
+    KERNEL_VERSION=$(ls "${CHROOT_DIR}/lib/modules/" | head -n1)
+    MODULES_PATH="${CHROOT_DIR}/lib/modules/${KERNEL_VERSION}"
+    
+    # 创建必要的模块列表
+    KEEP_MODS="
+kernel/fs/ext4
+kernel/fs/fat
+kernel/fs/vfat
+kernel/drivers/usb/storage
+kernel/drivers/ata
+kernel/drivers/scsi
+kernel/drivers/nvme
+kernel/drivers/block
+kernel/drivers/hid
+kernel/drivers/input
+kernel/drivers/net/ethernet
+"
+    
+    # 备份然后清理
+    mkdir -p "${MODULES_PATH}/kernel-keep"
+    for mod in $KEEP_MODS; do
+        if [ -d "${MODULES_PATH}/kernel/${mod}" ]; then
+            mkdir -p "${MODULES_PATH}/kernel-keep/${mod}"
+            mv "${MODULES_PATH}/kernel/${mod}"/* "${MODULES_PATH}/kernel-keep/${mod}/" 2>/dev/null || true
+        fi
+    done
+    
+    # 替换模块目录
+    rm -rf "${MODULES_PATH}/kernel"
+    mv "${MODULES_PATH}/kernel-keep" "${MODULES_PATH}/kernel"
 fi
+
 
 # 配置网络
 cat > "${CHROOT_DIR}/etc/systemd/network/99-dhcp-en.network" <<EOF
