@@ -121,7 +121,7 @@ else
     fi
 fi
 log_info 内核vmlinuz大小：$(du -h "${STAGING_DIR}/live/vmlinuz" 2>/dev/null | cut -f1)
-ls -l ${WORK_DIR}/iso/boot
+ls -l ${STAGING_DIR}/live
 log_info 内核initrd大小：$(du -h "${STAGING_DIR}/live/initrd" 2>/dev/null | cut -f1)
 # 创建最小化的根文件系统（基于busybox）
 log_info "创建最小化根文件系统..."
