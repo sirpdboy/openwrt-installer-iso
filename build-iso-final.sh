@@ -111,11 +111,6 @@ set -e
 
 echo "� Configuring chroot environment..."
 
-# 基本设置
-export DEBIAN_FRONTEND=noninteractive
-export LC_ALL=C
-export LANG=C.UTF-8
-
 # 配置APT源
 cat > /etc/apt/sources.list <<EOF
 deb http://archive.debian.org/debian buster main contrib non-free
@@ -141,7 +136,14 @@ apt-get -y install locales \
     console-data \
     keyboard-configuration
     
-sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+export LANG=zh_CN.UTF-8
+export LANGUAGE=zh_CN:zh
+export LC_ALL=zh_CN.UTF-8
+
+sed -i 's/# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen
+locale-gen zh_CN.UTF-8
+
+ # sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
@@ -149,6 +151,8 @@ apt-get install -y openssh-server bash-completion dbus dosfstools firmware-linux
 
 # 清理包缓存
 apt-get clean
+
+
 cat > /etc/default/console-setup << 'EOF'
 ACTIVE_CONSOLES="/dev/tty[1-6]"
 CHARMAP="UTF-8"
@@ -157,7 +161,6 @@ FONTFACE="Fixed"
 FONTSIZE="8x16"
 VIDEOMODE=
 EOF
-
 # 配置网络
 systemctl enable systemd-networkd
 
@@ -256,6 +259,7 @@ seelp 5
 export LANG=zh_CN.UTF-8
 export LANGUAGE=zh_CN:zh
 export LC_ALL=zh_CN.UTF-8
+
 pkill -9 systemd-timesyncd 2>/dev/null
 pkill -9 journald 2>/dev/null
 echo 0 > /proc/sys/kernel/printk 2>/dev/null
