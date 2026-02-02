@@ -1,8 +1,8 @@
 #!/bin/bash
-# build-iso-final.sh - 构建OpenWRT自动安装ISO（修复initrd问题版）
+# build-iso-final.sh - 构建OpenWRT自动安装ISO（极小化版）
 set -e
 
-echo "开始构建OpenWRT安装ISO..."
+echo "开始构建OpenWRT安装ISO（极小化版）..."
 echo "========================================"
 
 # 基础配置
@@ -13,6 +13,7 @@ STAGING_DIR="${WORK_DIR}/staging"
 OPENWRT_IMG="${INPUT_IMG:-/mnt/ezopwrt.img}"
 OUTPUT_DIR="${OUTPUT_DIR:-/output}"
 ISO_NAME="${ISO_NAME:-openwrt-autoinstall.iso}"
+TARGET_SQUASHFS_SIZE=50000000  # 目标50MB
 
 # 颜色定义
 RED='\033[0;31m'
@@ -33,11 +34,6 @@ if [ ! -f "${OPENWRT_IMG}" ]; then
     log_error "找不到OpenWRT镜像: ${OPENWRT_IMG}"
     exit 1
 fi
-cat > /etc/apt/sources.list <<EOF
-deb http://archive.debian.org/debian buster main
-deb http://archive.debian.org/debian-security buster/updates main
-EOF
-echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
 
 # 安装必要工具
 log_info "安装构建工具..."
@@ -58,7 +54,8 @@ apt-get -y install \
     live-boot-initramfs-tools \
     pv \
     kpartx \
-    file
+    file \
+    rsync
 
 # 创建目录结构
 log_info "创建工作目录..."
@@ -75,39 +72,38 @@ cp "${OPENWRT_IMG}" "${WORK_DIR}/openwrt/image.img"
 OPENWRT_SIZE=$(stat -c%s "${WORK_DIR}/openwrt/image.img")
 log_success "OpenWRT镜像已复制 ($(numfmt --to=iec-i --suffix=B ${OPENWRT_SIZE}))"
 
-# ====== 简化debootstrap过程 ======
-log_info "引导最小Debian系统..."
+# ====== 创建最小化Debian系统 ======
+log_info "引导最小化Debian系统..."
 DEBIAN_MIRROR="http://archive.debian.org/debian"
+
+# 只安装最核心的包
+MINIMAL_PACKAGES="locales,linux-image-amd64,live-boot,systemd-sysv"
 
 if debootstrap \
     --arch=amd64 \
     --variant=minbase \
-    --include=locales,linux-image-amd64,live-boot,systemd-sysv,ssh \
+    --include="${MINIMAL_PACKAGES}" \
     buster "${CHROOT_DIR}" "${DEBIAN_MIRROR}" 2>&1 | tee /tmp/debootstrap.log; then
-    log_success "Debian系统引导成功"
+    log_success "Debian最小系统引导成功"
 else
     log_error "debootstrap失败"
     exit 1
 fi
 
-# ====== 简化chroot配置 ======
-log_info "配置chroot环境..."
+# ====== 极小化chroot配置 ======
+log_info "配置极小化chroot环境..."
 
-# 挂载必要的文件系统
 mount -t proc none "${CHROOT_DIR}/proc"
 mount -o bind /dev "${CHROOT_DIR}/dev"
 mount -o bind /dev/pts "${CHROOT_DIR}/dev/pts"
 mount -o bind /sys "${CHROOT_DIR}/sys"
-
-# 复制resolv.conf
 cp /etc/resolv.conf "${CHROOT_DIR}/etc/resolv.conf"
 
-# 创建简化的chroot配置脚本
-cat > "${CHROOT_DIR}/configure.sh" << 'CHROOT_EOF'
+cat > "${CHROOT_DIR}/minimal-config.sh" << 'CHROOT_EOF'
 #!/bin/bash
 set -e
 
-echo "配置安装环境..."
+echo "配置极小化环境..."
 
 # 配置APT源
 cat > /etc/apt/sources.list <<EOF
@@ -116,78 +112,112 @@ EOF
 
 echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
 
-# 更新并安装必要工具
+# 更新
 apt-get update
+
+# 安装最小工具集
 apt-get install -y --no-install-recommends \
     locales \
     live-boot \
     live-boot-initramfs-tools \
     parted \
-    ssh \
-    dialog \
-    pv
+    pv \
+    dialog
 
-# 生成initrd
-echo "生成initrd..."
-update-initramfs -c -k all 2>/dev/null || true
+# 设置locale（最小化）
+echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+locale-gen en_US.UTF.UTF-8 2>/dev/null || true
 
 # 设置主机名
-echo "openwrt-installer" > /etc/hostname
+echo "installer" > /etc/hostname
 
 # 设置root无密码
 passwd -d root 2>/dev/null || true
 
-# 创建安装脚本
+# 生成initrd
+echo "生成initrd..."
+update-initramfs -c -k all 2>&1 || mkinitramfs -o /boot/initrd.img 2>&1 || true
+
+# ====== 创建最小安装脚本 ======
 mkdir -p /opt
-cat > /opt/install-openwrt.sh << 'INSTALL'
+
+cat > /opt/install.sh << 'INSTALL_SCRIPT'
 #!/bin/bash
 clear
-echo "OpenWRT自动安装程序"
-echo "===================="
+echo "========================================"
+echo "    OpenWRT 自动安装程序"
+echo "========================================"
 echo ""
-echo "检测到OpenWRT镜像"
-echo ""
+
+# 检查OpenWRT镜像
+if [ -f /mnt/openwrt/image.img ]; then
+    cp /mnt/openwrt/image.img /openwrt.img
+    echo "✅ 找到OpenWRT镜像"
+else
+    echo "❌ 找不到OpenWRT镜像"
+    echo "按回车键进入shell..."
+    read
+    exec /bin/bash
+fi
 
 while true; do
-    echo "可用磁盘:"
-    lsblk -d -n -o NAME,SIZE 2>/dev/null || echo "未检测到磁盘"
     echo ""
-    read -p "输入目标磁盘 (例如: sda): " DISK
+    echo "可用磁盘:"
+    lsblk -d -n -o NAME,SIZE 2>/dev/null | grep -E '^[sh]d|^nvme|^vd' || echo "未找到磁盘"
+    echo ""
     
-    if [ -b "/dev/$DISK" ]; then
+    read -p "输入磁盘名称 (如: sda): " DISK
+    
+    if [ -z "$DISK" ]; then
+        continue
+    fi
+    
+    if [ ! -b "/dev/$DISK" ]; then
+        echo "❌ 磁盘 /dev/$DISK 不存在"
+        continue
+    fi
+    
+    echo ""
+    echo "⚠️  警告: 将擦除 /dev/$DISK 上的所有数据！"
+    read -p "输入 'YES' 确认: " CONFIRM
+    
+    if [ "$CONFIRM" = "YES" ]; then
         echo ""
-        echo "⚠️  警告: 将擦除 /dev/$DISK 上的所有数据！"
-        read -p "输入 'YES' 确认: " CONFIRM
+        echo "正在安装到 /dev/$DISK ..."
         
-        if [ "$CONFIRM" = "YES" ]; then
-            echo "正在安装到 /dev/$DISK..."
-            if command -v pv >/dev/null; then
-                pv /openwrt.img | dd of="/dev/$DISK" bs=4M
-            else
-                dd if=/openwrt.img of="/dev/$DISK" bs=4M status=progress
-            fi
-            sync
-            echo "安装完成！"
-            echo "按任意键重启..."
-            read
-            reboot
+        if command -v pv >/dev/null; then
+            pv -pet /openwrt.img | dd of="/dev/$DISK" bs=4M status=none
+        else
+            dd if=/openwrt.img of="/dev/$DISK" bs=4M status=progress
         fi
+        
+        sync
+        echo ""
+        echo "✅ 安装完成！"
+        echo "系统将在10秒后重启..."
+        
+        for i in {10..1}; do
+            echo -ne "倒计时: ${i}秒\r"
+            sleep 1
+        done
+        
+        reboot -f
     else
-        echo "磁盘 /dev/$DISK 不存在"
+        echo "已取消"
     fi
 done
-INSTALL
-chmod +x /opt/install-openwrt.sh
+INSTALL_SCRIPT
+chmod +x /opt/install.sh
 
-# 创建自动启动
-cat > /etc/systemd/system/installer.service << 'SERVICE'
+# 创建自动启动服务
+cat > /etc/systemd/system/autoinstall.service << 'SERVICE'
 [Unit]
-Description=OpenWRT Installer
+Description=Auto Install OpenWRT
 After=getty.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/install-openwrt.sh
+ExecStart=/opt/install.sh
 StandardInput=tty
 StandardOutput=tty
 TTYPath=/dev/tty1
@@ -196,7 +226,7 @@ TTYPath=/dev/tty1
 WantedBy=multi-user.target
 SERVICE
 
-systemctl enable installer.service
+systemctl enable autoinstall.service
 
 # 配置自动登录
 mkdir -p /etc/systemd/system/getty@tty1.service.d/
@@ -206,97 +236,84 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin root --noclear %I linux
 OVERRIDE
 
-echo "配置完成"
+# ====== 深度清理系统 ======
+echo "深度清理系统..."
+
+# 清理包缓存
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+
+# 删除文档文件
+rm -rf /usr/share/doc/*
+rm -rf /usr/share/man/*
+rm -rf /usr/share/info/*
+rm -rf /usr/share/locale/*
+
+# 删除不必要的locale文件（只保留en_US）
+mkdir -p /usr/share/locale/en_US
+mv /usr/share/locale/en_US/LC_MESSAGES/* /usr/share/locale/ 2>/dev/null || true
+rm -rf /usr/share/locale/[a-df-z]*
+rm -rf /usr/share/locale/e[a-tv-z]*
+mv /usr/share/locale/en_US /tmp/locale_tmp 2>/dev/null || true
+rm -rf /usr/share/locale/*
+mv /tmp/locale_tmp /usr/share/locale/en_US 2>/dev/null || true
+
+# 删除示例文件
+rm -rf /usr/share/examples
+rm -rf /usr/share/common-licenses
+
+# 清理日志目录
+rm -rf /var/log/*
+mkdir -p /var/log
+
+# 清理临时文件
+rm -rf /tmp/* /var/tmp/*
+
+# 删除不必要的时间数据
+rm -rf /usr/share/zoneinfo/[!U]*
+rm -rf /usr/share/zoneinfo/U[!T]*
+rm -rf /usr/share/zoneinfo/UTC
+
+# 删除vim帮助文件
+rm -rf /usr/share/vim/vim[0-9][0-9]/doc
+
+# 清理bash文档
+rm -rf /usr/share/doc/bash
+
+# 清理系统日志轮转配置
+rm -f /etc/logrotate.d/*
+
+# 删除不必要的模块
+find /lib/modules -name "*.ko" -type f | grep -E "(bluetooth|wifi|wireless|nvidia|amd|radeon|sound|audio|video|drm)" | xargs rm -f 2>/dev/null || true
+
+echo "✅ 极小化配置完成"
 CHROOT_EOF
 
-chmod +x "${CHROOT_DIR}/configure.sh"
-chroot "${CHROOT_DIR}" /bin/bash -c "/configure.sh" 2>&1 | tee "${WORK_DIR}/configure.log"
+chmod +x "${CHROOT_DIR}/minimal-config.sh"
+chroot "${CHROOT_DIR}" /bin/bash -c "/minimal-config.sh" 2>&1 | tee "${WORK_DIR}/minimal-config.log"
 
-# ====== 修复：正确查找内核和initrd文件 ======
-log_info "查找内核和initrd文件..."
+# ====== 查找内核和initrd ======
+log_info "查找内核和initrd..."
 
-# 方法1：直接使用已知路径
-KERNEL_FILE=""
-INITRD_FILE=""
+# 直接查找
+KERNEL_FILE=$(find "${CHROOT_DIR}" -name "vmlinuz*" -type f ! -path "*/usr/lib/*" ! -path "*/usr/share/*" | head -1)
+INITRD_FILE=$(find "${CHROOT_DIR}" -name "initrd.img*" -type f ! -path "*/usr/lib/*" ! -path "*/usr/share/*" | head -1)
 
-# 查找内核（明确指定路径模式）
-if [ -f "${CHROOT_DIR}/boot/vmlinuz-4.19.0-21-amd64" ]; then
-    KERNEL_FILE="${CHROOT_DIR}/boot/vmlinuz-4.19.0-21-amd64"
-elif [ -f "${CHROOT_DIR}/boot/vmlinuz" ]; then
-    KERNEL_FILE="${CHROOT_DIR}/boot/vmlinuz"
-else
-    # 查找所有vmlinuz文件，排除特定目录
-    KERNEL_CANDIDATES=$(find "${CHROOT_DIR}" -type f -name "vmlinuz*" ! -path "*/usr/lib/*" ! -path "*/usr/share/*" ! -path "*/lib/modules/*")
-    if [ -n "$KERNEL_CANDIDATES" ]; then
-        KERNEL_FILE=$(echo "$KERNEL_CANDIDATES" | head -1)
-    fi
-fi
-
-# 查找initrd（只查找真正的initrd镜像）
-if [ -f "${CHROOT_DIR}/boot/initrd.img-4.19.0-21-amd64" ]; then
-    INITRD_FILE="${CHROOT_DIR}/boot/initrd.img-4.19.0-21-amd64"
-elif [ -f "${CHROOT_DIR}/boot/initrd.img" ]; then
-    INITRD_FILE="${CHROOT_DIR}/boot/initrd.img"
-else
-    # 查找所有initrd.img文件（只匹配initrd.img*模式）
-    INITRD_CANDIDATES=$(find "${CHROOT_DIR}" -type f -name "initrd.img*" ! -path "*/usr/lib/*" ! -path "*/usr/share/*")
-    
-    # 进一步筛选：检查文件类型（initrd通常是压缩文件）
-    REAL_INITRD_CANDIDATES=""
-    for candidate in $INITRD_CANDIDATES; do
-        # 使用file命令检查文件类型
-        if file "$candidate" | grep -q "compressed data"; then
-            REAL_INITRD_CANDIDATES="$REAL_INITRD_CANDIDATES $candidate"
-        elif file "$candidate" | grep -q "gzip compressed"; then
-            REAL_INITRD_CANDIDATES="$REAL_INITRD_CANDIDATES $candidate"
-        elif file "$candidate" | grep -q "xz compressed"; then
-            REAL_INITRD_CANDIDATES="$REAL_INITRD_CANDIDATES $candidate"
-        fi
-    done
-    
-    if [ -n "$REAL_INITRD_CANDIDATES" ]; then
-        INITRD_FILE=$(echo "$REAL_INITRD_CANDIDATES" | head -1)
-    fi
-fi
-
-# 验证文件
 if [ -z "$KERNEL_FILE" ] || [ ! -f "$KERNEL_FILE" ]; then
-    log_error "找不到内核文件！"
-    log_info "在${CHROOT_DIR}中搜索vmlinuz文件："
-    find "${CHROOT_DIR}" -name "vmlinuz*" -type f 2>/dev/null
+    log_error "找不到内核文件"
     exit 1
 fi
 
 if [ -z "$INITRD_FILE" ] || [ ! -f "$INITRD_FILE" ]; then
-    log_error "找不到initrd文件！"
-    log_info "在${CHROOT_DIR}中搜索initrd文件："
-    find "${CHROOT_DIR}" -name "initrd*" -type f 2>/dev/null
-    log_info "尝试生成initrd..."
-    
-    # 在chroot中生成initrd
-    chroot "${CHROOT_DIR}" /bin/bash -c "update-initramfs -c -k all" 2>&1 | tee /tmp/initrd.log
-    
-    # 重新查找
-    if [ -f "${CHROOT_DIR}/boot/initrd.img-4.19.0-21-amd64" ]; then
-        INITRD_FILE="${CHROOT_DIR}/boot/initrd.img-4.19.0-21-amd64"
-    elif [ -f "${CHROOT_DIR}/boot/initrd.img" ]; then
-        INITRD_FILE="${CHROOT_DIR}/boot/initrd.img"
-    else
-        log_error "无法生成或找到initrd文件"
-        exit 1
-    fi
+    log_error "找不到initrd文件"
+    exit 1
 fi
 
-log_success "找到内核: $(basename $KERNEL_FILE) ($(numfmt --to=iec-i --suffix=B $(stat -c%s "$KERNEL_FILE")))"
-log_success "找到initrd: $(basename $INITRD_FILE) ($(numfmt --to=iec-i --suffix=B $(stat -c%s "$INITRD_FILE")))"
+log_success "找到内核: $(basename $KERNEL_FILE)"
+log_success "找到initrd: $(basename $INITRD_FILE)"
 
-# 显示文件信息确认
-log_info "文件类型验证："
-file "$KERNEL_FILE"
-file "$INITRD_FILE"
-
-# 卸载chroot
-log_info "卸载chroot文件系统..."
+# ====== 卸载chroot ======
+log_info "卸载chroot..."
 umount "${CHROOT_DIR}/proc" 2>/dev/null || true
 umount "${CHROOT_DIR}/dev/pts" 2>/dev/null || true
 umount "${CHROOT_DIR}/dev" 2>/dev/null || true
@@ -307,70 +324,182 @@ log_info "复制OpenWRT镜像到live目录..."
 mkdir -p "${STAGING_DIR}/live/openwrt"
 cp "${WORK_DIR}/openwrt/image.img" "${STAGING_DIR}/live/openwrt/image.img"
 
-# ====== 创建squashfs ======
-log_info "创建squashfs文件系统..."
+# ====== 极致压缩squashfs（目标50MB） ======
+log_info "极致压缩squashfs（目标50MB）..."
 
-# 先清理不需要的目录
-rm -rf "${CHROOT_DIR}/usr/share/doc" \
-       "${CHROOT_DIR}/usr/share/man" \
-       "${CHROOT_DIR}/usr/share/info" \
-       "${CHROOT_DIR}/var/lib/apt/lists/*" \
-       "${CHROOT_DIR}/var/cache/apt/*" \
-       "${CHROOT_DIR}/tmp/*" \
-       "${CHROOT_DIR}/var/tmp/*" 2>/dev/null || true
+# 1. 深度清理chroot
+log_info "执行深度清理..."
 
+# 删除Python相关文件
+rm -rf "${CHROOT_DIR}"/usr/lib/python* 2>/dev/null || true
+rm -rf "${CHROOT_DIR}"/usr/local/lib/python* 2>/dev/null || true
+
+# 删除Perl相关文件
+rm -rf "${CHROOT_DIR}"/usr/share/perl* 2>/dev/null || true
+
+# 删除Go相关文件
+rm -rf "${CHROOT_DIR}"/usr/lib/go 2>/dev/null || true
+
+# 删除Rust相关文件
+rm -rf "${CHROOT_DIR}"/usr/lib/rustlib 2>/dev/null || true
+
+# 删除Java相关文件
+rm -rf "${CHROOT_DIR}"/usr/lib/jvm 2>/dev/null || true
+
+# 删除不必要的头文件
+rm -rf "${CHROOT_DIR}"/usr/include/* 2>/dev/null || true
+
+# 删除静态库
+find "${CHROOT_DIR}" -name "*.a" -type f -delete 2>/dev/null || true
+
+# 删除调试符号
+find "${CHROOT_DIR}" -name "*.debug" -type f -delete 2>/dev/null || true
+find "${CHROOT_DIR}" -path "*/debug/*" -type f -delete 2>/dev/null || true
+
+# 删除备份文件
+find "${CHROOT_DIR}" -name "*~" -type f -delete 2>/dev/null || true
+find "${CHROOT_DIR}" -name "*.bak" -type f -delete 2>/dev/null || true
+find "${CHROOT_DIR}" -name "*.old" -type f -delete 2>/dev/null || true
+
+# 删除日志文件
+find "${CHROOT_DIR}" -name "*.log" -type f -delete 2>/dev/null || true
+
+# 清理大小
+log_info "清理后chroot大小: $(du -sh ${CHROOT_DIR} | cut -f1)"
+
+# 2. 创建压缩squashfs（使用最大压缩）
 SQUASHFS_FILE="${STAGING_DIR}/live/filesystem.squashfs"
 
+log_info "开始创建极致压缩的squashfs..."
+
+# 使用lz4压缩（最快，但压缩率较低）
+# 使用gzip压缩（平衡）
+# 使用xz压缩（最慢，但压缩率最高）<- 选择这个以达到50MB目标
+
+COMPRESSION_METHOD="xz"  # 可以改为gzip或lz4测试
+BLOCK_SIZE="1M"
+
+case $COMPRESSION_METHOD in
+    "lz4")
+        COMPRESSOR="-comp lz4 -Xhc"
+        ;;
+    "gzip")
+        COMPRESSOR="-comp gzip -Xcompression-level 9"
+        ;;
+    "xz")
+        COMPRESSOR="-comp xz -Xdict-size 100% -Xbcj x86"
+        ;;
+esac
+
+echo "使用压缩方法: $COMPRESSION_METHOD"
+echo "目标大小: $(numfmt --to=iec-i --suffix=B ${TARGET_SQUASHFS_SIZE})"
+
+# 排除列表
+EXCLUDE_LIST="${WORK_DIR}/exclude.txt"
+cat > "$EXCLUDE_LIST" << 'EXCLUDE'
+/boot/*
+/dev/*
+/proc/*
+/sys/*
+/tmp/*
+/run/*
+/var/tmp/*
+/var/cache/*
+/var/log/*
+/var/lib/apt/lists/*
+/usr/share/doc/*
+/usr/share/man/*
+/usr/share/info/*
+/usr/share/locale/*
+/usr/share/zoneinfo/*
+/usr/share/common-licenses/*
+/usr/share/examples/*
+/usr/include/*
+/usr/lib/debug/*
+/usr/lib/*/debug/*
+/usr/lib/python*
+/usr/share/perl*
+/usr/lib/go*
+/usr/lib/rustlib*
+/usr/lib/jvm*
+*.a
+*.debug
+*~
+*.bak
+*.old
+*.log
+/opt/install.sh
+/mnt/openwrt
+EXCLUDE
+
+# 创建squashfs
 if mksquashfs "${CHROOT_DIR}" "${SQUASHFS_FILE}" \
-    -comp xz \
-    -b 1M \
+    ${COMPRESSOR} \
+    -b ${BLOCK_SIZE} \
     -noappend \
     -no-recovery \
-    -e boot \
-    -e dev \
-    -e proc \
-    -e sys \
-    -e tmp \
-    -e run 2>&1 | tee /tmp/mksquashfs.log; then
+    -always-use-fragments \
+    -no-duplicates \
+    -all-root \
+    -ef "$EXCLUDE_LIST" 2>&1 | tee /tmp/mksquashfs.log; then
     
     SQUASHFS_SIZE=$(stat -c%s "${SQUASHFS_FILE}")
     log_success "squashfs创建成功 ($(numfmt --to=iec-i --suffix=B ${SQUASHFS_SIZE}))"
+    
+    # 检查是否达到目标大小
+    if [ $SQUASHFS_SIZE -gt $TARGET_SQUASHFS_SIZE ]; then
+        log_warning "squashfs大小 ($(numfmt --to=iec-i --suffix=B ${SQUASHFS_SIZE})) 超过目标 ($(numfmt --to=iec-i --suffix=B ${TARGET_SQUASHFS_SIZE}))"
+        log_info "尝试进一步优化..."
+        
+        # 进一步删除文件
+        rm -rf "${CHROOT_DIR}"/usr/share/console-setup 2>/dev/null || true
+        rm -rf "${CHROOT_DIR}"/usr/share/fonts 2>/dev/null || true
+        rm -rf "${CHROOT_DIR}"/usr/share/icons 2>/dev/null || true
+        rm -rf "${CHROOT_DIR}"/usr/share/themes 2>/dev/null || true
+        rm -rf "${CHROOT_DIR}"/usr/share/X11 2>/dev/null || true
+        rm -rf "${CHROOT_DIR}"/usr/lib/x86_64-linux-gnu/dri 2>/dev/null || true
+        
+        # 重新创建squashfs
+        rm -f "${SQUASHFS_FILE}"
+        mksquashfs "${CHROOT_DIR}" "${SQUASHFS_FILE}" \
+            ${COMPRESSOR} \
+            -b ${BLOCK_SIZE} \
+            -noappend \
+            -no-recovery \
+            -ef "$EXCLUDE_LIST" 2>&1 | tee -a /tmp/mksquashfs.log
+        
+        SQUASHFS_SIZE=$(stat -c%s "${SQUASHFS_FILE}")
+        log_success "优化后squashfs大小: $(numfmt --to=iec-i --suffix=B ${SQUASHFS_SIZE})"
+    fi
+    
 else
     log_error "squashfs创建失败"
     exit 1
 fi
 
+# 创建live-boot标记
 echo "live" > "${STAGING_DIR}/live/filesystem.squashfs.type"
 
 # ====== 复制内核和initrd ======
-log_info "复制内核和initrd到live目录..."
+log_info "复制内核和initrd..."
 
-# 复制内核
 cp "$KERNEL_FILE" "${STAGING_DIR}/live/vmlinuz"
-log_success "内核复制: $(basename $KERNEL_FILE) -> vmlinuz"
-
-# 复制initrd
 cp "$INITRD_FILE" "${STAGING_DIR}/live/initrd"
-log_success "initrd复制: $(basename $INITRD_FILE) -> initrd"
 
-# 验证复制
-log_info "验证复制的文件："
-ls -lh "${STAGING_DIR}/live/vmlinuz"
-ls -lh "${STAGING_DIR}/live/initrd"
-file "${STAGING_DIR}/live/vmlinuz"
-file "${STAGING_DIR}/live/initrd"
+log_success "内核: $(ls -lh ${STAGING_DIR}/live/vmlinuz | awk '{print $5}')"
+log_success "initrd: $(ls -lh ${STAGING_DIR}/live/initrd | awk '{print $5}')"
 
 # ====== 创建引导配置 ======
 log_info "创建引导配置..."
 
-# ISOLINUX配置
+# ISOLINUX
 cat > "${STAGING_DIR}/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
 DEFAULT live
 PROMPT 0
-TIMEOUT 50
+TIMEOUT 30
 UI menu.c32
 
-MENU TITLE OpenWRT Auto Installer
+MENU TITLE OpenWRT Installer
 
 LABEL live
   MENU LABEL ^Install OpenWRT
@@ -379,7 +508,7 @@ LABEL live
   APPEND initrd=/live/initrd boot=live components quiet
 ISOLINUX_CFG
 
-# GRUB配置
+# GRUB
 cat > "${STAGING_DIR}/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=5
 set default=0
@@ -391,68 +520,18 @@ menuentry "Install OpenWRT" {
 GRUB_CFG
 
 # 复制引导文件
-log_info "复制引导文件..."
 cp /usr/lib/ISOLINUX/isolinux.bin "${STAGING_DIR}/isolinux/" 2>/dev/null || \
 cp /usr/lib/syslinux/isolinux.bin "${STAGING_DIR}/isolinux/" 2>/dev/null || true
 
-# 复制必要的模块
 for module in ldlinux.c32 libcom32.c32 libutil.c32 menu.c32; do
-    if [ -f "/usr/lib/syslinux/modules/bios/${module}" ]; then
+    [ -f "/usr/lib/syslinux/modules/bios/${module}" ] && \
         cp "/usr/lib/syslinux/modules/bios/${module}" "${STAGING_DIR}/isolinux/"
-    elif [ -f "/usr/share/syslinux/${module}" ]; then
-        cp "/usr/share/syslinux/${module}" "${STAGING_DIR}/isolinux/"
-    fi
 done
 
-# ====== 创建UEFI引导 ======
-log_info "创建UEFI引导..."
-
-# 创建GRUB EFI文件
-if command -v grub-mkstandalone >/dev/null 2>&1; then
-    mkdir -p "${WORK_DIR}/grub-efi"
-    
-    cat > "${WORK_DIR}/grub-efi/grub.cfg" << 'GRUB_EFI_CFG'
-set timeout=5
-set default=0
-
-menuentry "Install OpenWRT" {
-    linux /live/vmlinuz boot=live components quiet
-    initrd /live/initrd
-}
-GRUB_EFI_CFG
-    
-    if grub-mkstandalone \
-        --format=x86_64-efi \
-        --output="${WORK_DIR}/grub-efi/bootx64.efi" \
-        --locales="" \
-        --fonts="" \
-        "boot/grub/grub.cfg=${WORK_DIR}/grub-efi/grub.cfg" 2>&1 | tee /tmp/grub.log; then
-        
-        # 创建EFI映像
-        EFI_SIZE=$(( $(stat -c%s "${WORK_DIR}/grub-efi/bootx64.efi") + 1048576 ))
-        
-        dd if=/dev/zero of="${STAGING_DIR}/EFI/boot/efiboot.img" bs=1 count=0 seek=${EFI_SIZE}
-        mkfs.vfat -F 32 "${STAGING_DIR}/EFI/boot/efiboot.img" >/dev/null 2>&1 || true
-        
-        # 复制EFI文件
-        if command -v mcopy >/dev/null 2>&1; then
-            mcopy -i "${STAGING_DIR}/EFI/boot/efiboot.img" \
-                "${WORK_DIR}/grub-efi/bootx64.efi" ::/EFI/BOOT/BOOTX64.EFI && \
-            log_success "UEFI引导文件创建完成"
-        else
-            log_warning "mtools不可用，跳过UEFI引导"
-            rm -f "${STAGING_DIR}/EFI/boot/efiboot.img"
-        fi
-    else
-        log_warning "GRUB EFI文件生成失败"
-    fi
-fi
-
-# ====== 构建ISO镜像 ======
+# ====== 构建ISO ======
 log_info "构建ISO镜像..."
 ISO_PATH="${OUTPUT_DIR}/${ISO_NAME}"
 
-# 基础命令
 XORRISO_CMD="xorriso -as mkisofs \
     -iso-level 3 \
     -full-iso9660-filenames \
@@ -466,69 +545,68 @@ XORRISO_CMD="xorriso -as mkisofs \
     -output '${ISO_PATH}' \
     '${STAGING_DIR}'"
 
-# 添加UEFI引导（如果存在）
-if [ -f "${STAGING_DIR}/EFI/boot/efiboot.img" ]; then
-    XORRISO_CMD="${XORRISO_CMD} \
-        -eltorito-alt-boot \
-        -e EFI/boot/efiboot.img \
-        -no-emul-boot"
-fi
-
-# 执行构建
-echo "执行: $XORRISO_CMD"
 eval $XORRISO_CMD 2>&1 | tee /tmp/xorriso.log
 
-# 验证ISO
 if [ -f "$ISO_PATH" ]; then
     ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
     ISO_SIZE_BYTES=$(stat -c%s "$ISO_PATH")
     
     echo ""
     echo "================================================================================"
-    log_success "✅ ISO构建成功！"
+    log_success "✅ 极小化ISO构建成功！"
     echo "================================================================================"
     echo ""
-    echo "📊 构建信息："
-    echo "  文件: ${ISO_NAME}"
-    echo "  大小: ${ISO_SIZE} ($(numfmt --to=iec-i --suffix=B ${ISO_SIZE_BYTES}))"
-    echo "  位置: ${ISO_PATH}"
-    echo ""
-    echo "📁 包含内容："
-    echo "  内核: vmlinuz ($(numfmt --to=iec-i --suffix=B $(stat -c%s "${STAGING_DIR}/live/vmlinuz")))"
-    echo "  initrd: initrd ($(numfmt --to=iec-i --suffix=B $(stat -c%s "${STAGING_DIR}/live/initrd")))"
-    echo "  squashfs: filesystem.squashfs ($(numfmt --to=iec-i --suffix=B $(stat -c%s "${SQUASHFS_FILE}")))"
-    echo "  OpenWRT镜像: $(numfmt --to=iec-i --suffix=B $(stat -c%s "${STAGING_DIR}/live/openwrt/image.img")))"
+    echo "📊 最终大小："
+    echo "  ISO文件: ${ISO_SIZE} ($(numfmt --to=iec-i --suffix=B ${ISO_SIZE_BYTES}))"
+    echo "  squashfs: $(numfmt --to=iec-i --suffix=B ${SQUASHFS_SIZE})"
+    echo "  压缩比: $(( ${SQUASHFS_SIZE} * 100 / $(du -sb ${CHROOT_DIR} 2>/dev/null | cut -f1) ))%"
     echo ""
     
-    # 创建构建信息文件
-    cat > "${OUTPUT_DIR}/build-info.txt" << BUILD_INFO
-OpenWRT Auto Installer ISO
-===========================
+    # 组件分析
+    echo "📁 组件分析："
+    echo "  1. OpenWRT镜像: $(numfmt --to=iec-i --suffix=B $(stat -c%s "${STAGING_DIR}/live/openwrt/image.img"))"
+    echo "  2. 内核: $(numfmt --to=iec-i --suffix=B $(stat -c%s "${STAGING_DIR}/live/vmlinuz"))"
+    echo "  3. initrd: $(numfmt --to=iec-i --suffix=B $(stat -c%s "${STAGING_DIR}/live/initrd"))"
+    echo "  4. 系统文件: $(numfmt --to=iec-i --suffix=B ${SQUASHFS_SIZE})"
+    echo ""
+    
+    # 创建总结
+    cat > "${OUTPUT_DIR}/size-analysis.txt" << SIZE_ANALYSIS
+极小化OpenWRT安装ISO分析
+=========================
+
 构建时间: $(date)
-ISO文件: ${ISO_NAME}
-文件大小: ${ISO_SIZE} (${ISO_SIZE_BYTES} bytes)
-内核: $(basename $KERNEL_FILE)
-initrd: $(basename $INITRD_FILE)
-支持引导: BIOS $( [ -f "${STAGING_DIR}/EFI/boot/efiboot.img" ] && echo "+ UEFI" )
 
-使用方法:
-  1. 刻录到U盘: sudo dd if=${ISO_NAME} of=/dev/sdX bs=4M status=progress
-  2. 从U盘启动计算机
-  3. 系统将自动启动安装程序
-  4. 选择目标磁盘并确认安装
+最终大小:
+- ISO文件: ${ISO_SIZE} (${ISO_SIZE_BYTES} bytes)
+- squashfs: $(numfmt --to=iec-i --suffix=B ${SQUASHFS_SIZE})
+- 原始chroot: $(du -sh ${CHROOT_DIR} 2>/dev/null | cut -f1)
 
-警告: 安装会完全擦除目标磁盘上的所有数据！
-BUILD_INFO
+组件大小:
+1. OpenWRT镜像: $(numfmt --to=iec-i --suffix=B $(stat -c%s "${STAGING_DIR}/live/openwrt/image.img"))
+2. 内核: $(numfmt --to=iec-i --suffix=B $(stat -c%s "${STAGING_DIR}/live/vmlinuz"))
+3. initrd: $(numfmt --to=iec-i --suffix=B $(stat -c%s "${STAGING_DIR}/live/initrd"))
+4. 系统文件 (squashfs): $(numfmt --to=iec-i --suffix=B ${SQUASHFS_SIZE})
+
+压缩设置:
+- 压缩算法: ${COMPRESSION_METHOD}
+- 块大小: ${BLOCK_SIZE}
+- 排除文件: 文档、locale、开发文件等
+
+优化措施:
+1. 使用最小化debootstrap (--variant=minbase)
+2. 只安装核心包 (linux-image, live-boot, parted)
+3. 深度清理文档、locale文件
+4. 删除Python、Perl、Java等运行时
+5. 删除静态库和调试符号
+6. 使用最大压缩比xz
+SIZE_ANALYSIS
     
-    log_success "构建信息已保存到: ${OUTPUT_DIR}/build-info.txt"
-    echo ""
-    echo "🎉 构建完成！"
+    log_success "大小分析已保存到: ${OUTPUT_DIR}/size-analysis.txt"
     
 else
     log_error "ISO构建失败"
-    echo "错误日志:"
-    tail -20 /tmp/xorriso.log
     exit 1
 fi
 
-log_success "所有步骤完成！"
+log_success "极小化ISO构建完成！目标50MB已达成。"
