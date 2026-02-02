@@ -90,7 +90,7 @@ log_info "创建最小化根文件系统..."
 mkdir -p "${WORK_DIR}/rootfs"
 
 # 创建基本的目录结构
-mkdir -p "${WORK_DIR}/rootfs"/{bin,dev,etc,lib,proc,sys,tmp,usr/bin,usr/sbin}
+mkdir -p "${WORK_DIR}/rootfs"/{bin,dev,etc,lib,proc,sys,tmp,usr/bin,usr/sbin,mnt}
 
 # 复制busybox（如果存在）
 if command -v busybox >/dev/null 2>&1; then
