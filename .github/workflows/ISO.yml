@@ -1,9 +1,16 @@
-name: Build Bootable ISO
+name: ISO
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
+    paths:
+      - '.github/workflows/ISO.yml'
+  workflow_dispatch:
+    inputs:
+      alpine_version:
+        description: 'ubuntu版本'
+        required: false
+        default: '3.20'
 
 jobs:
   build:
