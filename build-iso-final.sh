@@ -274,7 +274,6 @@ GETTY_OVERRIDE
 # 创建安装脚本
 cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/bash
-seelp 5
 export LANG=zh_CN.UTF-8
 export LANGUAGE=zh_CN:zh
 export LC_ALL=zh_CN.UTF-8
@@ -282,7 +281,6 @@ export LC_ALL=zh_CN.UTF-8
 pkill -9 systemd-timesyncd 2>/dev/null
 pkill -9 journald 2>/dev/null
 echo 0 > /proc/sys/kernel/printk 2>/dev/null
-sleep 5
 
 # === 中文环境初始化 ===
 init_chinese_env() {
@@ -457,8 +455,9 @@ while true; do
     
     # 获取用户选择
     while true; do
-        read -p "Select disk number (1-$TOTAL_DISKS) or 'r' to rescan: " SELECTION
-        
+        # read -p "Select disk number (1-$TOTAL_DISKS) or 'r' to rescan: " SELECTION
+        read -p "$(echo '6K+36YWN572u5a6J5YWo5a6M5oiQ57yW56CBICgxLSRUT1RBTCkg5ZKM5Y+RICdyJyDnu5/orqHnlJ/miJD77ya' | base64 -d)$TOTAL_DISKS$(echo '5Zyw5bCG6L+Z5LiqJ3En5LiN6IO96KKr5Y+R6YCB77ya' | base64 -d): " SELECTION
+	# read -p "请输入磁盘编号 (1-$TOTAL_DISKS) 或输入 'r' 重新扫描: " SELECTION
         case $SELECTION in
             [Rr])
                 get_disk_list
