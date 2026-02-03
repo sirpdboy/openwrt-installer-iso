@@ -111,6 +111,7 @@ set -e
 
 echo "🔧 Configuring chroot environment..."
 
+
 # 禁用systemd日志服务
 systemctl mask systemd-journald.service 2>/dev/null || true
 systemctl mask systemd-journald.socket 2>/dev/null || true
@@ -217,7 +218,7 @@ TERMINAL
 # 激活配置
 . /etc/default/locale
 . /etc/profile.d/terminal-chinese.sh
-fc-cache -fv 2>/dev/null || true
+
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv 
 apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail 
 
@@ -499,7 +500,7 @@ echo -e "OpenWRT image found: $IMG_SIZE\n"
     DISK_LIST=()
     DISK_INDEX=1
     
-    echo "Scanning available disks..."
+    echo "Scanning available disks.../ 找到可用磁盘..."
     
     echo -e "==============================================\n"
     # 使用lsblk获取磁盘信息
@@ -811,50 +812,7 @@ for dir in  "${CHROOT_DIR}/usr/share/doc" \
         rm -rf "$dir"
     fi
 done
-rm -rf /var/lib/apt/lists/*
 
-# 删除文档文件
-rm -rf /usr/share/doc/*
-rm -rf /usr/share/man/*
-rm -rf /usr/share/info/*
-rm -rf /usr/share/locale/*
-
-# 删除不必要的locale文件（只保留en_US）
-mkdir -p /usr/share/locale/en_US
-mv /usr/share/locale/en_US/LC_MESSAGES/* /usr/share/locale/ 2>/dev/null || true
-rm -rf /usr/share/locale/[a-df-z]*
-rm -rf /usr/share/locale/e[a-tv-z]*
-mv /usr/share/locale/en_US /tmp/locale_tmp 2>/dev/null || true
-rm -rf /usr/share/locale/*
-mv /tmp/locale_tmp /usr/share/locale/en_US 2>/dev/null || true
-
-# 删除示例文件
-rm -rf /usr/share/examples
-rm -rf /usr/share/common-licenses
-
-# 清理日志目录
-rm -rf /var/log/*
-mkdir -p /var/log
-
-# 清理临时文件
-rm -rf /tmp/* /var/tmp/*
-
-# 删除不必要的时间数据
-rm -rf /usr/share/zoneinfo/[!U]*
-rm -rf /usr/share/zoneinfo/U[!T]*
-rm -rf /usr/share/zoneinfo/UTC
-
-# 删除vim帮助文件
-rm -rf /usr/share/vim/vim[0-9][0-9]/doc
-
-# 清理bash文档
-rm -rf /usr/share/doc/bash
-
-# 清理系统日志轮转配置
-rm -f /etc/logrotate.d/*
-
-# 删除不必要的模块
-find /lib/modules -name "*.ko" -type f | grep -E "(bluetooth|wifi|wireless|nvidia|amd|radeon|sound|audio|video|drm)" | xargs rm -f 2>/dev/null || true
 # 3. 清理不必要的内核模块 (再次确保)
 if [ -d "${CHROOT_DIR}/lib/modules" ]; then
     KERNEL_VERSION=$(ls "${CHROOT_DIR}/lib/modules/" | head -n1)
