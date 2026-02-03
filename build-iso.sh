@@ -249,7 +249,7 @@ AUTOINSTALL_SERVICE
 cat > /opt/start-installer.sh << 'START_SCRIPT'
 #!/bin/bash
 # OpenWRT安装系统启动脚本
-sleep 3
+sleep 2
 
 clear
 
@@ -262,7 +262,7 @@ cat << "WELCOME"
 System is starting up, please wait...
 WELCOME
 
-sleep 5
+sleep 3
 
 if [ ! -f "/openwrt.img" ]; then
     clear
@@ -299,7 +299,7 @@ cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 pkill -9 systemd-timesyncd 2>/dev/null
 pkill -9 journald 2>/dev/null
 echo 0 > /proc/sys/kernel/printk 2>/dev/null
-sleep 5
+sleep 2
 
 # === 中文环境初始化 ===
 init_chinese_env() {
@@ -435,7 +435,7 @@ echo -e "OpenWRT image found: $IMG_SIZE\n"
 
     DISK_LIST=()
     DISK_INDEX=1
-    echo "检测到可用磁盘:"
+    t "rescan"
     echo -e "==============================\n"
     # 使用lsblk获取磁盘信息
     while IFS= read -r line; do
@@ -476,12 +476,8 @@ while true; do
     
     # 获取用户选择
     while true; do
-    
-    
-        read -p "$(t "select_disk")" SELECTION
-    
-        # read -p "Select disk number (1-$TOTAL_DISKS) or 'r' to rescan: " SELECTION
-        
+        read -p "Select disk number (1-$TOTAL_DISKS) or 'r' to rescan: " SELECTION
+
         case $SELECTION in
             [Rr])
                 get_disk_list
@@ -744,7 +740,7 @@ rm -rf /var/lib/systemd/random-seed 2>/dev/null || true
 "
 
 # 2. 手动清理不需要的文件
-for dir in "${CHROOT_DIR}/usr/share/locale" "${CHROOT_DIR}/usr/share/doc" \
+for dir in  "${CHROOT_DIR}/usr/share/doc" \
            "${CHROOT_DIR}/usr/share/man" "${CHROOT_DIR}/usr/share/info"; do
     if [ -d "$dir" ]; then
         rm -rf "$dir"
