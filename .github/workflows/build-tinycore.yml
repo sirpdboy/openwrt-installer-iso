@@ -1,0 +1,252 @@
+name: build-tinycore
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'build-tinycore.sh'
+      - '.github/workflows/build-tinycore.yml'
+  workflow_dispatch:
+    inputs:
+      img_file:
+        description: 'OpenWRT IMG文件URL'
+        required: true
+        default: 'https://downloads.openwrt.org/releases/23.05.3/targets/x86/64/openwrt-23.05.3-x86-64-generic-ext4-combined-efi.img.gz'
+      output_name:
+        description: '输出ISO文件名'
+        required: false
+        default: 'openwrt-installer'
+
+env:
+  tinycore_VERSION: "13.0"
+
+jobs:
+  build-iso:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 检查环境
+      run: |
+        echo "tinycore版本: ${{ env.tinycore_VERSION }}"
+        echo "IMG文件: ${{ github.event.inputs.img_file }}"
+        echo "输出名称: ${{ github.event.inputs.output_name }}"
+        
+    - name: 检出代码
+      uses: actions/checkout@v4
+      
+    - name: 准备Docker构建环境
+      run: |
+        # 创建Dockerfile
+        chmod +x build-tinycore.sh
+        cat > Dockerfile.openwrt-builder << 'DOCKEREOF'
+        FROM ubuntu:22.04
+    
+        # 安装构建工具
+        RUN apt-get update && apt-get install -y \
+            genisoimage \
+            syslinux \
+            isolinux \
+            squashfs-tools \
+            pv \
+            xorriso \
+            syslinux \
+            mtools \
+            dosfstools \
+            grub \
+            grub-efi \
+            wget \
+            curl \
+            xz \
+            zstd \
+            lz4 \
+            upx \
+            cpio \
+            gzip \
+            file \
+            findutils \
+            coreutils \
+            && rm -rf /var/lib/apt/lists/*
+
+    
+        WORKDIR /builder
+    
+        COPY build-tinycore.sh /builder/build-tinycore.sh
+    
+        RUN chmod +x /builder/build-tinycore.sh
+    
+        ENTRYPOINT ["/builder/build-tinycore.sh"]
+        DOCKEREOF
+
+    - name: 下载OpenWRT镜像
+      id: download
+      run: |
+        echo "下载OpenWRT镜像..."
+        
+        # 创建下载目录
+        mkdir -p downloads
+        cd downloads
+        echo "当前目录: $(pwd)"
+        
+        OPENWRT_URL="${{ github.event.inputs.openwrt_image_url }}"
+        OUTPUT_IMG="openwrt.img"
+        # 方法1: 尝试下载最新版本
+        REPO="sirpdboy/openwrt"
+        echo "获取最新版本..."
+        # 获取最新版本
+        LATEST_RELEASE=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.tag_name // empty')
+        if [ -z "$LATEST_RELEASE" ]; then
+            echo "无法获取最新版本，使用硬编码版本"
+            LATEST_RELEASE="v2026.01.01"
+        fi
+        echo "最新版本: $LATEST_RELEASE"
+        # 获取下载URL
+        DOWNLOAD_URLS=$(curl -sL "https://api.github.com/repos/$REPO/releases/tags/$LATEST_RELEASE" | \
+              jq -r '.assets[] | select(.name | endswith("img.gz")) | .browser_download_url' 2>/dev/null || echo "")
+        if [ -z "$DOWNLOAD_URLS" ]; then
+            echo "无法获取下载URL，使用备用方法"
+            # 备用URL
+            DOWNLOAD_URLS="https://github.com/sirpdboy/openwrt/releases/download/v2024.09.01/2024.09.01-x86-64-generic-squashfs-combined.img.gz"
+        fi
+        
+        OPENWRT_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
+        
+        # 尝试下载
+        if wget -q -O "$OUTPUT_IMG.gz" "$OPENWRT_URL"; then
+            echo "✅ 下载成功: $(du -h "$OUTPUT_IMG.gz" | cut -f1)"
+            
+            # 尝试解压
+            if gzip -t "$OUTPUT_IMG.gz" 2>/dev/null; then
+                echo "检测到gzip压缩格式，正在解压..."
+                gzip -d "$OUTPUT_IMG.gz"
+                echo "解压成功"
+            else
+                echo "不是gzip格式，直接使用"
+                mv "$OUTPUT_IMG.gz" "$OUTPUT_IMG"
+            fi
+            
+            if [ -f "$OUTPUT_IMG" ]; then
+                IMG_ABS_PATH="$(pwd)/$OUTPUT_IMG"
+                echo "镜像位置: $IMG_ABS_PATH"
+                echo "镜像大小: $(du -h "$IMG_ABS_PATH" | cut -f1)"
+                echo "img_path=$IMG_ABS_PATH" >> $GITHUB_OUTPUT
+            else
+                echo "❌ 镜像文件不存在"
+                exit 1
+            fi
+        else
+            echo "❌ 下载失败"
+            # 创建测试文件
+            dd if=/dev/zero of="$OUTPUT_IMG" bs=1M count=10
+            IMG_ABS_PATH="$(pwd)/$OUTPUT_IMG"
+            echo "创建测试文件: $IMG_ABS_PATH"
+            echo "img_path=$IMG_ABS_PATH" >> $GITHUB_OUTPUT
+        fi
+        
+    - name: 创建输出目录
+      run: |
+        mkdir -p output
+        echo "输出目录准备完成"
+        
+        
+
+    - name: 构建Docker镜像
+      run: |
+        echo "构建Docker镜像..."
+        docker build -t openwrt-iso-builder -f Dockerfile.openwrt-builder .
+        
+        echo "镜像构建完成，准备运行..."
+
+    - name: 运行ISO构建
+      run: |
+        echo "运行ISO构建..."
+        
+        # 创建输出目录
+        mkdir -p iso-output
+        chmod +x build-tinycore.sh
+        docker run --rm \
+          -e "COMPRESS_LEVEL=$COMPRESS_LEVEL" \
+          -e "INPUT_IMG=/mnt/openwrt.img" \
+          -e "OUTPUT_DIR=/output" \
+          -e "ISO_NAME=openwrt-ultra-minimal.iso" \
+          -v "$(pwd)/output:/output" \
+          -v "$(pwd)/assets/ezopwrt.img:/mnt/openwrt.img:ro" \
+          -v "$(pwd)/build-tinycore.sh:/build-tinycore.sh:ro" \
+          ubuntu:22.04 \
+          /bin/sh -c "
+        # Alpine容器内配置
+        apk add --no-cache --virtual .build-deps \
+            alpine-sdk \
+            xorriso \
+            syslinux \
+            mtools \
+            dosfstools \
+            grub \
+            grub-efi \
+            wget \
+            curl \
+            xz \
+            zstd \
+            lz4 \
+            upx \
+            cpio \
+            gzip \
+            file \
+            findutils \
+            coreutils \
+            bash
+        
+        echo '✅ 工具安装完成'
+        
+        # 执行构建脚本
+        echo '🔨 开始构建...'
+        /build-tinycore.sh
+        
+        # 清理
+        apk del .build-deps 2>/dev/null || true
+        "
+
+    - name: 验证ISO文件
+      run: |
+        if ls output/*.iso 1>/dev/null 2>&1; then
+            ISO_FILE=$(ls output/*.iso)
+            echo "✅ ISO文件生成成功: $(basename $ISO_FILE)"
+            echo "文件大小: $(du -h "$ISO_FILE" | cut -f1)"
+            
+            # 基本验证
+            echo ""
+            echo "ISO文件验证:"
+            file "$ISO_FILE"
+            
+            # 检查是否支持BIOS/UEFI
+            if command -v xorriso >/dev/null 2>&1; then
+                echo ""
+                echo "引导信息:"
+                xorriso -indev "$ISO_FILE" -toc 2>/dev/null | grep -E "(Bootable|El-Torito|UEFI)" || true
+            fi
+        else
+            echo "❌ 没有生成ISO文件"
+            exit 1
+        fi
+
+    - name: 上传制品
+      uses: actions/upload-artifact@v4
+      with:
+        name: openwrt-installer-iso
+        path: output/*.iso
+        retention-days: 7
+        
+    - name: 输出完成信息
+      run: |
+        echo "========================================"
+        echo "        OpenWRT ISO 构建完成"
+        echo "========================================"
+        echo ""
+        echo "制品已上传到Artifacts"
+        echo "文件名: openwrt-installer-iso"
+        echo ""
+        echo "使用说明:"
+        echo "1. 下载ISO并写入U盘"
+        echo "2. 从U盘启动"
+        echo "3. 登录: root (无需密码)"
+        echo "4. 运行: openwrt-installer"
+        echo "5. 按照提示安装OpenWRT"
