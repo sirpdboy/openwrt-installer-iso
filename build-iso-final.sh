@@ -164,62 +164,71 @@ apt-get update --no-install-recommends 2>/dev/null
 apt-get -y install apt --no-install-recommends 2>/dev/null || true
 apt-get -y upgrade --no-install-recommends 2>/dev/null
 echo "Setting locale..."
-apt-get install -y --no-install-recommends  locales fontconfig 2>/dev/null
+apt-get install -y --no-install-recommends  locales 2>/dev/null
 apt-get install -y fonts-wqy-zenhei 2>/dev/null || \
-apt-get install -y ttf-wqy-microhei 2>/dev/null || \
-apt-get install -y ttf-wqy-zenhei 2>/dev/null || \
 
-pkill -9 systemd-journald 2>/dev/null || true
-pkill -9 rsyslog 2>/dev/null || true
 
-# 2. 关闭内核消息
-echo 0 > /proc/sys/kernel/printk 2>/dev/null || true
-dmesg -n 1 2>/dev/null || true
 
-# 3. 清理控制台
-clear
-stty sane
-reset 2>/dev/null || true
+# 4. 强制设置语言环境
+echo "4. 设置语言环境..."
+cat > /etc/environment << EOF
+LANG=zh_CN.UTF-8
+LANGUAGE=zh_CN:zh
+LC_ALL=zh_CN.UTF-8
+LC_CTYPE=zh_CN.UTF-8
+EOF
 
-# 4. 设置中文环境（使用最小化方案）
-export LANG=C.UTF-8
-export LC_ALL=C.UTF-8
-export LANGUAGE=en_US:en
+cat > /etc/profile.d/zh_cn.sh << 'EOF'
+export LANG=zh_CN.UTF-8
+export LANGUAGE=zh_CN:zh
+export LC_ALL=zh_CN.UTF-8
+export LC_CTYPE=zh_CN.UTF-8
+
+
+
+
 export TERM=linux
+EOF
 
-# 基本设置
-export DEBIAN_FRONTEND=noninteractive
-export LC_ALL=C
-export LANG=C.UTF-8
-# 5. 检查并安装最小字体
-if ! fc-list 2>/dev/null | grep -q -i "wqy"; then
-    echo "安装中文字体..."
-    apt-get update >/dev/null 2>&1
-    apt-get install -y --no-install-recommends fonts-wqy-microhei >/dev/null 2>&1 || true
-    fc-cache -fv >/dev/null 2>&1 || true
+# 生成locale
+echo "zh_CN.UTF-8 UTF-8" > /etc/locale.gen
+locale-gen zh_CN.UTF-8 2>/dev/null || echo "locale-gen失败，跳过..."
+
+
+
+
+
+
+
+
+
+# 5. 设置控制台字体（重要！）
+echo "5. 设置控制台字体..."
+if [ -f /usr/share/consolefonts/Uni2-Terminus16.psf.gz ]; then
+    setfont /usr/share/consolefonts/Uni2-Terminus16.psf.gz
+elif [ -f /usr/share/consolefonts/Lat2-Terminus16.psf.gz ]; then
+    setfont /usr/share/consolefonts/Lat2-Terminus16.psf.gz
+else
+    # 安装控制台字体
+    apt-get install -y console-setup 2>/dev/null || true
 fi
+fc-cache -fv 2>/dev/null || true
 
-# 6. 设置控制台编码
-if command -v setupcon >/dev/null 2>&1; then
-    setupcon --force 2>/dev/null || true
-fi
 
-# 7. 创建干净的环境
-cat > /etc/profile.d/clean-console.sh << 'PROFILE'
-# 清理控制台环境
-export LANG=C.UTF-8
-export LC_ALL=C.UTF-8
-export TERM=linux
 
-# 禁止后台服务输出
-stty -echoctl 2>/dev/null || true
-mesg n 2>/dev/null || true
 
-# 清理提示符
-PS1='\[\e[1;32m\]OpenWRT-Installer\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]# '
-PROFILE
 
-. /etc/profile.d/clean-console.sh
+
+
+
+
+
+
+
+
+
+
+
 
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv 
 apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail 
@@ -778,7 +787,7 @@ done
 if [ -d "${CHROOT_DIR}/lib/modules" ]; then
     KERNEL_VERSION=$(ls "${CHROOT_DIR}/lib/modules/" | head -n1)
     MODULES_PATH="${CHROOT_DIR}/lib/modules/${KERNEL_VERSION}"
-    
+
     # 创建必要的模块列表
     KEEP_MODS="
 kernel/fs/ext4
@@ -793,7 +802,7 @@ kernel/drivers/hid
 kernel/drivers/input
 kernel/drivers/net/ethernet
 "
-    
+
     # 备份然后清理
     mkdir -p "${MODULES_PATH}/kernel-keep"
     for mod in $KEEP_MODS; do
@@ -802,7 +811,7 @@ kernel/drivers/net/ethernet
             mv "${MODULES_PATH}/kernel/${mod}"/* "${MODULES_PATH}/kernel-keep/${mod}/" 2>/dev/null || true
         fi
     done
-    
+
     # 替换模块目录
     rm -rf "${MODULES_PATH}/kernel"
     mv "${MODULES_PATH}/kernel-keep" "${MODULES_PATH}/kernel"
@@ -1067,7 +1076,7 @@ log_info "[10/10] Verifying build..."
 
 if [ -f "$ISO_PATH" ]; then
     ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
-    
+
     echo ""
     log_success "✅ ISO built successfully!"
     echo ""
@@ -1076,7 +1085,7 @@ if [ -f "$ISO_PATH" ]; then
     log_info "  File Size:   $ISO_SIZE"
     log_info "  Volume ID:   OPENWRT_INSTALL"
     echo ""
-    
+
     # 创建构建信息文件
     cat > "$OUTPUT_DIR/build-info.txt" << EOF
 OpenWRT Installer ISO Build Information
@@ -1110,9 +1119,9 @@ Notes:
   - Use numbers instead of disk names (simpler)
   - Press Ctrl+C during reboot countdown to cancel
 EOF
-    
+
     log_success "Build info saved to: $OUTPUT_DIR/build-info.txt"
-    
+
     echo ""
     echo "================================================================================"
     echo "📦 ISO Build Complete!"
@@ -1128,7 +1137,7 @@ EOF
     echo ""
     echo "  souce https://github.com/sirpdboy/openwrt-installer-iso.git"
     echo "================================================================================"
-    
+
     log_success "🎉 All steps completed successfully!"
 else
     log_error "❌ ISO file not created: $ISO_PATH"
