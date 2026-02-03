@@ -292,7 +292,7 @@ cat << "WELCOME"
 System is starting up, please wait...
 WELCOME
 
-sleep 2
+sleep 10
 
 if [ ! -f "/openwrt.img" ]; then
     clear
@@ -335,8 +335,8 @@ clean_system_output() {
     
     # 2. 禁用控制台输出
     
-    pkill -9 systemd-timesyncd 2>/dev/null || true
-    pkill -9 journald 2>/dev/null || true
+pkill -9 systemd-timesyncd 2>/dev/null || true
+pkill -9 journald 2>/dev/null || true
     echo 0 > /proc/sys/kernel/printk 2>/dev/null || true
     dmesg -n 1 2>/dev/null || true
     
@@ -1131,7 +1131,7 @@ Kernel Version:  $(basename "$KERNEL")
 Initrd Version:  $(basename "$INITRD")
 
 Boot Support:    BIOS + UEFI
-Boot Timeout:    3 seconds
+Boot Timeout:    10 seconds
 
 Installation Features:
   - Simple numeric disk selection (1, 2, 3, etc.)
