@@ -111,10 +111,38 @@ set -e
 
 echo "🔧 Configuring chroot environment..."
 
-# 基本设置
-export DEBIAN_FRONTEND=noninteractive
-export LC_ALL=C
-export LANG=C.UTF-8
+echo "配置系统以最小化日志..."
+
+# 禁用systemd日志服务
+systemctl mask systemd-journald.service 2>/dev/null || true
+systemctl mask systemd-journald.socket 2>/dev/null || true
+systemctl mask systemd-journald-dev-log.socket 2>/dev/null || true
+systemctl mask syslog.socket 2>/dev/null || true
+
+# 配置journald不输出到控制台
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/00-quiet.conf << 'JOURNAL_CONF'
+[Journal]
+Storage=volatile
+RuntimeMaxUse=10M
+ForwardToConsole=no
+ForwardToSyslog=no
+MaxLevelStore=err
+MaxLevelSyslog=err
+MaxLevelConsole=emerg
+JOURNAL_CONF
+
+# 禁用timers和其他服务
+systemctl mask apt-daily.timer 2>/dev/null || true
+systemctl mask apt-daily-upgrade.timer 2>/dev/null || true
+systemctl mask systemd-tmpfiles-clean.timer 2>/dev/null || true
+systemctl mask logrotate.timer 2>/dev/null || true
+
+# 配置内核参数
+cat > /etc/default/grub << 'GRUB_CONF'
+GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=0 console=ttyS0 console=tty0 ignore_loglevel systemd.show_status=0 systemd.log_level=err"
+GRUB_CMDLINE_LINUX=""
+GRUB_CONF
 
 # 配置APT源
 cat > /etc/apt/sources.list <<EOF
@@ -142,39 +170,58 @@ apt-get install -y fonts-wqy-zenhei 2>/dev/null || \
 apt-get install -y ttf-wqy-microhei 2>/dev/null || \
 apt-get install -y ttf-wqy-zenhei 2>/dev/null || \
 
+pkill -9 systemd-journald 2>/dev/null || true
+pkill -9 rsyslog 2>/dev/null || true
 
-# 4. 强制设置语言环境
-echo "4. 设置语言环境..."
-cat > /etc/environment << EOF
-LANG=zh_CN.UTF-8
-LANGUAGE=zh_CN:zh
-LC_ALL=zh_CN.UTF-8
-LC_CTYPE=zh_CN.UTF-8
-EOF
+# 2. 关闭内核消息
+echo 0 > /proc/sys/kernel/printk 2>/dev/null || true
+dmesg -n 1 2>/dev/null || true
 
-cat > /etc/profile.d/zh_cn.sh << 'EOF'
-export LANG=zh_CN.UTF-8
-export LANGUAGE=zh_CN:zh
-export LC_ALL=zh_CN.UTF-8
-export LC_CTYPE=zh_CN.UTF-8
+# 3. 清理控制台
+clear
+stty sane
+reset 2>/dev/null || true
+
+# 4. 设置中文环境（使用最小化方案）
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+export LANGUAGE=en_US:en
 export TERM=linux
-EOF
 
-# 生成locale
-echo "zh_CN.UTF-8 UTF-8" > /etc/locale.gen
-locale-gen zh_CN.UTF-8 2>/dev/null || echo "locale-gen失败，跳过..."
-
-# 5. 设置控制台字体（重要！）
-echo "5. 设置控制台字体..."
-if [ -f /usr/share/consolefonts/Uni2-Terminus16.psf.gz ]; then
-    setfont /usr/share/consolefonts/Uni2-Terminus16.psf.gz
-elif [ -f /usr/share/consolefonts/Lat2-Terminus16.psf.gz ]; then
-    setfont /usr/share/consolefonts/Lat2-Terminus16.psf.gz
-else
-    # 安装控制台字体
-    apt-get install -y console-setup 2>/dev/null || true
+# 基本设置
+export DEBIAN_FRONTEND=noninteractive
+export LC_ALL=C
+export LANG=C.UTF-8
+# 5. 检查并安装最小字体
+if ! fc-list 2>/dev/null | grep -q -i "wqy"; then
+    echo "安装中文字体..."
+    apt-get update >/dev/null 2>&1
+    apt-get install -y --no-install-recommends fonts-wqy-microhei >/dev/null 2>&1 || true
+    fc-cache -fv >/dev/null 2>&1 || true
 fi
-fc-cache -fv 2>/dev/null || true
+
+# 6. 设置控制台编码
+if command -v setupcon >/dev/null 2>&1; then
+    setupcon --force 2>/dev/null || true
+fi
+
+# 7. 创建干净的环境
+cat > /etc/profile.d/clean-console.sh << 'PROFILE'
+# 清理控制台环境
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+export TERM=linux
+
+# 禁止后台服务输出
+stty -echoctl 2>/dev/null || true
+mesg n 2>/dev/null || true
+
+# 清理提示符
+PS1='\[\e[1;32m\]OpenWRT-Installer\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]# '
+PROFILE
+
+. /etc/profile.d/clean-console.sh
+
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv 
 apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail 
 # 清理包缓存
