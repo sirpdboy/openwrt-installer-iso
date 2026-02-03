@@ -1,215 +1,188 @@
-name: Build-tinycore
+name: build-tinycore
 
 on:
   push:
     branches: [ main, master ]
     paths:
-      - './build-tinycore.sh'
-      - '.github/workflows/Build-tinycore.yml'
+      - 'build-tinycore.sh'
+      - '.github/workflows/build-tinycore.yml'
   workflow_dispatch:
     inputs:
-      img_file:
-        description: 'OpenWRT IMG文件URL'
-        required: true
-        default: 'https://downloads.openwrt.org/releases/23.05.3/targets/x86/64/openwrt-23.05.3-x86-64-generic-ext4-combined-efi.img.gz'
-      output_name:
-        description: '输出ISO文件名'
+      openwrt_image_url:
+        description: 'OpenWRT镜像URL（可选）'
         required: false
-        default: 'openwrt-installer'
-
-env:
-  tinycore_VERSION: "13.0"
 
 jobs:
-  build-iso:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-latest  # GitHub Actions已经预装了Docker
     
     steps:
-    - name: 检查环境
-      run: |
-        echo "tinycore版本: ${{ env.tinycore_VERSION }}"
-        echo "IMG文件: ${{ github.event.inputs.img_file }}"
-        echo "输出名称: ${{ github.event.inputs.output_name }}"
-        
-    - name: 检出代码
+    - name: Checkout code
       uses: actions/checkout@v4
-      
-    - name: 准备Docker构建环境
+    
+    - name: 设置Docker环境
       run: |
+        echo "🐳 Docker环境检查..."
+        docker --version
+        docker info | grep -E "(Server Version|Containers|Images)"
+        echo "✅ Docker环境正常"
+    
+    - name: 准备构建文件
+      run: |
+        # 创建修复后的Dockerfile
         cat > Dockerfile.openwrt-builder << 'DOCKEREOF'
         FROM ubuntu:22.04
-
-        # 安装构建工具（修复包名）
-        RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        genisoimage \
-        syslinux \
-        isolinux \
-        squashfs-tools \
-        pv \
-        xorriso \
-        mtools \
-        dosfstools \
-        # grub相关包 - 使用正确的包名
-        grub-pc-bin \
-        grub-efi-amd64-bin \
-        grub-efi-ia32-bin \
-        grub2-common \
-        wget \
-        curl \
-        xz-utils \          # 包名从 xz 改为 xz-utils
-        zstd \
-        lz4 \
-        upx-ucl \           # 包名从 upx 改为 upx-ucl
-        cpio \
-        gzip \
-        file \
-        findutils \
-        coreutils \
-        jq \                # 用于JSON解析
-        && rm -rf /var/lib/apt/lists/*
-
-        # 安装mkisofs（如果需要）
-        RUN if ! command -v mkisofs >/dev/null 2>&1; then \
-        apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mkisofs; \
+        
+        # 设置非交互模式
+        ENV DEBIAN_FRONTEND=noninteractive
+        
+        # 安装构建工具（使用正确的包名）
+        RUN apt-get update && apt-get install -y \
+            genisoimage \
+            syslinux \
+            isolinux \
+            squashfs-tools \
+            pv \
+            xorriso \
+            mtools \
+            dosfstools \
+            # GRUB引导工具
+            grub-pc-bin \
+            grub-efi-amd64-bin \
+            grub-efi-ia32-bin \
+            grub2-common \
+            wget \
+            curl \
+            xz-utils \
+            zstd \
+            lz4 \
+            upx-ucl \
+            cpio \
+            gzip \
+            file \
+            findutils \
+            coreutils \
+            jq \
+            # 网络工具
+            iproute2 \
+            net-tools \
+            && rm -rf /var/lib/apt/lists/*
+        
+        # 检查并安装mkisofs（如果genisoimage未提供）
+        RUN if ! command -v mkisofs >/dev/null 2>&1 && ! command -v genisoimage >/dev/null 2>&1; then \
+            apt-get update && apt-get install -y mkisofs; \
         fi
-
+        
+        # 创建工作目录
         WORKDIR /builder
-
-        # 复制构建脚本
-        COPY build-tinycore.sh /builder/build-tinycore.sh
-        RUN chmod +x /builder/build-tinycore.sh
-
-        # 创建挂载点目录
+        
+        # 创建必要的目录
         RUN mkdir -p /mnt /output
-
-        ENTRYPOINT ["/builder/build-tinycore.sh"]
+        
+        # 设置构建脚本（将在运行时挂载）
+        ENTRYPOINT ["bash", "-c"]
+        CMD ["echo '请挂载构建脚本并运行'"]
         DOCKEREOF
-        echo "✅ Dockerfile创建完成"
-    - name: 下载OpenWRT镜像
-      id: download
+        
+        # 创建最小化构建脚本（防止挂载失败时使用）
+        cat > build-tinycore-minimal.sh << 'SCRIPTEOF'
+        #!/bin/bash
+        echo "最小化构建脚本"
+        echo "请确保正确挂载了完整的构建脚本"
+        exit 1
+        SCRIPTEOF
+        chmod +x build-tinycore-minimal.sh
+    
+    - name: 准备OpenWRT镜像
+      id: prepare_image
       run: |
-        echo "下载OpenWRT镜像..."
+        echo "📥 准备OpenWRT镜像..."
         
-        # 创建下载目录
-        mkdir -p downloads
-        cd downloads
-        echo "当前目录: $(pwd)"
+        # 创建目录
+        mkdir -p assets
         
-        OPENWRT_URL="${{ github.event.inputs.openwrt_image_url }}"
-        OUTPUT_IMG="openwrt.img"
-        # 方法1: 尝试下载最新版本
-        REPO="sirpdboy/openwrt"
-        echo "获取最新版本..."
-        # 获取最新版本
-        LATEST_RELEASE=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.tag_name // empty')
-        if [ -z "$LATEST_RELEASE" ]; then
-            echo "无法获取最新版本，使用硬编码版本"
-            LATEST_RELEASE="v2026.01.01"
-        fi
-        echo "最新版本: $LATEST_RELEASE"
-        # 获取下载URL
-        DOWNLOAD_URLS=$(curl -sL "https://api.github.com/repos/$REPO/releases/tags/$LATEST_RELEASE" | \
-              jq -r '.assets[] | select(.name | endswith("img.gz")) | .browser_download_url' 2>/dev/null || echo "")
-        if [ -z "$DOWNLOAD_URLS" ]; then
-            echo "无法获取下载URL，使用备用方法"
-            # 备用URL
-            DOWNLOAD_URLS="https://github.com/sirpdboy/openwrt/releases/download/v2024.09.01/2024.09.01-x86-64-generic-squashfs-combined.img.gz"
+        # 检查是否有提供的URL
+        if [[ -n "${{ github.event.inputs.openwrt_image_url }}" ]]; then
+            echo "使用提供的OpenWRT URL"
+            OPENWRT_URL="${{ github.event.inputs.openwrt_image_url }}"
+        else
+            # 使用默认镜像
+            OPENWRT_URL="https://github.com/sirpdboy/openwrt/releases/download/v2024.09.01/2024.09.01-x86-64-generic-squashfs-combined.img.gz"
         fi
         
-        OPENWRT_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
+        echo "下载URL: $OPENWRT_URL"
         
-        # 尝试下载
-        if wget -q -O "$OUTPUT_IMG.gz" "$OPENWRT_URL"; then
-            echo "✅ 下载成功: $(du -h "$OUTPUT_IMG.gz" | cut -f1)"
+        # 下载镜像
+        if wget -q --tries=3 --timeout=30 -O "assets/ezopwrt.img.gz" "$OPENWRT_URL"; then
+            echo "✅ 下载成功"
             
-            # 尝试解压
-            if gzip -t "$OUTPUT_IMG.gz" 2>/dev/null; then
-                echo "检测到gzip压缩格式，正在解压..."
-                gzip -d "$OUTPUT_IMG.gz"
-                echo "解压成功"
+            # 解压
+            if gzip -t "assets/ezopwrt.img.gz" 2>/dev/null; then
+                echo "解压gzip文件..."
+                gzip -d "assets/ezopwrt.img.gz"
+                echo "✅ 解压完成"
             else
-                echo "不是gzip格式，直接使用"
-                mv "$OUTPUT_IMG.gz" "$OUTPUT_IMG"
+                echo "不是gzip文件，直接使用"
+                mv "assets/ezopwrt.img.gz" "assets/ezopwrt.img"
             fi
             
-            if [ -f "$OUTPUT_IMG" ]; then
-                IMG_ABS_PATH="$(pwd)/$OUTPUT_IMG"
-                echo "镜像位置: $IMG_ABS_PATH"
-                echo "镜像大小: $(du -h "$IMG_ABS_PATH" | cut -f1)"
-                echo "img_path=$IMG_ABS_PATH" >> $GITHUB_OUTPUT
+            # 验证文件
+            if [ -f "assets/ezopwrt.img" ]; then
+                IMG_SIZE=$(du -h "assets/ezopwrt.img" | cut -f1)
+                echo "镜像大小: $IMG_SIZE"
+                echo "img_path=assets/ezopwrt.img" >> $GITHUB_OUTPUT
             else
-                echo "❌ 镜像文件不存在"
+                echo "❌ 镜像文件创建失败"
                 exit 1
             fi
         else
-            echo "❌ 下载失败"
-            # 创建测试文件
-            dd if=/dev/zero of="$OUTPUT_IMG" bs=1M count=10
-            IMG_ABS_PATH="$(pwd)/$OUTPUT_IMG"
-            echo "创建测试文件: $IMG_ABS_PATH"
-            echo "img_path=$IMG_ABS_PATH" >> $GITHUB_OUTPUT
+            echo "❌ 下载失败，创建测试镜像"
+            dd if=/dev/zero of=assets/ezopwrt.img bs=1M count=10
+            echo "img_path=assets/ezopwrt.img" >> $GITHUB_OUTPUT
         fi
-        
-    - name: 创建输出目录
-      run: |
-        mkdir -p output
-        chmod 777 output
-        echo "✅ 输出目录准备完成"
-        
-        
-
+    
     - name: 构建Docker镜像
       run: |
         echo "🐳 构建Docker镜像..."
-    
-        # 先安装必要依赖（如果在GitHub Actions中）
-        sudo apt-get update && sudo apt-get install -y docker.io
-    
+        
         # 构建镜像
-        docker build -t openwrt-iso-builder -f Dockerfile.openwrt-builder .
-    
-        if [ $? -eq 0 ]; then
-        echo "✅ Docker镜像构建成功"
+        docker build -t openwrt-builder -f Dockerfile.openwrt-builder .
+        
         # 验证镜像
-        docker image ls | grep openwrt-iso-builder
-        else
-        echo "❌ Docker镜像构建失败"
-        exit 1
-        fi
-
+        echo "镜像列表:"
+        docker images | grep openwrt-builder
+        
+        echo "✅ Docker镜像构建完成"
+    
     - name: 运行ISO构建
       run: |
-        echo "🔨 运行ISO构建..."
-    
-        # 检查输入文件
+        echo "🔨 开始构建ISO..."
+        
+        # 检查必要文件
         if [ ! -f "assets/ezopwrt.img" ]; then
-        echo "❌ 找不到OpenWRT镜像文件"
-        ls -la assets/ || echo "assets目录不存在"
-        exit 1
+            echo "❌ 找不到OpenWRT镜像"
+            exit 1
         fi
-    
-        # 确保脚本存在且有执行权限
+        
         if [ ! -f "build-tinycore.sh" ]; then
-        echo "❌ 找不到构建脚本"
-        exit 1
+            echo "❌ 找不到构建脚本"
+            exit 1
         fi
+        
         chmod +x build-tinycore.sh
-    
-        echo "输入文件:"
-        echo "  OpenWRT镜像: assets/ezopwrt.img ($(du -h assets/ezopwrt.img | cut -f1))"
-        echo "  构建脚本: build-tinycore.sh"
+        
+        echo "构建参数:"
+        echo "  输入镜像: assets/ezopwrt.img"
         echo "  输出目录: output/"
-    
-        # 使用Docker运行构建
+        echo "  脚本: build-tinycore.sh"
+        
+        # 运行Docker构建
         docker run --rm \
-        --name openwrt-builder \
-        -v "$(pwd)/assets/ezopwrt.img:/mnt/openwrt.img:ro" \
-        -v "$(pwd)/build-tinycore.sh:/builder/build-tinycore.sh:ro" \
-        -v "$(pwd)/output:/builder/output" \
-        openwrt-iso-builder \
-        "/mnt/openwrt.img" \
-        "/builder/output" \
-        "openwrt-installer.iso"
+          -v "$(pwd)/assets/ezopwrt.img:/mnt/input.img:ro" \
+          -v "$(pwd)/build-tinycore.sh:/builder/build.sh:ro" \
+          -v "$(pwd)/output:/builder/output" \
+          openwrt-builder \
+          "bash -c 'chmod +x /builder/build.sh && /builder/build.sh /mnt/input.img /builder/output openwrt-installer.iso'"
     
         # 检查构建结果
         if [ $? -eq 0 ]; then
@@ -248,4 +221,3 @@ jobs:
         name: openwrt-installer-iso
         path: output/*.iso
         retention-days: 7
-  
