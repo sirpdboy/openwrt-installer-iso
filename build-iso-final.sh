@@ -132,116 +132,54 @@ echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 
 # 更新并安装包
 echo "Updating packages..."
-apt-get update --no-install-recommends
-apt-get -y install apt --no-install-recommends || true
-apt-get -y upgrade --no-install-recommends
+apt-get update --no-install-recommends 2>/dev/null
+apt-get -y install apt --no-install-recommends 2>/dev/null || true
+apt-get -y upgrade --no-install-recommends 2>/dev/null
 echo "Setting locale..."
-apt-get install -y --no-install-recommends \
-    locales \
-    fonts-wqy-microhei
-
-# 如果上述失败，尝试备用方案
-if [ $? -ne 0 ]; then
-    echo "尝试备用字体源..."
-    # 下载直接字体文件
-    wget -q http://ftp.cn.debian.org/debian/pool/main/f/fonts-wqy-microhei/fonts-wqy-microhei_0.2.0-beta-2_all.deb -O /tmp/wqy.deb
-    dpkg -i /tmp/wqy.deb 2>/dev/null || true
-    apt-get -f install -y
-fi
+apt-get install -y --no-install-recommends  locales 2>/dev/null
+apt-get install -y --no-install-recommends fonts-wqy-microhei 2>/dev/null || \
+apt-get install -y fonts-wqy-zenhei 2>/dev/null || \
+apt-get install -y ttf-wqy-microhei 2>/dev/null || \
+apt-get install -y ttf-wqy-zenhei 2>/dev/null || \
 
 
-# 配置locale（强制方法）
-cat > /etc/locale.gen << 'LOCALE'
-en_US.UTF-8 UTF-8
-zh_CN.UTF-8 UTF-8
-zh_CN.GBK GBK
-LOCALE
+# 4. 强制设置语言环境
+echo "4. 设置语言环境..."
+cat > /etc/environment << EOF
+LANG=zh_CN.UTF-8
+LANGUAGE=zh_CN:zh
+LC_ALL=zh_CN.UTF-8
+LC_CTYPE=zh_CN.UTF-8
+EOF
+
+cat > /etc/profile.d/zh_cn.sh << 'EOF'
+export LANG=zh_CN.UTF-8
+export LANGUAGE=zh_CN:zh
+export LC_ALL=zh_CN.UTF-8
+export LC_CTYPE=zh_CN.UTF-8
+export TERM=linux
+EOF
 
 # 生成locale
-/usr/sbin/locale-gen
+echo "zh_CN.UTF-8 UTF-8" > /etc/locale.gen
+locale-gen zh_CN.UTF-8 2>/dev/null || echo "locale-gen失败，跳过..."
 
-# 设置系统范围的语言
-cat > /etc/default/locale << 'LOCALE_CONF'
-LANG="zh_CN.UTF-8"
-LANGUAGE="zh_CN:zh"
-LC_ALL="zh_CN.UTF-8"
-LC_CTYPE="zh_CN.UTF-8"
-LC_MESSAGES="zh_CN.UTF-8"
-LOCALE_CONF
-
-# 配置终端
-cat > /etc/profile.d/terminal-chinese.sh << 'TERMINAL'
-# 终端中文支持
-if [ "$TERM" = "linux" ]; then
-    # 设置控制台编码
-    export LANG=zh_CN.UTF-8
-    export LANGUAGE=zh_CN:zh
-    
-    # 加载中文字体（如果可用）
-    if [ -f /usr/share/consolefonts/Uni2-Fixed16.psf.gz ]; then
-        loadfont Uni2-Fixed16 2>/dev/null || true
-    fi
+# 5. 设置控制台字体（重要！）
+echo "5. 设置控制台字体..."
+if [ -f /usr/share/consolefonts/Uni2-Terminus16.psf.gz ]; then
+    setfont /usr/share/consolefonts/Uni2-Terminus16.psf.gz
+elif [ -f /usr/share/consolefonts/Lat2-Terminus16.psf.gz ]; then
+    setfont /usr/share/consolefonts/Lat2-Terminus16.psf.gz
+else
+    # 安装控制台字体
+    apt-get install -y console-setup 2>/dev/null || true
 fi
-
-# 通用设置
-export LESSCHARSET=utf-8
-alias ll='ls -la --color=auto'
-TERMINAL
-
-# 激活配置
-. /etc/default/locale
-. /etc/profile.d/terminal-chinese.sh
-
+fc-cache -fv 2>/dev/null || true
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv 
 apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail 
 # 清理包缓存
 apt-get clean
 
-# 保留基本的内核模块
-KEEP_MODULES="
-ext4
-fat
-vfat
-isofs
-usb-storage
-usbhid
-uhci-hcd
-ehci-hcd
-ohci-hcd
-xhci-hcd
-sd_mod
-sr_mod
-cdrom
-ata_generic
-ata_piix
-ahci
-nvme
-scsi_mod
-sg
-dm-mod
-dm-crypt
-cryptd
-loop
-"
-
-# 清理不必要的内核模块
-mkdir -p /lib/modules-backup
-KERNEL_VERSION=$(ls /lib/modules/ | head -n1)
-MODULES_DIR="/lib/modules/${KERNEL_VERSION}/kernel"
-
-for dir in drivers/net/wireless drivers/media drivers/video drivers/gpu; do
-    rm -rf ${MODULES_DIR}/${dir} 2>/dev/null || true
-done
-# 保留网卡驱动 (最小化)
-for dir in drivers/net/ethernet/intel drivers/net/ethernet/realtek drivers/net/ethernet/broadcom; do
-    mkdir -p /lib/modules-backup/${dir}
-    mv ${MODULES_DIR}/${dir}/* /lib/modules-backup/${dir}/ 2>/dev/null || true
-done
-
-# 清理不常用的文件系统驱动
-for fs in cifs nfs nfsd afs ceph coda ecryptfs f2fs hfs hfsplus jffs2 minix nilfs2 omfs orangefs qnx4 qnx6 reiserfs romfs sysv ubifs udf ufs; do
-    rm -rf ${MODULES_DIR}/fs/${fs} 2>/dev/null || true
-done
 # 配置网络
 systemctl enable systemd-networkd
 
@@ -291,7 +229,7 @@ AUTOINSTALL_SERVICE
 cat > /opt/start-installer.sh << 'START_SCRIPT'
 #!/bin/bash
 # OpenWRT安装系统启动脚本
-seelp 5
+sleep 3
 clear
 
 cat << "WELCOME"
@@ -499,7 +437,8 @@ echo -e "OpenWRT image found: $IMG_SIZE\n"
     done < <(lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^(sd|hd|nvme|vd)')
     
     TOTAL_DISKS=$((DISK_INDEX - 1))
-    echo -e "══════════════════════════════════════════════════════════\n"
+
+    echo "==============================\n"
 }
 
 # 主循环
@@ -550,8 +489,8 @@ echo -e "\nALL existing partitions and data will be permanently deleted!"
 echo -e "\n══════════════════════════════════════════════════════════\n"
 
 while true; do
-    read -p "输入 'YES' 确认 / 'NO' 取消: " CONFIRM
-    echo "5Lit5paH" | base64 -d
+    read -p "Type 'YES' to continue or 'NO' to cancel: " CONFIRM
+    
     case $CONFIRM in
         YES|yes|Y|y)
             echo -e "\nProceeding with installation...\n"
@@ -622,7 +561,7 @@ show_progress() {
                     for ((i=0; i<empty; i++)); do
                         echo -n " "
                     done
-                    echo -ne "] ${percentage}%"
+                    echo -ne "] \n     ${percentage}%"
                 fi
             fi
         fi
@@ -782,7 +721,7 @@ rm -rf /var/lib/systemd/random-seed 2>/dev/null || true
 "
 
 # 2. 手动清理不需要的文件
-for dir in "${CHROOT_DIR}/usr/share/locale" "${CHROOT_DIR}/usr/share/doc" \
+for dir in "${CHROOT_DIR}/usr/share/doc" \
            "${CHROOT_DIR}/usr/share/man" "${CHROOT_DIR}/usr/share/info"; do
     if [ -d "$dir" ]; then
         rm -rf "$dir"
