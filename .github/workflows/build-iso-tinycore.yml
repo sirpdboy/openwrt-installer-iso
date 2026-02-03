@@ -20,47 +20,30 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
-    - name: Setup environment
+      
+    - name: Setup Build Environment
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-         wget \
-        curl \
-        xorriso \
-        syslinux \
-        syslinux-common \
-        isolinux \
-        grub-efi-amd64-bin \
-        grub-common \
-        grub2-common \
-        mtools \
-        dosfstools \
-        squashfs-tools \
-        e2fsprogs \
-        parted \
-        gdisk \
-        jq \
-        file \
-        cpio \
-        gzip \
-        genisoimage
-    
-        # 确保有必要的工具
-        sudo apt-get install -y \
-        grub-pc-bin \
-        grub-efi-amd64-signed \
-        grub-efi-amd64
-    
-        ls -la /usr/lib/syslinux/isolinux.bin 2>/dev/null || \
-        sudo apt-get install --reinstall -y syslinux-common
-    
-        ls -la /usr/lib/grub/x86_64-efi/ 2>/dev/null || \
-        sudo apt-get install --reinstall -y grub-efi-amd64-bin
-        mkdir -p assets
-        mkdir -p output
-        cd assets
-        echo "ROOTDIR=$PWD" >> $GITHUB_ENV
+          xorriso \
+          mkisofs \
+          squashfs-tools \
+          syslinux \
+          isolinux \
+          mtools \
+          dosfstools \
+          grub-efi-amd64-bin \
+          grub-pc-bin \
+          wget \
+          curl \
+          pv \
+          jq \
+          gzip \
+          cpio \
+          file \
+          unzip
+ 
+          echo "ROOTDIR=$PWD" >> $GITHUB_ENV
     - name: Download OpenWRT image
       run: |
         # 使用你的下载脚本或直接下载
@@ -97,7 +80,7 @@ jobs:
       run: |
         chmod +x build-iso-tinycore.sh
         ./build-iso-tinycore.sh \
-          "$ROOTDIR/ezopwrt.img" \
+          "$ROOTDIR/assets/ezopwrt.img" \
           "$ROOTDIR/output" \
           "openwrt-tiny-installer.iso"
       
