@@ -417,7 +417,7 @@ echo -e "OpenWRT image found: $IMG_SIZE\n"
     DISK_LIST=()
     DISK_INDEX=1
     echo "检测到可用磁盘:"
-    echo -e "==============================\n"
+    echo -e "========================================\n"
     # 使用lsblk获取磁盘信息
     while IFS= read -r line; do
         if [ -n "$line" ]; then
@@ -436,7 +436,8 @@ echo -e "OpenWRT image found: $IMG_SIZE\n"
     
     TOTAL_DISKS=$((DISK_INDEX - 1))
 
-    echo "==============================\n"
+    echo -e "========================================\n"
+
 }
 
 # 主循环
@@ -594,7 +595,7 @@ fi
 if [ $DD_EXIT -eq 0 ]; then
     # 同步磁盘
     sync
-    echo -e "\n\n✅ Installation successful!"
+    echo -e "\n\nInstallation successful!"
     echo -e "\nOpenWRT has been installed to /dev/$TARGET_DISK"
     
     # 显示安装后信息
@@ -620,7 +621,7 @@ if [ $DD_EXIT -eq 0 ]; then
     reboot -f
     
 else
-    echo -e "\n\n❌ Installation failed! Error code: $DD_EXIT"
+    echo -e "\n\nInstallation failed! Error code: $DD_EXIT"
     echo -e "\nPossible issues:"
     echo -e "1. Disk may be in use or mounted"
     echo -e "2. Disk may be failing"
