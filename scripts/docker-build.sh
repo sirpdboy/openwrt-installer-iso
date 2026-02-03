@@ -5,12 +5,6 @@ set -e
 echo "=== 构建可引导的OpenWRT安装ISO ==="
 echo "======================================"
 
-# 参数
-if [ $# -ne 2 ]; then
-    echo "用法: $0 <output_dir> <iso_name>"
-    exit 1
-fi
-
 OUTPUT_DIR="$2"
 ISO_NAME="$3"
 
@@ -65,7 +59,7 @@ if ! download_with_fallback "${TC_MIRROR}/release/distribution_files/vmlinuz64" 
 fi
 
 echo "  下载initrd..."
-if ! download_with_fallback "${TC_MIRROR}/release/distribution_files/core.gz" \
+if ! download_with_fallback "${TC_MIRROR}/release/distribution_files/corepure64.gz" \
     "${ISO_DIR}/boot/core.gz"; then
     echo "❌ initrd下载失败"
     exit 1
@@ -113,16 +107,6 @@ LABEL openwrt
   KERNEL /boot/vmlinuz64
   APPEND initrd=/boot/core.gz quiet console=ttyS0 console=tty0
 
-LABEL shell
-  MENU LABEL ^Shell (Debug)
-  KERNEL /boot/vmlinuz64
-  APPEND initrd=/boot/core.gz quiet norestore
-
-LABEL memtest
-  MENU LABEL ^Memory Test
-  KERNEL /boot/memtest
-  APPEND -
-
 LABEL local
   MENU LABEL Boot from ^local drive
   LOCALBOOT 0x80
@@ -141,10 +125,6 @@ menuentry "Install OpenWRT" {
     initrd /boot/core.gz
 }
 
-menuentry "Shell (Debug Mode)" {
-    linux /boot/vmlinuz64 quiet norestore
-    initrd /boot/core.gz
-}
 GRUB_CFG
 
 # 复制或生成GRUB EFI文件
