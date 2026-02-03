@@ -160,8 +160,8 @@ cd "${NEW_ISO_DIR}/cde/optional"
 AVAILABLE_EXTENSIONS=(
     "bash.tcz"           # bash shell
     "dialog.tcz"         # 对话框工具
-    "ncurses.tcz"        # 终端控制
-    "ncurses-utils.tcz"  # ncurses工具
+    "ncursesw.tcz"        # 终端控制
+    "ncursesw-utils.tcz"  # ncurses工具
     "parted.tcz"         # 分区工具
     "e2fsprogs.tcz"      # ext文件系统工具
     "dosfstools.tcz"     # FAT文件系统工具
@@ -244,7 +244,7 @@ if [ $DOWNLOADED_COUNT -lt 3 ]; then
     log_warning "下载的扩展包太少，使用最小集合"
     
     # 创建绝对必要的最小集合
-    MINIMAL_EXTENSIONS=("bash.tcz" "dialog.tcz" "ncurses.tcz" "parted.tcz")
+    MINIMAL_EXTENSIONS=("bash.tcz" "dialog.tcz" "ncursesw.tcz" "parted.tcz")
     
     # 清空并重新下载
     rm -f *.tcz
@@ -260,9 +260,8 @@ log_info "创建onboot.lst..."
 cat > "${NEW_ISO_DIR}/cde/onboot.lst" << 'ONBOOT'
 bash.tcz
 dialog.tcz
-ncurses.tcz
-ncurses-utils.tcz
-parted.tcz
+ncursesw.tcz
+ncursesw-utils.tcz
 e2fsprogs.tcz
 dosfstools.tcz
 ONBOOT
