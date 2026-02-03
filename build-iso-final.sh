@@ -110,12 +110,6 @@ cat > "$CHROOT_DIR/install-chroot.sh" << 'CHROOT_EOF'
 set -e
 
 echo "🔧 Configuring chroot environment..."
-# 基本设置
-export DEBIAN_FRONTEND=noninteractive
-export LC_ALL=C
-export LANG=C.UTF-8
-
-echo "配置系统以最小化日志..."
 
 # 禁用systemd日志服务
 systemctl mask systemd-journald.service 2>/dev/null || true
@@ -168,8 +162,51 @@ apt-get update --no-install-recommends 2>/dev/null
 apt-get -y install apt --no-install-recommends 2>/dev/null || true
 apt-get -y upgrade --no-install-recommends 2>/dev/null
 echo "Setting locale..."
-apt-get install -y --no-install-recommends  locales 2>/dev/null
+apt-get install -y --no-install-recommends \
+    locales \
+    fonts-wqy-microhei
 
+# 配置locale（强制方法）
+cat > /etc/locale.gen << 'LOCALE'
+en_US.UTF-8 UTF-8
+zh_CN.UTF-8 UTF-8
+zh_CN.GBK GBK
+LOCALE
+
+# 生成locale
+/usr/sbin/locale-gen
+
+# 设置系统范围的语言
+cat > /etc/default/locale << 'LOCALE_CONF'
+LANG="zh_CN.UTF-8"
+LANGUAGE="zh_CN:zh"
+LC_ALL="zh_CN.UTF-8"
+LC_CTYPE="zh_CN.UTF-8"
+LC_MESSAGES="zh_CN.UTF-8"
+LOCALE_CONF
+
+# 配置终端
+cat > /etc/profile.d/terminal-chinese.sh << 'TERMINAL'
+# 终端中文支持
+if [ "$TERM" = "linux" ]; then
+    # 设置控制台编码
+    export LANG=zh_CN.UTF-8
+    export LANGUAGE=zh_CN:zh
+    
+    # 加载中文字体（如果可用）
+    if [ -f /usr/share/consolefonts/Uni2-Fixed16.psf.gz ]; then
+        loadfont Uni2-Fixed16 2>/dev/null || true
+    fi
+fi
+
+# 通用设置
+export LESSCHARSET=utf-8
+alias ll='ls -la --color=auto'
+TERMINAL
+
+# 激活配置
+. /etc/default/locale
+. /etc/profile.d/terminal-chinese.sh
 fc-cache -fv 2>/dev/null || true
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv 
 apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail 
@@ -277,14 +314,51 @@ export LC_ALL=zh_CN.UTF-8
 pkill -9 systemd-timesyncd 2>/dev/null
 pkill -9 journald 2>/dev/null
 echo 0 > /proc/sys/kernel/printk 2>/dev/null
+clean_system_output() {
+    # 1. 停止所有日志服务
+    systemctl stop systemd-journald 2>/dev/null || true
+    systemctl stop rsyslog 2>/dev/null || true
+    systemctl stop syslog 2>/dev/null || true
+    
+    # 2. 禁用控制台输出
+    echo 0 > /proc/sys/kernel/printk 2>/dev/null || true
+    dmesg -n 1 2>/dev/null || true
+    
+    # 3. 清理屏幕
+    clear
+    printf "\033c"  # 真正的终端重置
+    stty sane 2>/dev/null || true
+}
+
+# === 第二步：设置干净的环境 ===
+setup_clean_env() {
+    # 使用纯英文环境避免乱码
+    export LANG=C
+    export LC_ALL=C
+    export LANGUAGE=en_US
+    export TERM=linux
+    
+    # 简单的ASCII编码
+    export LESSCHARSET=ascii
+    export MANPAGER=cat
+    
+    # 清理提示符
+    PS1='# '
+}
+
+    clean_system_output
+    setup_clean_env
 clear
+
 get_disk_list() {
 
 cat << "EOF"
 
+
 ╔═══════════════════════════════════════════════════════╗
 ║               OpenWRT Auto Installer                  ║
 ╚═══════════════════════════════════════════════════════╝
+
 
 EOF
 
@@ -446,7 +520,7 @@ show_progress() {
                     for ((i=0; i<empty; i++)); do
                         echo -n " "
                     done
-                    echo -ne "] \n     ${percentage}%"
+                    echo -ne "] \n ${percentage}%"
                 fi
             fi
         fi
@@ -927,7 +1001,7 @@ Kernel Version:  $(basename "$KERNEL")
 Initrd Version:  $(basename "$INITRD")
 
 Boot Support:    BIOS + UEFI
-Boot Timeout:    10 seconds
+Boot Timeout:    3 seconds
 
 Installation Features:
   - Simple numeric disk selection (1, 2, 3, etc.)
