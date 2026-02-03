@@ -192,8 +192,8 @@ TERMINAL
 . /etc/default/locale
 . /etc/profile.d/terminal-chinese.sh
 
-apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv --no-install-recommends
-apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail \ 
+apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv 
+apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail 
 
     
     
@@ -345,6 +345,9 @@ t() {
             "invalid_selection")
                 echo "Invalid selection!"
                 ;;
+            "selected_disk")
+                echo "Selected disk: "
+                ;;
             "warning")
                 echo "WARNING: This will ERASE ALL data on the disk!"
                 ;;
@@ -382,6 +385,9 @@ t() {
                 ;;
             "invalid_selection")
                 echo "5Y+W5raI5LiN6IO96KKr5Y+R6YCB77yB" | base64 -d
+                ;;
+            "selected_disk")
+                echo "5Y+W5raI5a6J5YWo5a6M5oiQ77ya" | base64 -d
                 ;;
             "warning")
                 echo "8J+agO+8jOivt+WcqOa1j+iniOWZqOeahOa1i+ivleeCueWHu+S4jeWIsOWPr+iDveaAp++8jA==" | base64 -d
