@@ -1,5 +1,5 @@
 #!/bin/bash
-# build.sh - OpenWRT ISO构建脚本（在Docker容器内运行） sirpdboy 2025-2026  https://github.com/sirpdboy/openwrt-installer-iso.git
+# build.sh - OpenWRT ISO构建脚本（在Docker容器内运行） sirpdboy  https://github.com/sirpdboy/openwrt-installer-iso.git
 set -e
 
 echo "🚀 Starting OpenWRT ISO build inside Docker container..."
@@ -111,10 +111,36 @@ set -e
 
 echo "🔧 Configuring chroot environment..."
 
-# 基本设置
-export DEBIAN_FRONTEND=noninteractive
-export LC_ALL=C
-export LANG=C.UTF-8
+# 禁用systemd日志服务
+systemctl mask systemd-journald.service 2>/dev/null || true
+systemctl mask systemd-journald.socket 2>/dev/null || true
+systemctl mask systemd-journald-dev-log.socket 2>/dev/null || true
+systemctl mask syslog.socket 2>/dev/null || true
+
+# 配置journald不输出到控制台
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/00-quiet.conf << 'JOURNAL_CONF'
+[Journal]
+Storage=volatile
+RuntimeMaxUse=10M
+ForwardToConsole=no
+ForwardToSyslog=no
+MaxLevelStore=err
+MaxLevelSyslog=err
+MaxLevelConsole=emerg
+JOURNAL_CONF
+
+# 禁用timers和其他服务
+systemctl mask apt-daily.timer 2>/dev/null || true
+systemctl mask apt-daily-upgrade.timer 2>/dev/null || true
+systemctl mask systemd-tmpfiles-clean.timer 2>/dev/null || true
+systemctl mask logrotate.timer 2>/dev/null || true
+
+# 配置内核参数
+cat > /etc/default/grub << 'GRUB_CONF'
+GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=0 console=ttyS0 console=tty0 ignore_loglevel systemd.show_status=0 systemd.log_level=err"
+GRUB_CMDLINE_LINUX=""
+GRUB_CONF
 
 # 配置APT源
 cat > /etc/apt/sources.list <<EOF
@@ -132,22 +158,58 @@ echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 
 # 更新并安装包
 echo "Updating packages..."
-apt-get update
-apt-get -y install apt || true
-apt-get -y upgrade
+apt-get update --no-install-recommends 2>/dev/null
+apt-get -y install apt --no-install-recommends 2>/dev/null || true
+apt-get -y upgrade --no-install-recommends 2>/dev/null
 echo "Setting locale..."
-apt-get -y install locales \
-    fonts-wqy-microhei \
-    console-data \
-    keyboard-configuration
-sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
-dpkg-reconfigure --frontend=noninteractive locales
-update-locale LANG=en_US.UTF-8
-apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
-apt-get install -y openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail \
+apt-get install -y --no-install-recommends \
+    locales \
+    fonts-wqy-microhei
 
+# 配置locale（强制方法）
+cat > /etc/locale.gen << 'LOCALE'
+en_US.UTF-8 UTF-8
+zh_CN.UTF-8 UTF-8
+zh_CN.GBK GBK
+LOCALE
+
+# 生成locale
+/usr/sbin/locale-gen
+
+# 设置系统范围的语言
+cat > /etc/default/locale << 'LOCALE_CONF'
+LANG="zh_CN.UTF-8"
+LANGUAGE="zh_CN:zh"
+LC_ALL="zh_CN.UTF-8"
+LC_CTYPE="zh_CN.UTF-8"
+LC_MESSAGES="zh_CN.UTF-8"
+LOCALE_CONF
+
+# 配置终端
+cat > /etc/profile.d/terminal-chinese.sh << 'TERMINAL'
+# 终端中文支持
+if [ "$TERM" = "linux" ]; then
+    # 设置控制台编码
+    export LANG=zh_CN.UTF-8
+    export LANGUAGE=zh_CN:zh
     
-    
+    # 加载中文字体（如果可用）
+    if [ -f /usr/share/consolefonts/Uni2-Fixed16.psf.gz ]; then
+        loadfont Uni2-Fixed16 2>/dev/null || true
+    fi
+fi
+
+# 通用设置
+export LESSCHARSET=utf-8
+alias ll='ls -la --color=auto'
+TERMINAL
+
+# 激活配置
+. /etc/default/locale
+. /etc/profile.d/terminal-chinese.sh
+fc-cache -fv 2>/dev/null || true
+apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv 
+apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail 
 # 清理包缓存
 apt-get clean
 
@@ -200,7 +262,6 @@ AUTOINSTALL_SERVICE
 cat > /opt/start-installer.sh << 'START_SCRIPT'
 #!/bin/bash
 # OpenWRT安装系统启动脚本
-sleep 3
 
 clear
 
@@ -213,7 +274,7 @@ cat << "WELCOME"
 System is starting up, please wait...
 WELCOME
 
-sleep 5
+sleep 2
 
 if [ ! -f "/openwrt.img" ]; then
     clear
@@ -246,27 +307,61 @@ GETTY_OVERRIDE
 # 创建安装脚本
 cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/bash
-
 export LANG=zh_CN.UTF-8
 export LANGUAGE=zh_CN:zh
 export LC_ALL=zh_CN.UTF-8
+
 pkill -9 systemd-timesyncd 2>/dev/null
 pkill -9 journald 2>/dev/null
 echo 0 > /proc/sys/kernel/printk 2>/dev/null
+clean_system_output() {
+    # 1. 停止所有日志服务
+    systemctl stop systemd-journald 2>/dev/null || true
+    systemctl stop rsyslog 2>/dev/null || true
+    systemctl stop syslog 2>/dev/null || true
+    
+    # 2. 禁用控制台输出
+    echo 0 > /proc/sys/kernel/printk 2>/dev/null || true
+    dmesg -n 1 2>/dev/null || true
+    
+    # 3. 清理屏幕
+    clear
+    printf "\033c"  # 真正的终端重置
+    stty sane 2>/dev/null || true
+}
 
-sleep 5
+# === 第二步：设置干净的环境 ===
+setup_clean_env() {
+    # 使用纯英文环境避免乱码
+    export LANG=C
+    export LC_ALL=C
+    export LANGUAGE=en_US
+    export TERM=linux
+    
+    # 简单的ASCII编码
+    export LESSCHARSET=ascii
+    export MANPAGER=cat
+    
+    # 清理提示符
+    PS1='# '
+}
+
+    clean_system_output
+    setup_clean_env
 clear
 
-# 获取磁盘列表函数
 get_disk_list() {
 
 cat << "EOF"
+
 
 ╔═══════════════════════════════════════════════════════╗
 ║               OpenWRT Auto Installer                  ║
 ╚═══════════════════════════════════════════════════════╝
 
+
 EOF
+
 echo -e "\nChecking OpenWRT image..."
 if [ ! -f "/openwrt.img" ]; then
     echo -e "\nERROR: OpenWRT image not found!"
@@ -281,8 +376,8 @@ echo -e "OpenWRT image found: $IMG_SIZE\n"
 
     DISK_LIST=()
     DISK_INDEX=1
-    echo "检测到的存储设备："
-    
+    echo "Scanning available disks..."
+    echo -e "========================================\n"
     # 使用lsblk获取磁盘信息
     while IFS= read -r line; do
         if [ -n "$line" ]; then
@@ -301,15 +396,14 @@ echo -e "OpenWRT image found: $IMG_SIZE\n"
     
     TOTAL_DISKS=$((DISK_INDEX - 1))
 
-    echo -e "══════════════════════════════════════════════════════════\n"
-    
+    echo -e "========================================\n"
+
 }
 
 # 主循环
 while true; do
     # 获取磁盘列表
     get_disk_list
-    
     
     if [ $TOTAL_DISKS -eq 0 ]; then
         echo -e "\nNo disks detected!"
@@ -426,7 +520,7 @@ show_progress() {
                     for ((i=0; i<empty; i++)); do
                         echo -n " "
                     done
-                    echo -ne "] \n     ${percentage}%"
+                    echo -ne "] \n ${percentage}%"
                 fi
             fi
         fi
@@ -586,7 +680,7 @@ rm -rf /var/lib/systemd/random-seed 2>/dev/null || true
 "
 
 # 2. 手动清理不需要的文件
-for dir in "${CHROOT_DIR}/usr/share/locale" "${CHROOT_DIR}/usr/share/doc" \
+for dir in "${CHROOT_DIR}/usr/share/doc" \
            "${CHROOT_DIR}/usr/share/man" "${CHROOT_DIR}/usr/share/info"; do
     if [ -d "$dir" ]; then
         rm -rf "$dir"
@@ -597,7 +691,7 @@ done
 if [ -d "${CHROOT_DIR}/lib/modules" ]; then
     KERNEL_VERSION=$(ls "${CHROOT_DIR}/lib/modules/" | head -n1)
     MODULES_PATH="${CHROOT_DIR}/lib/modules/${KERNEL_VERSION}"
-    
+
     # 创建必要的模块列表
     KEEP_MODS="
 kernel/fs/ext4
@@ -612,7 +706,7 @@ kernel/drivers/hid
 kernel/drivers/input
 kernel/drivers/net/ethernet
 "
-    
+
     # 备份然后清理
     mkdir -p "${MODULES_PATH}/kernel-keep"
     for mod in $KEEP_MODS; do
@@ -621,7 +715,7 @@ kernel/drivers/net/ethernet
             mv "${MODULES_PATH}/kernel/${mod}"/* "${MODULES_PATH}/kernel-keep/${mod}/" 2>/dev/null || true
         fi
     done
-    
+
     # 替换模块目录
     rm -rf "${MODULES_PATH}/kernel"
     mv "${MODULES_PATH}/kernel-keep" "${MODULES_PATH}/kernel"
@@ -886,7 +980,7 @@ log_info "[10/10] Verifying build..."
 
 if [ -f "$ISO_PATH" ]; then
     ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
-    
+
     echo ""
     log_success "✅ ISO built successfully!"
     echo ""
@@ -895,7 +989,7 @@ if [ -f "$ISO_PATH" ]; then
     log_info "  File Size:   $ISO_SIZE"
     log_info "  Volume ID:   OPENWRT_INSTALL"
     echo ""
-    
+
     # 创建构建信息文件
     cat > "$OUTPUT_DIR/build-info.txt" << EOF
 OpenWRT Installer ISO Build Information
@@ -907,7 +1001,7 @@ Kernel Version:  $(basename "$KERNEL")
 Initrd Version:  $(basename "$INITRD")
 
 Boot Support:    BIOS + UEFI
-Boot Timeout:    10 seconds
+Boot Timeout:    3 seconds
 
 Installation Features:
   - Simple numeric disk selection (1, 2, 3, etc.)
@@ -929,9 +1023,9 @@ Notes:
   - Use numbers instead of disk names (simpler)
   - Press Ctrl+C during reboot countdown to cancel
 EOF
-    
+
     log_success "Build info saved to: $OUTPUT_DIR/build-info.txt"
-    
+
     echo ""
     echo "================================================================================"
     echo "📦 ISO Build Complete!"
@@ -947,7 +1041,7 @@ EOF
     echo ""
     echo "  souce https://github.com/sirpdboy/openwrt-installer-iso.git"
     echo "================================================================================"
-    
+
     log_success "🎉 All steps completed successfully!"
 else
     log_error "❌ ISO file not created: $ISO_PATH"
