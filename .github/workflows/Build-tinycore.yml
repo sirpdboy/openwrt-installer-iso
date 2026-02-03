@@ -1,10 +1,11 @@
 name: Build-tinycore
 
+
 on:
   push:
     branches: [ main, master ]
     paths:
-      - 'build-tinycore.sh'
+      - 'scripts/build-tinycore.sh'
       - '.github/workflows/Build-tinycore.yml'
   workflow_dispatch:
     inputs:
@@ -182,8 +183,13 @@ jobs:
           -v "$(pwd)/build-tinycore.sh:/builder/build.sh:ro" \
           -v "$(pwd)/output:/builder/output" \
           openwrt-builder \
-          "bash -c ' /builder/build.sh /mnt/input.img /builder/output openwrt-installer.iso'"
-    
+          /bin/sh -c "
+        # tinycore容器内配置
+        echo '� 进入tinycore构建环境'  
+        /builder/build.sh
+          # 清理
+          apk del .build-deps 2>/dev/null || true
+          "    
         # 检查构建结果
         if [ $? -eq 0 ]; then
         echo "✅ ISO构建完成"
