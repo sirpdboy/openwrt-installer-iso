@@ -5,12 +5,6 @@ set -e
 echo "=== 使用chroot技术构建OpenWRT安装ISO ==="
 echo "=========================================="
 
-# 参数
-if [ $# -ne 2 ]; then
-    echo "用法: $0 <output_dir> <iso_name>"
-    exit 1
-fi
-
 OUTPUT_DIR="$2"
 ISO_NAME="$3"
 
