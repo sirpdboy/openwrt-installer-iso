@@ -132,14 +132,65 @@ echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 
 # 更新并安装包
 echo "Updating packages..."
-apt-get update
-apt-get -y install apt || true
-apt-get -y upgrade
+apt-get update --no-install-recommends
+apt-get -y install apt --no-install-recommends || true
+apt-get -y upgrade --no-install-recommends
 echo "Setting locale..."
-apt-get -y install locales
-sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
-dpkg-reconfigure --frontend=noninteractive locales
-update-locale LANG=en_US.UTF-8
+apt-get install -y --no-install-recommends \
+    locales \
+    fonts-wqy-microhei
+
+# 如果上述失败，尝试备用方案
+if [ $? -ne 0 ]; then
+    echo "尝试备用字体源..."
+    # 下载直接字体文件
+    wget -q http://ftp.cn.debian.org/debian/pool/main/f/fonts-wqy-microhei/fonts-wqy-microhei_0.2.0-beta-2_all.deb -O /tmp/wqy.deb
+    dpkg -i /tmp/wqy.deb 2>/dev/null || true
+    apt-get -f install -y
+fi
+
+
+# 配置locale（强制方法）
+cat > /etc/locale.gen << 'LOCALE'
+en_US.UTF-8 UTF-8
+zh_CN.UTF-8 UTF-8
+zh_CN.GBK GBK
+LOCALE
+
+# 生成locale
+/usr/sbin/locale-gen
+
+# 设置系统范围的语言
+cat > /etc/default/locale << 'LOCALE_CONF'
+LANG="zh_CN.UTF-8"
+LANGUAGE="zh_CN:zh"
+LC_ALL="zh_CN.UTF-8"
+LC_CTYPE="zh_CN.UTF-8"
+LC_MESSAGES="zh_CN.UTF-8"
+LOCALE_CONF
+
+# 配置终端
+cat > /etc/profile.d/terminal-chinese.sh << 'TERMINAL'
+# 终端中文支持
+if [ "$TERM" = "linux" ]; then
+    # 设置控制台编码
+    export LANG=zh_CN.UTF-8
+    export LANGUAGE=zh_CN:zh
+    
+    # 加载中文字体（如果可用）
+    if [ -f /usr/share/consolefonts/Uni2-Fixed16.psf.gz ]; then
+        loadfont Uni2-Fixed16 2>/dev/null || true
+    fi
+fi
+
+# 通用设置
+export LESSCHARSET=utf-8
+alias ll='ls -la --color=auto'
+TERMINAL
+
+# 激活配置
+. /etc/default/locale
+. /etc/profile.d/terminal-chinese.sh
 
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv 
 apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail 
@@ -389,6 +440,7 @@ echo -e "OpenWRT image found: $IMG_SIZE\n"
     
     echo "Scanning available disks..."
     
+    echo -e "==============================================\n"
     # 使用lsblk获取磁盘信息
     while IFS= read -r line; do
         if [ -n "$line" ]; then
@@ -407,7 +459,7 @@ echo -e "OpenWRT image found: $IMG_SIZE\n"
     
     TOTAL_DISKS=$((DISK_INDEX - 1))
 
-    echo "==============================\n"
+    echo -e "==============================================\n"
     
 }
 
@@ -703,7 +755,7 @@ done
 if [ -d "${CHROOT_DIR}/lib/modules" ]; then
     KERNEL_VERSION=$(ls "${CHROOT_DIR}/lib/modules/" | head -n1)
     MODULES_PATH="${CHROOT_DIR}/lib/modules/${KERNEL_VERSION}"
-    
+
     # 创建必要的模块列表
     KEEP_MODS="
 kernel/fs/ext4
@@ -718,7 +770,7 @@ kernel/drivers/hid
 kernel/drivers/input
 kernel/drivers/net/ethernet
 "
-    
+
     # 备份然后清理
     mkdir -p "${MODULES_PATH}/kernel-keep"
     for mod in $KEEP_MODS; do
@@ -727,7 +779,7 @@ kernel/drivers/net/ethernet
             mv "${MODULES_PATH}/kernel/${mod}"/* "${MODULES_PATH}/kernel-keep/${mod}/" 2>/dev/null || true
         fi
     done
-    
+
     # 替换模块目录
     rm -rf "${MODULES_PATH}/kernel"
     mv "${MODULES_PATH}/kernel-keep" "${MODULES_PATH}/kernel"
@@ -992,7 +1044,7 @@ log_info "[10/10] Verifying build..."
 
 if [ -f "$ISO_PATH" ]; then
     ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
-    
+
     echo ""
     log_success "✅ ISO built successfully!"
     echo ""
@@ -1001,7 +1053,7 @@ if [ -f "$ISO_PATH" ]; then
     log_info "  File Size:   $ISO_SIZE"
     log_info "  Volume ID:   OPENWRT_INSTALL"
     echo ""
-    
+
     # 创建构建信息文件
     cat > "$OUTPUT_DIR/build-info.txt" << EOF
 OpenWRT Installer ISO Build Information
@@ -1035,9 +1087,9 @@ Notes:
   - Use numbers instead of disk names (simpler)
   - Press Ctrl+C during reboot countdown to cancel
 EOF
-    
+
     log_success "Build info saved to: $OUTPUT_DIR/build-info.txt"
-    
+
     echo ""
     echo "================================================================================"
     echo "📦 ISO Build Complete!"
@@ -1053,7 +1105,7 @@ EOF
     echo ""
     echo "  souce https://github.com/sirpdboy/openwrt-installer-iso.git"
     echo "================================================================================"
-    
+
     log_success "🎉 All steps completed successfully!"
 else
     log_error "❌ ISO file not created: $ISO_PATH"
