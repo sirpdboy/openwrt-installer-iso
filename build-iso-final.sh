@@ -806,7 +806,7 @@ rm -rf /var/lib/systemd/random-seed 2>/dev/null || true
 "
 
 # 2. 手动清理不需要的文件
-for dir in  "${CHROOT_DIR}/usr/share/doc" \
+for dir in "${CHROOT_DIR}/usr/share/locale" "${CHROOT_DIR}/usr/share/doc" \
            "${CHROOT_DIR}/usr/share/man" "${CHROOT_DIR}/usr/share/info"; do
     if [ -d "$dir" ]; then
         rm -rf "$dir"
