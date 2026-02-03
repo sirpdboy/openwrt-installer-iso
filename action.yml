@@ -27,8 +27,8 @@ runs:
       run: |
         echo "Copying required scripts..."
         if [ -f "${{ github.action_path }}/docker-build.sh" ]; then
-          cp "${{ github.action_path }}/docker-build.sh" ./dockerrun.sh
-          chmod +x ./dockerrun.sh
+          cp "${{ github.action_path }}/docker-build.sh" ./docker-build.sh
+          chmod +x ./docker-build.sh
         fi
         if [ -f "${{ github.action_path }}/build.sh" ]; then
           cp "${{ github.action_path }}/build.sh" ./build.sh
