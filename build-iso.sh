@@ -132,65 +132,14 @@ echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 
 # 更新并安装包
 echo "Updating packages..."
-apt-get update --no-install-recommends
-apt-get -y install apt --no-install-recommends || true
-apt-get -y upgrade --no-install-recommends
+apt-get update
+apt-get -y install apt || true
+apt-get -y upgrade
 echo "Setting locale..."
-apt-get install -y --no-install-recommends \
-    locales \
-    fonts-wqy-microhei
-
-# 如果上述失败，尝试备用方案
-if [ $? -ne 0 ]; then
-    echo "尝试备用字体源..."
-    # 下载直接字体文件
-    wget -q http://ftp.cn.debian.org/debian/pool/main/f/fonts-wqy-microhei/fonts-wqy-microhei_0.2.0-beta-2_all.deb -O /tmp/wqy.deb
-    dpkg -i /tmp/wqy.deb 2>/dev/null || true
-    apt-get -f install -y
-fi
-
-
-# 配置locale（强制方法）
-cat > /etc/locale.gen << 'LOCALE'
-en_US.UTF-8 UTF-8
-zh_CN.UTF-8 UTF-8
-zh_CN.GBK GBK
-LOCALE
-
-# 生成locale
-/usr/sbin/locale-gen
-
-# 设置系统范围的语言
-cat > /etc/default/locale << 'LOCALE_CONF'
-LANG="zh_CN.UTF-8"
-LANGUAGE="zh_CN:zh"
-LC_ALL="zh_CN.UTF-8"
-LC_CTYPE="zh_CN.UTF-8"
-LC_MESSAGES="zh_CN.UTF-8"
-LOCALE_CONF
-
-# 配置终端
-cat > /etc/profile.d/terminal-chinese.sh << 'TERMINAL'
-# 终端中文支持
-if [ "$TERM" = "linux" ]; then
-    # 设置控制台编码
-    export LANG=zh_CN.UTF-8
-    export LANGUAGE=zh_CN:zh
-    
-    # 加载中文字体（如果可用）
-    if [ -f /usr/share/consolefonts/Uni2-Fixed16.psf.gz ]; then
-        loadfont Uni2-Fixed16 2>/dev/null || true
-    fi
-fi
-
-# 通用设置
-export LESSCHARSET=utf-8
-alias ll='ls -la --color=auto'
-TERMINAL
-
-# 激活配置
-. /etc/default/locale
-. /etc/profile.d/terminal-chinese.sh
+apt-get -y install locales
+sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+dpkg-reconfigure --frontend=noninteractive locales
+update-locale LANG=en_US.UTF-8
 
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv 
 apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail 
@@ -249,7 +198,6 @@ AUTOINSTALL_SERVICE
 cat > /opt/start-installer.sh << 'START_SCRIPT'
 #!/bin/bash
 # OpenWRT安装系统启动脚本
-sleep 2
 
 clear
 
@@ -262,7 +210,7 @@ cat << "WELCOME"
 System is starting up, please wait...
 WELCOME
 
-sleep 3
+sleep 2
 
 if [ ! -f "/openwrt.img" ]; then
     clear
@@ -299,7 +247,6 @@ cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 pkill -9 systemd-timesyncd 2>/dev/null
 pkill -9 journald 2>/dev/null
 echo 0 > /proc/sys/kernel/printk 2>/dev/null
-sleep 2
 
 # === 中文环境初始化 ===
 init_chinese_env() {
@@ -413,13 +360,17 @@ t() {
 
 init_chinese_env
 
+clear
 # 获取磁盘列表函数
 get_disk_list() {
 
-    clear
+cat << "EOF"
 
-    t "welcome"
-    echo ""
+╔═══════════════════════════════════════════════════════╗
+║               OpenWRT Auto Installer                  ║
+╚═══════════════════════════════════════════════════════╝
+
+EOF
 
 echo -e "\nChecking OpenWRT image..."
 if [ ! -f "/openwrt.img" ]; then
@@ -435,8 +386,9 @@ echo -e "OpenWRT image found: $IMG_SIZE\n"
 
     DISK_LIST=()
     DISK_INDEX=1
-    t "rescan"
-    echo -e "==============================\n"
+    
+    echo "Scanning available disks..."
+    
     # 使用lsblk获取磁盘信息
     while IFS= read -r line; do
         if [ -n "$line" ]; then
