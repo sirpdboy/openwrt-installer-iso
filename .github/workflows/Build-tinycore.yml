@@ -182,7 +182,7 @@ jobs:
           -v "$(pwd)/build-tinycore.sh:/builder/build.sh:ro" \
           -v "$(pwd)/output:/builder/output" \
           openwrt-builder \
-          "bash -c 'chmod +x /builder/build.sh && /builder/build.sh /mnt/input.img /builder/output openwrt-installer.iso'"
+          "bash -c ' /builder/build.sh /mnt/input.img /builder/output openwrt-installer.iso'"
     
         # 检查构建结果
         if [ $? -eq 0 ]; then
