@@ -132,70 +132,74 @@ echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 
 # 更新并安装包
 echo "Updating packages..."
-apt-get update
-apt-get -y install apt || true
-apt-get -y upgrade
+apt-get update --no-install-recommends
+apt-get -y install apt --no-install-recommends || true
+apt-get -y upgrade --no-install-recommends
 echo "Setting locale..."
-apt-get -y install locales \
-    fonts-wqy-microhei \
-    console-data \
-    keyboard-configuration
-sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
-dpkg-reconfigure --frontend=noninteractive locales
-update-locale LANG=en_US.UTF-8
-apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
-apt-get install -y openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail \
+apt-get install -y --no-install-recommends \
+    locales \
+    fonts-wqy-microhei
+
+# 如果上述失败，尝试备用方案
+if [ $? -ne 0 ]; then
+    echo "尝试备用字体源..."
+    # 下载直接字体文件
+    wget -q http://ftp.cn.debian.org/debian/pool/main/f/fonts-wqy-microhei/fonts-wqy-microhei_0.2.0-beta-2_all.deb -O /tmp/wqy.deb
+    dpkg -i /tmp/wqy.deb 2>/dev/null || true
+    apt-get -f install -y
+fi
+
+
+# 配置locale（强制方法）
+cat > /etc/locale.gen << 'LOCALE'
+en_US.UTF-8 UTF-8
+zh_CN.UTF-8 UTF-8
+zh_CN.GBK GBK
+LOCALE
+
+# 生成locale
+/usr/sbin/locale-gen
+
+# 设置系统范围的语言
+cat > /etc/default/locale << 'LOCALE_CONF'
+LANG="zh_CN.UTF-8"
+LANGUAGE="zh_CN:zh"
+LC_ALL="zh_CN.UTF-8"
+LC_CTYPE="zh_CN.UTF-8"
+LC_MESSAGES="zh_CN.UTF-8"
+LOCALE_CONF
+
+# 配置终端
+cat > /etc/profile.d/terminal-chinese.sh << 'TERMINAL'
+# 终端中文支持
+if [ "$TERM" = "linux" ]; then
+    # 设置控制台编码
+    export LANG=zh_CN.UTF-8
+    export LANGUAGE=zh_CN:zh
+    
+    # 加载中文字体（如果可用）
+    if [ -f /usr/share/consolefonts/Uni2-Fixed16.psf.gz ]; then
+        loadfont Uni2-Fixed16 2>/dev/null || true
+    fi
+fi
+
+# 通用设置
+export LESSCHARSET=utf-8
+alias ll='ls -la --color=auto'
+TERMINAL
+
+# 激活配置
+. /etc/default/locale
+. /etc/profile.d/terminal-chinese.sh
+
+apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv --no-install-recommends
+apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail \ 
 
     
     
 # 清理包缓存
 apt-get clean
 
-# 保留基本的内核模块
-KEEP_MODULES="
-ext4
-fat
-vfat
-isofs
-usb-storage
-usbhid
-uhci-hcd
-ehci-hcd
-ohci-hcd
-xhci-hcd
-sd_mod
-sr_mod
-cdrom
-ata_generic
-ata_piix
-ahci
-nvme
-scsi_mod
-sg
-dm-mod
-dm-crypt
-cryptd
-loop
-"
-
-# 清理不必要的内核模块
-mkdir -p /lib/modules-backup
-KERNEL_VERSION=$(ls /lib/modules/ | head -n1)
-MODULES_DIR="/lib/modules/${KERNEL_VERSION}/kernel"
-
-for dir in drivers/net/wireless drivers/media drivers/video drivers/gpu; do
-    rm -rf ${MODULES_DIR}/${dir} 2>/dev/null || true
-done
-# 保留网卡驱动 (最小化)
-for dir in drivers/net/ethernet/intel drivers/net/ethernet/realtek drivers/net/ethernet/broadcom; do
-    mkdir -p /lib/modules-backup/${dir}
-    mv ${MODULES_DIR}/${dir}/* /lib/modules-backup/${dir}/ 2>/dev/null || true
-done
-
-# 清理不常用的文件系统驱动
-for fs in cifs nfs nfsd afs ceph coda ecryptfs f2fs hfs hfsplus jffs2 minix nilfs2 omfs orangefs qnx4 qnx6 reiserfs romfs sysv ubifs udf ufs; do
-    rm -rf ${MODULES_DIR}/fs/${fs} 2>/dev/null || true
-done
 # 配置网络
 systemctl enable systemd-networkd
 
@@ -245,7 +249,7 @@ AUTOINSTALL_SERVICE
 cat > /opt/start-installer.sh << 'START_SCRIPT'
 #!/bin/bash
 # OpenWRT安装系统启动脚本
-
+sleep 3
 
 clear
 
@@ -258,7 +262,7 @@ cat << "WELCOME"
 System is starting up, please wait...
 WELCOME
 
-sleep 2
+sleep 5
 
 if [ ! -f "/openwrt.img" ]; then
     clear
@@ -292,25 +296,124 @@ GETTY_OVERRIDE
 cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/bash
 
-export LANG=zh_CN.UTF-8
-export LANGUAGE=zh_CN:zh
-export LC_ALL=zh_CN.UTF-8
 pkill -9 systemd-timesyncd 2>/dev/null
 pkill -9 journald 2>/dev/null
 echo 0 > /proc/sys/kernel/printk 2>/dev/null
+sleep 5
+
+# === 中文环境初始化 ===
+init_chinese_env() {
+    # 检查是否已经设置
+    if [ "$LANG" = "zh_CN.UTF-8" ]; then
+        return 0
+    fi
     
-clear
+    # 设置环境变量
+    export LANG=zh_CN.UTF-8 2>/dev/null || export LANG=C.UTF-8
+    export LANGUAGE=zh_CN:zh 2>/dev/null || export LANGUAGE=en_US:en
+    export LC_ALL=$LANG
+    export LC_CTYPE=$LANG
+    export TERM=linux
+    
+    # 检查字体
+    if ! fc-list 2>/dev/null | grep -q -i "wqy\|unifont\|dejavu"; then
+        echo "⚠ 未检测到中文字体，使用英文界面"
+        USE_ENGLISH=1
+    else
+        USE_ENGLISH=0
+    fi
+}
+
+# === 多语言消息函数 ===
+t() {
+    local key="$1"
+    
+    if [ "$USE_ENGLISH" = "1" ] || [ "$LANG" != "zh_CN.UTF-8" ]; then
+        # 英文消息
+        case "$key" in
+            "welcome")
+                echo "========================================"
+                echo "      OpenWRT Auto Installer v1.0"
+                echo "========================================"
+                ;;
+            "select_disk")
+                echo "Select disk number (1-\$TOTAL) or 'r' to rescan: "
+                ;;
+            "rescan")
+                echo "Rescanning disks..."
+                ;;
+            "invalid_selection")
+                echo "Invalid selection!"
+                ;;
+            "warning")
+                echo "WARNING: This will ERASE ALL data on the disk!"
+                ;;
+            "confirm")
+                echo "Type 'YES' to confirm installation: "
+                ;;
+            "installing")
+                echo "Installing OpenWRT to disk..."
+                ;;
+            "success")
+                echo "Installation completed successfully!"
+                ;;
+            "reboot")
+                echo "System will reboot in 10 seconds..."
+                ;;
+            *)
+                echo "$key"
+                ;;
+        esac
+    else
+        # 中文消息（使用base64避免编码问题）
+        case "$key" in
+            "welcome")
+                echo "========================================"
+                echo ""
+                echo "5Lit5paHIE9wZW5XUlQg6L+Z5Liq5a6J5YWo5a6M5oiQ57O757ufIHYxLjA=" | base64 -d
+                echo ""
+                echo "========================================"
+                ;;
+            "select_disk")
+                echo "6K+36YWN572u5a6J5YWo5a6M5oiQ57yW56CBICgxLSRUT1RBTCkg5ZKM5Y+RICdyJyDnu5/orqHnlJ/miJD77yM5Zyw5bCG6L+Z5LiqJ3En5LiN6IO96KKr5Y+R6YCB77ya" | base64 -d
+                ;;
+            "rescan")
+                echo "6YeN6KaB6K+35rGC5a6J5YWo5a6M5oiQ5LitLi4u" | base64 -d
+                ;;
+            "invalid_selection")
+                echo "5Y+W5raI5LiN6IO96KKr5Y+R6YCB77yB" | base64 -d
+                ;;
+            "warning")
+                echo "8J+agO+8jOivt+WcqOa1j+iniOWZqOeahOa1i+ivleeCueWHu+S4jeWIsOWPr+iDveaAp++8jA==" | base64 -d
+                ;;
+            "confirm")
+                echo "6K+36YGN5YqgJ1lFUycg6L+Z5qC35o+U5Y+377ya" | base64 -d
+                ;;
+            "installing")
+                echo "5a6J5YWo5Lit5paH5Lmf5Y+R6YCB5a6J5YWo5a6M5oiQ5LitLi4u" | base64 -d
+                ;;
+            "success")
+                echo "5a6J5YWo5Lit5paH5Y+R6YCB5oiQ5Yqf77yB" | base64 -d
+                ;;
+            "reboot")
+                echo "57O757uf5Lit5paH5L2/55SoMTDlj5HmlbTvvIE=" | base64 -d
+                ;;
+            *)
+                echo "$key" | base64 -d 2>/dev/null || echo "$key"
+                ;;
+        esac
+    fi
+}
+
+init_chinese_env
 
 # 获取磁盘列表函数
 get_disk_list() {
 
-cat << "EOF"
+    clear
 
-╔═══════════════════════════════════════════════════════╗
-║               OpenWRT Auto Installer                  ║
-╚═══════════════════════════════════════════════════════╝
-
-EOF
+    t "welcome"
+    echo ""
 
 echo -e "\nChecking OpenWRT image..."
 if [ ! -f "/openwrt.img" ]; then
@@ -326,8 +429,8 @@ echo -e "OpenWRT image found: $IMG_SIZE\n"
 
     DISK_LIST=()
     DISK_INDEX=1
-    echo "检测到的存储设备："
-    
+    echo "检测到可用磁盘:"
+    echo -e "==============================\n"
     # 使用lsblk获取磁盘信息
     while IFS= read -r line; do
         if [ -n "$line" ]; then
@@ -346,7 +449,7 @@ echo -e "OpenWRT image found: $IMG_SIZE\n"
     
     TOTAL_DISKS=$((DISK_INDEX - 1))
 
-    echo -e "══════════════════════════════════════════════════════════\n"
+    echo "==============================\n"
     
 }
 
@@ -367,7 +470,11 @@ while true; do
     
     # 获取用户选择
     while true; do
-        read -p "Select disk number (1-$TOTAL_DISKS) or 'r' to rescan: " SELECTION
+    
+    
+        read -p "$(t "select_disk")" SELECTION
+    
+        # read -p "Select disk number (1-$TOTAL_DISKS) or 'r' to rescan: " SELECTION
         
         case $SELECTION in
             [Rr])
@@ -604,7 +711,6 @@ chroot "$CHROOT_DIR" /install-chroot.sh 2>&1
 rm -f "$CHROOT_DIR/install-chroot.sh"
 
 # === 第六阶段：额外的精简步骤 ===
-log_info "执行额外精简..."
 
 # 1. 清理chroot中的缓存和临时文件
 chroot "${CHROOT_DIR}" /bin/bash -c "
