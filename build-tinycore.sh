@@ -14,9 +14,12 @@ BOOT_DIR="${ISO_DIR}/boot"
 TC_DIR="${ISO_DIR}/tc"
 EFI_DIR="${ISO_DIR}/efi/boot"
 
-OPENWRT_IMG="${1:-/mnt/ezopwrt.img}"
-OUTPUT_DIR="${2:-/output}"
-ISO_NAME="${3:-openwrt-autoinstall.iso}"
+OPENWRT_IMG="${/mnt/input.img}"
+OUTPUT_DIR="${/output}"
+ISO_NAME="${openwrt.iso}"
+# OPENWRT_IMG="${1:-/mnt/ezopwrt.img}"
+# OUTPUT_DIR="${2:-/output}"
+# ISO_NAME="${3:-openwrt-autoinstall.iso}"
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
