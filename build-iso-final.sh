@@ -197,6 +197,51 @@ apt-get install -y --no-install-recommends openssh-server bash-completion dbus d
 # 清理包缓存
 apt-get clean
 
+# 保留基本的内核模块
+KEEP_MODULES="
+ext4
+fat
+vfat
+isofs
+usb-storage
+usbhid
+uhci-hcd
+ehci-hcd
+ohci-hcd
+xhci-hcd
+sd_mod
+sr_mod
+cdrom
+ata_generic
+ata_piix
+ahci
+nvme
+scsi_mod
+sg
+dm-mod
+dm-crypt
+cryptd
+loop
+"
+
+# 清理不必要的内核模块
+mkdir -p /lib/modules-backup
+KERNEL_VERSION=$(ls /lib/modules/ | head -n1)
+MODULES_DIR="/lib/modules/${KERNEL_VERSION}/kernel"
+
+for dir in drivers/net/wireless drivers/media drivers/video drivers/gpu; do
+    rm -rf ${MODULES_DIR}/${dir} 2>/dev/null || true
+done
+# 保留网卡驱动 (最小化)
+for dir in drivers/net/ethernet/intel drivers/net/ethernet/realtek drivers/net/ethernet/broadcom; do
+    mkdir -p /lib/modules-backup/${dir}
+    mv ${MODULES_DIR}/${dir}/* /lib/modules-backup/${dir}/ 2>/dev/null || true
+done
+
+# 清理不常用的文件系统驱动
+for fs in cifs nfs nfsd afs ceph coda ecryptfs f2fs hfs hfsplus jffs2 minix nilfs2 omfs orangefs qnx4 qnx6 reiserfs romfs sysv ubifs udf ufs; do
+    rm -rf ${MODULES_DIR}/fs/${fs} 2>/dev/null || true
+done
 # 配置网络
 systemctl enable systemd-networkd
 
@@ -299,18 +344,127 @@ export LC_ALL=zh_CN.UTF-8
 pkill -9 systemd-timesyncd 2>/dev/null
 pkill -9 journald 2>/dev/null
 echo 0 > /proc/sys/kernel/printk 2>/dev/null
+sleep 5
+
+# === 中文环境初始化 ===
+init_chinese_env() {
+    # 检查是否已经设置
+    if [ "$LANG" = "zh_CN.UTF-8" ]; then
+        return 0
+    fi
     
-clear
+    # 设置环境变量
+    export LANG=zh_CN.UTF-8 2>/dev/null || export LANG=C.UTF-8
+    export LANGUAGE=zh_CN:zh 2>/dev/null || export LANGUAGE=en_US:en
+    export LC_ALL=$LANG
+    export LC_CTYPE=$LANG
+    export TERM=linux
+    
+    # 检查字体
+    if ! fc-list 2>/dev/null | grep -q -i "wqy\|unifont\|dejavu"; then
+        echo "⚠ 未检测到中文字体，使用英文界面"
+        USE_ENGLISH=1
+    else
+        USE_ENGLISH=0
+    fi
+}
+
+# === 多语言消息函数 ===
+t() {
+    local key="$1"
+    
+    if [ "$USE_ENGLISH" = "1" ] || [ "$LANG" != "zh_CN.UTF-8" ]; then
+        # 英文消息
+        case "$key" in
+            "welcome")
+                echo "========================================"
+                echo "      OpenWRT Auto Installer v1.0"
+                echo "========================================"
+                ;;
+            "select_disk")
+                echo "Select disk number (1-\$TOTAL) or 'r' to rescan: "
+                ;;
+            "rescan")
+                echo "Rescanning disks..."
+                ;;
+            "invalid_selection")
+                echo "Invalid selection!"
+                ;;
+            "selected_disk")
+                echo "Selected disk: "
+                ;;
+            "warning")
+                echo "WARNING: This will ERASE ALL data on the disk!"
+                ;;
+            "confirm")
+                echo "Type 'YES' to confirm installation: "
+                ;;
+            "installing")
+                echo "Installing OpenWRT to disk..."
+                ;;
+            "success")
+                echo "Installation completed successfully!"
+                ;;
+            "reboot")
+                echo "System will reboot in 10 seconds..."
+                ;;
+            *)
+                echo "$key"
+                ;;
+        esac
+    else
+        # 中文消息（使用base64避免编码问题）
+        case "$key" in
+            "welcome")
+                echo "========================================"
+                echo ""
+                echo "5Lit5paHIE9wZW5XUlQg6L+Z5Liq5a6J5YWo5a6M5oiQ57O757ufIHYxLjA=" | base64 -d
+                echo ""
+                echo "========================================"
+                ;;
+            "select_disk")
+                echo "6K+36YWN572u5a6J5YWo5a6M5oiQ57yW56CBICgxLSRUT1RBTCkg5ZKM5Y+RICdyJyDnu5/orqHnlJ/miJD77yM5Zyw5bCG6L+Z5LiqJ3En5LiN6IO96KKr5Y+R6YCB77ya" | base64 -d
+                ;;
+            "rescan")
+                echo "6YeN6KaB6K+35rGC5a6J5YWo5a6M5oiQ5LitLi4u" | base64 -d
+                ;;
+            "invalid_selection")
+                echo "5Y+W5raI5LiN6IO96KKr5Y+R6YCB77yB" | base64 -d
+                ;;
+            "selected_disk")
+                echo "5Y+W5raI5a6J5YWo5a6M5oiQ77ya" | base64 -d
+                ;;
+            "warning")
+                echo "8J+agO+8jOivt+WcqOa1j+iniOWZqOeahOa1i+ivleeCueWHu+S4jeWIsOWPr+iDveaAp++8jA==" | base64 -d
+                ;;
+            "confirm")
+                echo "6K+36YGN5YqgJ1lFUycg6L+Z5qC35o+U5Y+377ya" | base64 -d
+                ;;
+            "installing")
+                echo "5a6J5YWo5Lit5paH5Lmf5Y+R6YCB5a6J5YWo5a6M5oiQ5LitLi4u" | base64 -d
+                ;;
+            "success")
+                echo "5a6J5YWo5Lit5paH5Y+R6YCB5oiQ5Yqf77yB" | base64 -d
+                ;;
+            "reboot")
+                echo "57O757uf5Lit5paH5L2/55SoMTDlj5HmlbTvvIE=" | base64 -d
+                ;;
+            *)
+                echo "$key" | base64 -d 2>/dev/null || echo "$key"
+                ;;
+        esac
+    fi
+}
+
+init_chinese_env
+
 # 获取磁盘列表函数
 get_disk_list() {
 
-cat << "EOF"
+    clear
 
-╔═══════════════════════════════════════════════════════╗
-║               OpenWRT Auto Installer                  ║
-╚═══════════════════════════════════════════════════════╝
-
-EOF
+    t "welcome"
+    echo ""
 
 echo -e "\nChecking OpenWRT image..."
 if [ ! -f "/openwrt.img" ]; then
@@ -326,8 +480,8 @@ echo -e "OpenWRT image found: $IMG_SIZE\n"
 
     DISK_LIST=()
     DISK_INDEX=1
-    echo "检测到的存储设备："
-    echo "$(echo '5a6J5YWo5pWw5o2u5p+l55yL' | base64 -d)"
+    echo "检测到可用磁盘:"
+    echo -e "==============================\n"
     # 使用lsblk获取磁盘信息
     while IFS= read -r line; do
         if [ -n "$line" ]; then
