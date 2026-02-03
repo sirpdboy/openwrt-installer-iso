@@ -14,9 +14,9 @@ BOOT_DIR="${ISO_DIR}/boot"
 TC_DIR="${ISO_DIR}/tc"
 EFI_DIR="${ISO_DIR}/efi/boot"
 
-OPENWRT_IMG=${1}
-OUTPUT_DIR=${2}
-ISO_NAME=${3}
+OPENWRT_IMG="${1:-/mnt/ezopwrt.img}"
+OUTPUT_DIR="${2:-/output}"
+ISO_NAME="${3:-openwrt-autoinstall.iso}"
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -52,11 +52,11 @@ TINYCORE_RELEASE="15.0"
 # 下载内核和initrd
 log_info "下载内核..."
 wget -q "${TINYCORE_MIRROR}/release/distribution_files/vmlinuz64" -O "${BOOT_DIR}/vmlinuz64"
-wget -q "${TINYCORE_MIRROR}/release/distribution_files/core.gz" -O "${BOOT_DIR}/core.gz"
+wget -q "${TINYCORE_MIRROR}/release/distribution_files/corepure64.gz" -O "${BOOT_DIR}/core.gz"
 
 # 下载rootfs
 log_info "下载rootfs..."
-wget -q "${TINYCORE_MIRROR}/release/distribution_files/rootfs.gz" -O "${TC_DIR}/rootfs.gz"
+wget -q "${TINYCORE_MIRROR}/release/distribution_files/rootfs64.gz" -O "${TC_DIR}/rootfs.gz"
 
 # 下载扩展工具
 log_info "下载必要扩展..."
