@@ -165,7 +165,7 @@ apt-get -y install apt --no-install-recommends 2>/dev/null || true
 apt-get -y upgrade --no-install-recommends 2>/dev/null
 echo "Setting locale..."
 apt-get install -y --no-install-recommends  locales 2>/dev/null
-apt-get install -y fonts-wqy-zenhei 2>/dev/null || \
+apt-get install -y fonts-wqy-microhei 2>/dev/null
 
 
 
@@ -213,23 +213,6 @@ else
     apt-get install -y console-setup 2>/dev/null || true
 fi
 fc-cache -fv 2>/dev/null || true
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv 
 apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail 
 # 清理包缓存
