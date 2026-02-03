@@ -109,7 +109,12 @@ cat > "$CHROOT_DIR/install-chroot.sh" << 'CHROOT_EOF'
 #!/bin/bash
 set -e
 
-echo "� Configuring chroot environment..."
+echo "🔧 Configuring chroot environment..."
+
+# 基本设置
+export DEBIAN_FRONTEND=noninteractive
+export LC_ALL=C
+export LANG=C.UTF-8
 
 # 配置APT源
 cat > /etc/apt/sources.list <<EOF
@@ -127,56 +132,68 @@ echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 
 # 更新并安装包
 echo "Updating packages..."
-apt-get update
-apt-get -y install apt || true
-apt-get -y upgrade
+apt-get update --no-install-recommends
+apt-get -y install apt --no-install-recommends || true
+apt-get -y upgrade --no-install-recommends
 echo "Setting locale..."
-
-apt-get update
 apt-get install -y --no-install-recommends \
     locales \
-    fonts-wqy-zenhei \
-    fonts-wqy-microhei \
-    console-setup \
-    console-data \
-    keyboard-configuration
+    fonts-wqy-microhei
 
-# 生成中文locale
-sed -i 's/# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen
-sed -i 's/# zh_CN.GBK GBK/zh_CN.GBK GBK/' /etc/locale.gen
-locale-gen
+# 如果上述失败，尝试备用方案
+if [ $? -ne 0 ]; then
+    echo "尝试备用字体源..."
+    # 下载直接字体文件
+    wget -q http://ftp.cn.debian.org/debian/pool/main/f/fonts-wqy-microhei/fonts-wqy-microhei_0.2.0-beta-2_all.deb -O /tmp/wqy.deb
+    dpkg -i /tmp/wqy.deb 2>/dev/null || true
+    apt-get -f install -y
+fi
 
-# 设置默认locale
-update-locale LANG=zh_CN.UTF-8
 
-# 配置控制台
-cat > /etc/default/console-setup << 'CONSOLE'
-ACTIVE_CONSOLES="/dev/tty[1-6]"
-CHARMAP="UTF-8"
-CODESET="Uni2"
-FONTFACE="Fixed"
-FONTSIZE="8x16"
-VIDEOMODE=
+# 配置locale（强制方法）
+cat > /etc/locale.gen << 'LOCALE'
+en_US.UTF-8 UTF-8
+zh_CN.UTF-8 UTF-8
+zh_CN.GBK GBK
+LOCALE
 
-CONSOLE
+# 生成locale
+/usr/sbin/locale-gen
 
-# 创建中文键盘映射
-cat > /etc/default/keyboard << 'KEYBOARD'
-XKBMODEL="pc105"
-XKBLAYOUT="cn"
-XKBVARIANT=""
-XKBOPTIONS=""
+# 设置系统范围的语言
+cat > /etc/default/locale << 'LOCALE_CONF'
+LANG="zh_CN.UTF-8"
+LANGUAGE="zh_CN:zh"
+LC_ALL="zh_CN.UTF-8"
+LC_CTYPE="zh_CN.UTF-8"
+LC_MESSAGES="zh_CN.UTF-8"
+LOCALE_CONF
 
-KEYMAP="cn"
+# 配置终端
+cat > /etc/profile.d/terminal-chinese.sh << 'TERMINAL'
+# 终端中文支持
+if [ "$TERM" = "linux" ]; then
+    # 设置控制台编码
+    export LANG=zh_CN.UTF-8
+    export LANGUAGE=zh_CN:zh
+    
+    # 加载中文字体（如果可用）
+    if [ -f /usr/share/consolefonts/Uni2-Fixed16.psf.gz ]; then
+        loadfont Uni2-Fixed16 2>/dev/null || true
+    fi
+fi
 
-KEYBOARD
+# 通用设置
+export LESSCHARSET=utf-8
+alias ll='ls -la --color=auto'
+TERMINAL
 
- # sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
-dpkg-reconfigure --frontend=noninteractive locales
-update-locale LANG=en_US.UTF-8
-apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
-apt-get install -y openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail \
+# 激活配置
+. /etc/default/locale
+. /etc/profile.d/terminal-chinese.sh
 
+apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv 
+apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail 
 # 清理包缓存
 apt-get clean
 
