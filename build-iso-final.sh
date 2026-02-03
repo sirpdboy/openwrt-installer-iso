@@ -208,10 +208,6 @@ TERMINAL
 # 激活配置
 . /etc/default/locale
 . /etc/profile.d/terminal-chinese.sh
-
-pkill -9 systemd-timesyncd 2>/dev/null
-pkill -9 journald 2>/dev/null
-echo 0 > /proc/sys/kernel/printk 2>/dev/null
 fc-cache -fv 2>/dev/null || true
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv 
 apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail 
@@ -316,44 +312,9 @@ GETTY_OVERRIDE
 cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/bash
 
-
-clean_system_output() {
-    # 1. 停止所有日志服务
-    systemctl stop systemd-journald 2>/dev/null || true
-    systemctl stop rsyslog 2>/dev/null || true
-    systemctl stop syslog 2>/dev/null || true
-    
-    # 2. 禁用控制台输出
-    
-pkill -9 systemd-timesyncd 2>/dev/null || true
-pkill -9 journald 2>/dev/null || true
-    echo 0 > /proc/sys/kernel/printk 2>/dev/null || true
-    dmesg -n 1 2>/dev/null || true
-    
-    # 3. 清理屏幕
-    clear
-    printf "\033c"  # 真正的终端重置
-    stty sane 2>/dev/null || true
-}
-
-# === 第二步：设置干净的环境 ===
-setup_clean_env() {
-    # 使用纯英文环境避免乱码
-    export LANG=C
-    export LC_ALL=C
-    export LANGUAGE=en_US
-    export TERM=linux
-    
-    # 简单的ASCII编码
-    export LESSCHARSET=ascii
-    export MANPAGER=cat
-    
-    # 清理提示符
-    PS1='# '
-}
-
-    clean_system_output
-    setup_clean_env
+pkill -9 systemd-timesyncd 2>/dev/null
+pkill -9 journald 2>/dev/null
+echo 0 > /proc/sys/kernel/printk 2>/dev/null
 
 # === 中文环境初始化 ===
 init_chinese_env() {
