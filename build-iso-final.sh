@@ -686,7 +686,50 @@ for dir in "${CHROOT_DIR}/usr/share/doc" \
         rm -rf "$dir"
     fi
 done
+rm -rf /var/lib/apt/lists/*
 
+# 删除文档文件
+rm -rf /usr/share/doc/*
+rm -rf /usr/share/man/*
+rm -rf /usr/share/info/*
+rm -rf /usr/share/locale/*
+
+# 删除不必要的locale文件（只保留en_US）
+mkdir -p /usr/share/locale/en_US
+mv /usr/share/locale/en_US/LC_MESSAGES/* /usr/share/locale/ 2>/dev/null || true
+rm -rf /usr/share/locale/[a-df-z]*
+rm -rf /usr/share/locale/e[a-tv-z]*
+mv /usr/share/locale/en_US /tmp/locale_tmp 2>/dev/null || true
+rm -rf /usr/share/locale/*
+mv /tmp/locale_tmp /usr/share/locale/en_US 2>/dev/null || true
+
+# 删除示例文件
+rm -rf /usr/share/examples
+rm -rf /usr/share/common-licenses
+
+# 清理日志目录
+rm -rf /var/log/*
+mkdir -p /var/log
+
+# 清理临时文件
+rm -rf /tmp/* /var/tmp/*
+
+# 删除不必要的时间数据
+rm -rf /usr/share/zoneinfo/[!U]*
+rm -rf /usr/share/zoneinfo/U[!T]*
+rm -rf /usr/share/zoneinfo/UTC
+
+# 删除vim帮助文件
+rm -rf /usr/share/vim/vim[0-9][0-9]/doc
+
+# 清理bash文档
+rm -rf /usr/share/doc/bash
+
+# 清理系统日志轮转配置
+rm -f /etc/logrotate.d/*
+
+# 删除不必要的模块
+find /lib/modules -name "*.ko" -type f | grep -E "(bluetooth|wifi|wireless|nvidia|amd|radeon|sound|audio|video|drm)" | xargs rm -f 2>/dev/null || true
 # 3. 清理不必要的内核模块 (再次确保)
 if [ -d "${CHROOT_DIR}/lib/modules" ]; then
     KERNEL_VERSION=$(ls "${CHROOT_DIR}/lib/modules/" | head -n1)
@@ -720,6 +763,47 @@ kernel/drivers/net/ethernet
     rm -rf "${MODULES_PATH}/kernel"
     mv "${MODULES_PATH}/kernel-keep" "${MODULES_PATH}/kernel"
 fi
+
+# 1. 深度清理chroot
+log_info "执行深度清理..."
+
+# 删除Python相关文件
+rm -rf "${CHROOT_DIR}"/usr/lib/python* 2>/dev/null || true
+rm -rf "${CHROOT_DIR}"/usr/local/lib/python* 2>/dev/null || true
+
+# 删除Perl相关文件
+rm -rf "${CHROOT_DIR}"/usr/share/perl* 2>/dev/null || true
+
+# 删除Go相关文件
+rm -rf "${CHROOT_DIR}"/usr/lib/go 2>/dev/null || true
+
+# 删除Rust相关文件
+rm -rf "${CHROOT_DIR}"/usr/lib/rustlib 2>/dev/null || true
+
+# 删除Java相关文件
+rm -rf "${CHROOT_DIR}"/usr/lib/jvm 2>/dev/null || true
+
+# 删除不必要的头文件
+rm -rf "${CHROOT_DIR}"/usr/include/* 2>/dev/null || true
+
+# 删除静态库
+find "${CHROOT_DIR}" -name "*.a" -type f -delete 2>/dev/null || true
+
+# 删除调试符号
+find "${CHROOT_DIR}" -name "*.debug" -type f -delete 2>/dev/null || true
+find "${CHROOT_DIR}" -path "*/debug/*" -type f -delete 2>/dev/null || true
+
+# 删除备份文件
+find "${CHROOT_DIR}" -name "*~" -type f -delete 2>/dev/null || true
+find "${CHROOT_DIR}" -name "*.bak" -type f -delete 2>/dev/null || true
+find "${CHROOT_DIR}" -name "*.old" -type f -delete 2>/dev/null || true
+
+# 删除日志文件
+find "${CHROOT_DIR}" -name "*.log" -type f -delete 2>/dev/null || true
+
+# 清理大小
+log_info "清理后chroot大小: $(du -sh ${CHROOT_DIR} | cut -f1)"
+
 # 创建网络配置文件
 cat > "${CHROOT_DIR}/etc/systemd/network/99-dhcp.network" <<EOF
 [Match]
