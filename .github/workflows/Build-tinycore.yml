@@ -1,11 +1,11 @@
-name: build-tinycore
+name: Build-tinycore
 
 on:
   push:
     branches: [ main, master ]
     paths:
-      - 'build-tinycore.sh'
-      - '.github/workflows/build-tinycore.yml'
+      - './build-tinycore.sh'
+      - '.github/workflows/Build-tinycore.yml'
   workflow_dispatch:
     inputs:
       img_file:
