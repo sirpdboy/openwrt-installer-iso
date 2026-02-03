@@ -14,9 +14,9 @@ BOOT_DIR="${ISO_DIR}/boot"
 TC_DIR="${ISO_DIR}/tc"
 EFI_DIR="${ISO_DIR}/efi/boot"
 
-OPENWRT_IMG=${%1}
-OUTPUT_DIR=${%2}
-ISO_NAME=${%3}
+OPENWRT_IMG=${$1}
+OUTPUT_DIR=${$2}
+ISO_NAME=${$3}
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
