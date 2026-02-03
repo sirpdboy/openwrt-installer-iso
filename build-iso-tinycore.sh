@@ -393,6 +393,128 @@ sudo cp -r "${WORK_DIR}/efiboot/boot" "${MOUNT_POINT}/"
 sync
 sudo umount "${MOUNT_POINT}"
 
+# 构建支持BIOS和UEFI双引导的ISO
+log_info "构建支持BIOS+UEFI双引导的ISO..."
+
+# 首先确保EFI目录存在
+if [ -d "${NEW_ISO_DIR}/EFI" ]; then
+    log_info "检测到EFI目录，准备构建双引导ISO"
+    
+    # 创建临时工作目录
+    EFI_TEMP="${WORK_DIR}/efi_temp"
+    mkdir -p "${EFI_TEMP}"
+    
+    # 方法1: 使用xorriso（推荐，更现代）
+    if command -v xorriso >/dev/null 2>&1; then
+        log_info "使用xorriso构建双引导ISO..."
+        
+        xorriso -as mkisofs \
+            -iso-level 3 \
+            -full-iso9660-filenames \
+            -volid "OPENWRT-INSTALL" \
+            # BIOS引导配置
+            -eltorito-boot boot/isolinux/isolinux.bin \
+            -eltorito-catalog boot/isolinux/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            # UEFI引导配置
+            -eltorito-alt-boot \
+            -e EFI/BOOT/BOOTX64.EFI \
+            -no-emul-boot \
+            # 添加MBR以支持混合模式
+            -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+            # 输出
+            -output "${OUTPUT_DIR}/${ISO_NAME}" \
+            "${NEW_ISO_DIR}" 2>&1 | tee /tmp/iso_build.log
+            
+        XORRISO_EXIT=$?
+        
+        if [ $XORRISO_EXIT -eq 0 ]; then
+            log_success "xorriso构建成功"
+        else
+            log_warning "xorriso构建失败，尝试其他方法"
+        fi
+    fi
+    
+    # 方法2: 使用genisoimage/mkisofs（传统方法）
+    if [ ! -f "${OUTPUT_DIR}/${ISO_NAME}" ] && command -v genisoimage >/dev/null 2>&1; then
+        log_info "使用genisoimage构建双引导ISO..."
+        
+        genisoimage \
+            -U \
+            -r \
+            -v \
+            -J \
+            -joliet-long \
+            -cache-inodes \
+            -V "OPENWRT-INSTALL" \
+            # BIOS引导
+            -b boot/isolinux/isolinux.bin \
+            -c boot/isolinux/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            # UEFI引导
+            -eltorito-alt-boot \
+            -e EFI/BOOT/BOOTX64.EFI \
+            -no-emul-boot \
+            -output "${OUTPUT_DIR}/${ISO_NAME}" \
+            "${NEW_ISO_DIR}" 2>&1 | tee /tmp/iso_build.log
+    fi
+    
+    # 方法3: 纯mkisofs（最兼容）
+    if [ ! -f "${OUTPUT_DIR}/${ISO_NAME}" ] && command -v mkisofs >/dev/null 2>&1; then
+        log_info "使用mkisofs构建双引导ISO..."
+        
+        mkisofs \
+            -iso-level 3 \
+            -full-iso9660-filenames \
+            -J \
+            -R \
+            -V "OPENWRT-INSTALL" \
+            # BIOS引导
+            -b boot/isolinux/isolinux.bin \
+            -c boot/isolinux/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            # UEFI引导
+            -eltorito-alt-boot \
+            -e EFI/BOOT/BOOTX64.EFI \
+            -no-emul-boot \
+            -output "${OUTPUT_DIR}/${ISO_NAME}" \
+            "${NEW_ISO_DIR}" 2>&1 | tee /tmp/iso_build.log
+    fi
+    
+    # 方法4: 如果以上都失败，使用isohybrid添加UEFI支持
+    if [ -f "${OUTPUT_DIR}/${ISO_NAME}" ]; then
+        log_info "添加isohybrid支持以增强UEFI兼容性..."
+        
+        # 检查isohybrid是否可用
+        if command -v isohybrid >/dev/null 2>&1; then
+            isohybrid --uefi "${OUTPUT_DIR}/${ISO_NAME}" 2>/dev/null && \
+                log_success "isohybrid UEFI支持添加成功"
+        fi
+    fi
+    
+else
+    log_warning "未找到EFI目录，仅构建BIOS引导ISO"
+    
+    # 构建仅BIOS引导的ISO
+    xorriso -as mkisofs \
+        -iso-level 3 \
+        -volid "OPENWRT-INSTALL" \
+        -eltorito-boot boot/isolinux/isolinux.bin \
+        -eltorito-catalog boot/isolinux/boot.cat \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
+        -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+        -output "${OUTPUT_DIR}/${ISO_NAME}" \
+        "${NEW_ISO_DIR}"
+fi
+
 # 构建ISO镜像
 log_info "构建ISO镜像..."
 cd "${ISO_DIR}"
@@ -403,23 +525,6 @@ TOTAL_SIZE_MB=$((TOTAL_SIZE / 1024 / 1024))
 
 log_info "ISO总大小: ${TOTAL_SIZE_MB}MB"
 
-# 使用xorriso创建混合ISO
-xorriso -as mkisofs \
-    -iso-level 3 \
-    -full-iso9660-filenames \
-    -volid "OPENWRT_INSTALL" \
-    -eltorito-boot isolinux.bin \
-    -eltorito-catalog boot.cat \
-    -no-emul-boot \
-    -boot-load-size 4 \
-    -boot-info-table \
-    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-    -eltorito-alt-boot \
-    -e efiboot.img \
-    -no-emul-boot \
-    -isohybrid-gpt-basdat \
-    -output "${OUTPUT_DIR}/${ISO_NAME}" \
-    .
 
 # 验证ISO
 if [ -f "${OUTPUT_DIR}/${ISO_NAME}" ]; then
