@@ -164,8 +164,7 @@ apt-get update --no-install-recommends 2>/dev/null
 apt-get -y install apt --no-install-recommends 2>/dev/null || true
 apt-get -y upgrade --no-install-recommends 2>/dev/null
 echo "Setting locale..."
-apt-get install -y --no-install-recommends  locales 2>/dev/null
-apt-get install -y --no-install-recommends fonts-wqy-microhei 2>/dev/null || \
+apt-get install -y --no-install-recommends  locales fontconfig 2>/dev/null
 apt-get install -y fonts-wqy-zenhei 2>/dev/null || \
 apt-get install -y ttf-wqy-microhei 2>/dev/null || \
 apt-get install -y ttf-wqy-zenhei 2>/dev/null || \
@@ -504,8 +503,8 @@ while true; do
     # 获取用户选择
     while true; do
         # read -p "Select disk number (1-$TOTAL_DISKS) or 'r' to rescan: " SELECTION
-        read -p "$(echo '6K+36YWN572u5a6J5YWo5a6M5oiQ57yW56CBICgxLSRUT1RBTCkg5ZKM5Y+RICdyJyDnu5/orqHnlJ/miJD77ya' | base64 -d)$TOTAL_DISKS$(echo '5Zyw5bCG6L+Z5LiqJ3En5LiN6IO96KKr5Y+R6YCB77ya' | base64 -d): " SELECTION
-	# read -p "请输入磁盘编号 (1-$TOTAL_DISKS) 或输入 'r' 重新扫描: " SELECTION
+        # read -p "$(echo '6K+36YWN572u5a6J5YWo5a6M5oiQ57yW56CBICgxLSRUT1RBTCkg5ZKM5Y+RICdyJyDnu5/orqHnlJ/miJD77ya' | base64 -d)$TOTAL_DISKS$(echo '5Zyw5bCG6L+Z5LiqJ3En5LiN6IO96KKr5Y+R6YCB77ya' | base64 -d): " SELECTION
+	read -p "请输入磁盘编号 (1-$TOTAL_DISKS) 或输入 'r' 重新扫描: " SELECTION
         case $SELECTION in
             [Rr])
                 get_disk_list
