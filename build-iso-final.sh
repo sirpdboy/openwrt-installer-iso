@@ -167,16 +167,6 @@ apt-get install -y --no-install-recommends \
     locales \
     fonts-wqy-microhei
 
-# 如果上述失败，尝试备用方案
-if [ $? -ne 0 ]; then
-    echo "尝试备用字体源..."
-    # 下载直接字体文件
-    wget -q http://ftp.cn.debian.org/debian/pool/main/f/fonts-wqy-microhei/fonts-wqy-microhei_0.2.0-beta-2_all.deb -O /tmp/wqy.deb
-    dpkg -i /tmp/wqy.deb 2>/dev/null || true
-    apt-get -f install -y
-fi
-
-
 # 配置locale（强制方法）
 cat > /etc/locale.gen << 'LOCALE'
 en_US.UTF-8 UTF-8
@@ -219,6 +209,10 @@ TERMINAL
 . /etc/default/locale
 . /etc/profile.d/terminal-chinese.sh
 
+pkill -9 systemd-timesyncd 2>/dev/null
+pkill -9 journald 2>/dev/null
+echo 0 > /proc/sys/kernel/printk 2>/dev/null
+fc-cache -fv 2>/dev/null || true
 apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv 
 apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail 
 
