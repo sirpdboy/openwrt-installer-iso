@@ -136,15 +136,16 @@ jobs:
     - name: 运行ISO构建
       run: |
         echo "🔨 开始构建ISO..."
-              chmod +x docker-build.sh
+              chmod +x build-tinycore.sh
                # 运行Docker
             docker run --rm \
-                -v "$(pwd)/assets/ezopwrt.img:/mnt/input.img:ro" \
-                -v "docker-build.sh:/docker-build.sh:ro" \
-                -v "output:/output" \
-                openwrt-builder \
-                /docker-build.sh /mnt/input.img /output openwrt-installer.iso
-    
+                -v "$(pwd)/assets/ezopwrt.img:/mnt/openwrt.img:ro" \
+                -v "build-tinycore.sh:/build.sh:ro" \
+                -v "output:/output" \  
+                ubuntu-22.04 \
+        bash -c "
+        /build.sh
+        "
             # 检查结果
             if [ $? -eq 0 ]; then
                 echo "✅ ISO构建完成"
