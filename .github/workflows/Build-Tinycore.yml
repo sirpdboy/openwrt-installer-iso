@@ -1,4 +1,4 @@
-name: Build-tinycore
+name: Build-Tinycore
 
 
 on:
@@ -6,7 +6,7 @@ on:
     branches: [ main, master ]
     paths:
       - 'scripts/build-tinycore.sh'
-      - '.github/workflows/Build-tinycore.yml'
+      - '.github/workflows/Build-Tinycore.yml'
   workflow_dispatch:
     inputs:
       openwrt_image_url:
@@ -140,17 +140,34 @@ jobs:
         echo "安装构建工具..."
         sudo apt-get update
             sudo apt-get install -y \
-                genisoimage \
-                xorriso \
-                syslinux \
-                isolinux \
-                wget \
-                curl
+            genisoimage \
+            syslinux \
+            isolinux \
+            squashfs-tools \
+            pv \
+            xorriso \
+            mtools \
+            dosfstools \
+            # GRUB引导工具
+            grub-pc-bin \
+            grub-efi-amd64-bin \
+            grub-efi-ia32-bin \
+            grub2-common \
+            wget \
+            curl \
+            xz-utils \
+            zstd \
+            lz4 \
+            upx-ucl \
+            cpio \
+            gzip \
+            file \
+            findutils \
+            coreutils \
+            jq \
+            iproute2 \
+            net-tools \
     
-           SCRIPT="build-tinycore.sh"
-
-    
-            echo "使用脚本: \$SCRIPT"
             chmod +x build-tinycore.sh
     
             # 运行构建
