@@ -77,11 +77,9 @@ EXTENSIONS=(
     "dialog.tcz"
     "parted.tcz"
     "grub2-multi.tcz"
-    "ntfs-3g.tcz"
     "syslinux.tcz"
     "pv.tcz"
     "e2fsprogs.tcz"
-    "gptfdisk.tcz"
     "ddrescue.tcz"
 )
 
