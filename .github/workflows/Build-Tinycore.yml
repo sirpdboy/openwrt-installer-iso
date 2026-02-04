@@ -15,7 +15,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest  # GitHub Actions已经预装了Docker
+    runs-on: ubuntu-22.04  # GitHub Actions已经预装了Docker
     
     steps:
     - name: Checkout code
@@ -140,34 +140,31 @@ jobs:
         echo "安装构建工具..."
         sudo apt-get update
             sudo apt-get install -y \
-            genisoimage \
-            syslinux \
-            isolinux \
-            squashfs-tools \
-            pv \
-            xorriso \
-            mtools \
-            dosfstools \
-            # GRUB引导工具
-            grub-pc-bin \
-            grub-efi-amd64-bin \
-            grub-efi-ia32-bin \
-            grub2-common \
-            wget \
-            curl \
-            xz-utils \
-            zstd \
-            lz4 \
-            upx-ucl \
-            cpio \
-            gzip \
-            file \
-            findutils \
-            coreutils \
-            jq \
-            iproute2 \
-            net-tools \
-    
+                genisoimage \
+                xorriso \
+                # 引导工具
+                syslinux \
+                isolinux \
+                # 文件系统工具
+                squashfs-tools \
+                mtools \
+                dosfstools \
+                # GRUB引导（Ubuntu 24.04新包名）
+                grub-common \
+                grub-efi-amd64-bin \
+                grub-efi-ia32-bin \
+                # 工具
+                wget \
+                curl \
+                xz-utils \
+                cpio \
+                gzip \
+                file \
+                jq \
+                pv \
+                # 网络工具
+                iproute2 \
+                net-tools \
             chmod +x build-tinycore.sh
     
             # 运行构建
