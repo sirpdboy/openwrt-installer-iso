@@ -139,32 +139,14 @@ jobs:
      
         echo "安装构建工具..."
         sudo apt-get update
-            sudo apt-get install -y \
-                genisoimage \
-                xorriso \
-                # 引导工具
-                syslinux \
-                isolinux \
-                # 文件系统工具
-                squashfs-tools \
-                mtools \
-                dosfstools \
-                # GRUB引导（Ubuntu 24.04新包名）
-                grub-common \
-                grub-efi-amd64-bin \
-                grub-efi-ia32-bin \
-                # 工具
-                wget \
-                curl \
-                xz-utils \
-                cpio \
-                gzip \
-                file \
-                jq \
-                pv \
-                # 网络工具
-                iproute2 \
-                net-tools \
+        sudo apt-get install -y \
+        genisoimage \
+        xorriso \
+        syslinux \
+        isolinux \
+        wget \
+        curl \
+                
             chmod +x build-tinycore.sh
     
             # 运行构建
