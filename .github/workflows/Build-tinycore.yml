@@ -147,24 +147,17 @@ jobs:
                 wget \
                 curl
     
-            # 查找构建脚本
-            if [ -f "scripts/build-tinycore.sh" ]; then
-                SCRIPT="scripts/build-tinycore.sh"
-            elif [ -f "build-tinycore.sh" ]; then
-                SCRIPT="build-tinycore.sh"
-            else
-                echo "❌ 找不到构建脚本"
-                exit 1
-           fi
+           SCRIPT="build-tinycore.sh"
+
     
             echo "使用脚本: \$SCRIPT"
-            chmod +x "\$SCRIPT"
+            chmod +x build-tinycore.sh
     
             # 运行构建
             mkdir -p output
             chmod 777 output
     
-            "./\$SCRIPT" \
+            "./build-tinycore.sh" \
                 "$(pwd)/assets/ezopwrt.img" \
                 "$(pwd)/output" \
                 "openwrt-installer.iso"
