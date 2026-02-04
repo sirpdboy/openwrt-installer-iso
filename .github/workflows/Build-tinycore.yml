@@ -84,15 +84,6 @@ jobs:
         ENTRYPOINT ["bash", "-c"]
         CMD ["echo '请挂载构建脚本并运行'"]
         DOCKEREOF
-        
-        # 创建最小化构建脚本（防止挂载失败时使用）
-        cat > build-tinycore-minimal.sh << 'SCRIPTEOF'
-        #!/bin/bash
-        echo "最小化构建脚本"
-        echo "请确保正确挂载了完整的构建脚本"
-        exit 1
-        SCRIPTEOF
-        chmod +x build-tinycore-minimal.sh
     
     - name: 准备OpenWRT镜像
       id: prepare_image
@@ -142,18 +133,29 @@ jobs:
             echo "img_path=assets/ezopwrt.img" >> $GITHUB_OUTPUT
         fi
     
-    - name: 构建Docker镜像
+    - name: 运行ISO构建
       run: |
-        echo "🐳 构建Docker镜像..."
-        
-        # 构建镜像
-        docker build -t openwrt-builder -f Dockerfile.openwrt-builder .
-        
-        # 验证镜像
-        echo "镜像列表:"
-        docker images | grep openwrt-builder
-        
-        echo "✅ Docker镜像构建完成"
+        echo "🔨 开始构建ISO..."
+              chmod +x /tmp/docker-build.sh
+    
+            # 运行Docker
+            docker run --rm \
+                -v "$(pwd)/assets/ezopwrt.img:/mnt/input.img:ro" \
+                -v "docker-build.sh:/docker-build.sh:ro" \
+                -v "output:/output" \
+                openwrt-builder \
+                /docker-build.sh /mnt/input.img /output openwrt-installer.iso
+    
+            # 检查结果
+            if [ $? -eq 0 ]; then
+                echo "✅ ISO构建完成"
+                if [ -f "output/openwrt-installer.iso" ]; then
+                    echo "ISO大小: \$(du -h output/openwrt-installer.iso | cut -f1)"
+                fi
+            else
+                echo "❌ ISO构建失败"
+                exit 1
+            fi
     
     - name: 运行ISO构建
       run: |
