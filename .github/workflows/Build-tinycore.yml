@@ -178,7 +178,7 @@ jobs:
             -v "$(pwd)/scripts/build-tinycore.sh:/builder/build.sh:ro" \
             -v "$(pwd)/output:/builder/output" \
             openwrt-builder \
-            "bash -c 'chmod +x /builder/build.sh && /builder/build.sh /mnt/input.img /builder/output openwrt-installer.iso'"
+            "bash -c '/builder/build.sh /mnt/input.img /builder/output openwrt-installer.iso'"
             
         echo "检查输出:"
         ls -la output/ || echo "output目录不存在" 
