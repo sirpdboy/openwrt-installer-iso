@@ -140,12 +140,11 @@ jobs:
                # 运行Docker
             docker run --rm \
                 -v "$(pwd)/assets/ezopwrt.img:/mnt/openwrt.img:ro" \
-                -v "build-tinycore.sh:/build.sh:ro" \
+                -v "$(pwd)/build-tinycore.sh:/build.sh:ro" \
                 -v "output:/output" \  
                 ubuntu-22.04 \
-        bash -c "
-        /build.sh
-        "
+        /docker-build.sh /mnt/openwrt.img /output openwrt-installer.iso
+
             # 检查结果
             if [ $? -eq 0 ]; then
                 echo "✅ ISO构建完成"
