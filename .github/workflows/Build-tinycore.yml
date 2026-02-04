@@ -171,8 +171,8 @@ jobs:
         fi
         
         chmod +x build-tinycore.sh
-        "assets/ezopwrt.img" \
-        "output" \
+        $(pwd)"/assets/ezopwrt.img" \
+        $(pwd)"/output" \
         "openwrt-installer.iso"
     
         echo "检查输出:"
