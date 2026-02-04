@@ -826,7 +826,7 @@ if [ -f "$ISO_PATH" ]; then
     echo ""
     
     # 创建构建信息文件
-    cat > "$OUTPUT_DIR/build-info.txt" << EOF
+    cat > "$OUTPUT_DIR/Iso-build-info.txt" << EOF
 OpenWRT Installer ISO Build Information
 ========================================
 Build Date:      $(date)
@@ -836,7 +836,7 @@ Kernel Version:  $(basename "$KERNEL")
 Initrd Version:  $(basename "$INITRD")
 
 Boot Support:    BIOS + UEFI
-Boot Timeout:    10 seconds
+Boot Timeout:    3 seconds
 
 Installation Features:
   - Simple numeric disk selection (1, 2, 3, etc.)
@@ -859,7 +859,7 @@ Notes:
   - Press Ctrl+C during reboot countdown to cancel
 EOF
     
-    log_success "Build info saved to: $OUTPUT_DIR/build-info.txt"
+    log_success "Build info saved to: $OUTPUT_DIR/Iso-build-info.txt"
     
     echo ""
     echo "================================================================================"
