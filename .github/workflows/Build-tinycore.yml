@@ -171,10 +171,15 @@ jobs:
         fi
         
         chmod +x build-tinycore.sh
-        $(pwd)"/assets/ezopwrt.img" \
-        $(pwd)"/output" \
-        "openwrt-installer.iso"
-    
+        echo "方法2: 使用Docker构建..."
+        docker run --rm \
+            --name openwrt-builder \
+            -v "$(pwd)/assets/ezopwrt.img:/mnt/input.img:ro" \
+            -v "$(pwd)/scripts/build-tinycore.sh:/builder/build.sh:ro" \
+            -v "$(pwd)/output:/builder/output" \
+            openwrt-builder \
+            "bash -c 'chmod +x /builder/build.sh && /builder/build.sh /mnt/input.img /builder/output openwrt-installer.iso'"
+            
         echo "检查输出:"
         ls -la output/ || echo "output目录不存在" 
         # 检查构建结果
