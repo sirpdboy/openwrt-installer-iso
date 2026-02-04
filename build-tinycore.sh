@@ -14,9 +14,9 @@ BOOT_DIR="${ISO_DIR}/boot"
 TC_DIR="${ISO_DIR}/tc"
 EFI_DIR="${ISO_DIR}/efi/boot"
 
-OPENWRT_IMG="${1:-/mnt/ezopwrt.img}"
-OUTPUT_DIR="${2:-/output}"
-ISO_NAME="${3:-openwrt-autoinstall.iso}"
+ OPENWRT_IMG="${1:-/mnt/ezopwrt.img}"
+ OUTPUT_DIR="${2:-/output}"
+ ISO_NAME="${3:-openwrt-autoinstall.iso}"
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -78,6 +78,7 @@ EXTENSIONS=(
     "parted.tcz"
     "grub2-multi.tcz"
     "syslinux.tcz"
+    "mpv.tcz"
     "e2fsprogs.tcz"
     "ddrescue.tcz"
 )
@@ -109,7 +110,7 @@ dialog.tcz
 parted.tcz
 grub2-multi.tcz
 syslinux.tcz
-pv.tcz
+mpv.tcz
 e2fsprogs.tcz
 ddrescue.tcz
 ONBOOT
@@ -306,6 +307,8 @@ cp "${OPENWRT_IMG}" "${TC_DIR}/openwrt.img"
 # 创建BIOS引导配置
 log_info "创建BIOS引导配置..."
 
+mkdir -p "${ISO_DIR}/boot/grub"
+mkdir -p "${WORK_DIR}/efiboot/boot/grub"
 # ISOLINUX配置
 cat > "${ISO_DIR}/isolinux.cfg" << 'ISOLINUX_CFG'
 DEFAULT tinycore
