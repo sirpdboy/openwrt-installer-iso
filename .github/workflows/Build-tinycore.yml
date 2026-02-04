@@ -132,7 +132,54 @@ jobs:
             dd if=/dev/zero of=assets/ezopwrt.img bs=1M count=10
             echo "img_path=assets/ezopwrt.img" >> $GITHUB_OUTPUT
         fi
+
+    - name: 运行ISO构建
+      run: |
+        echo "🔨 开始构建ISO..."
+     
+        echo "安装构建工具..."
+        sudo apt-get update
+            sudo apt-get install -y \
+                genisoimage \
+                xorriso \
+                syslinux \
+                isolinux \
+                wget \
+                curl
     
+            # 查找构建脚本
+            if [ -f "scripts/build-tinycore.sh" ]; then
+                SCRIPT="scripts/build-tinycore.sh"
+            elif [ -f "build-tinycore.sh" ]; then
+                SCRIPT="build-tinycore.sh"
+            else
+                echo "❌ 找不到构建脚本"
+                exit 1
+           fi
+    
+            echo "使用脚本: \$SCRIPT"
+            chmod +x "\$SCRIPT"
+    
+            # 运行构建
+            mkdir -p output
+            chmod 777 output
+    
+            "./\$SCRIPT" \
+                "$(pwd)/assets/ezopwrt.img" \
+                "$(pwd)/output" \
+                "openwrt-installer.iso"
+    
+            # 检查结果
+            if [ \$? -eq 0 ] && [ -f "output/openwrt-installer.iso" ]; then
+                echo "✅ ISO构建成功"
+                echo "文件: output/openwrt-installer.iso"
+                echo "大小: \$(du -h output/openwrt-installer.iso | cut -f1)"
+            else
+                echo "❌ ISO构建失败"
+                echo "output目录内容:"
+                ls -la output/ 2>/dev/null || echo "output目录不存在"
+                exit 1
+            fi
     - name: 运行ISO构建
       run: |
         echo "🔨 开始构建ISO..."
@@ -156,40 +203,6 @@ jobs:
                 exit 1
             fi
     
-    - name: 运行ISO构建
-      run: |
-        echo "🔨 开始构建ISO..."
-        
-        # 检查必要文件
-        if [ ! -f "assets/ezopwrt.img" ]; then
-            echo "❌ 找不到OpenWRT镜像"
-            exit 1
-        fi
-        
-        if [ ! -f "build-tinycore.sh" ]; then
-            echo "❌ 找不到构建脚本"
-            exit 1
-        fi
-        
-        chmod +x build-tinycore.sh
-        echo "方法2: 使用Docker构建..."
-        docker run --rm \
-            --name openwrt-builder \
-            -v "$(pwd)/assets/ezopwrt.img:/mnt/input.img:ro" \
-            -v "$(pwd)/scripts/build-tinycore.sh:/builder/build.sh:ro" \
-            -v "$(pwd)/output:/builder/output" \
-            openwrt-builder \
-            "bash -c '/builder/build.sh /mnt/input.img /builder/output openwrt-installer.iso'"
-            
-        echo "检查输出:"
-        ls -la output/ || echo "output目录不存在" 
-        # 检查构建结果
-        if [ $? -eq 0 ]; then
-        echo "✅ ISO构建完成"
-        else
-        echo "❌ ISO构建失败"
-        exit 1
-        fi
 
     - name: 验证ISO文件
       run: |
