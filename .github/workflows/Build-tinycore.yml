@@ -136,9 +136,8 @@ jobs:
     - name: 运行ISO构建
       run: |
         echo "🔨 开始构建ISO..."
-              chmod +x /tmp/docker-build.sh
-    
-            # 运行Docker
+              chmod +x docker-build.sh
+               # 运行Docker
             docker run --rm \
                 -v "$(pwd)/assets/ezopwrt.img:/mnt/input.img:ro" \
                 -v "docker-build.sh:/docker-build.sh:ro" \
