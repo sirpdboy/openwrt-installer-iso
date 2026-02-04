@@ -78,7 +78,6 @@ EXTENSIONS=(
     "parted.tcz"
     "grub2-multi.tcz"
     "syslinux.tcz"
-    "pv.tcz"
     "e2fsprogs.tcz"
     "ddrescue.tcz"
 )
