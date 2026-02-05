@@ -2,7 +2,7 @@
 # build.sh - OpenWRT ISO构建脚本（在Docker容器内运行） sirpdboy  https://github.com/sirpdboy/openwrt-installer-iso.git
 set -e
 
-echo "?? Starting OpenWRT ISO build inside Docker container..."
+echo "🚀 Starting OpenWRT ISO build inside Docker container..."
 echo "========================================================"
 
 # 从环境变量获取参数，或使用默认值
@@ -131,7 +131,7 @@ cat > "$CHROOT_DIR/install-chroot.sh" << 'CHROOT_EOF'
 #!/bin/bash
 set -e
 
-echo "?? Configuring chroot environment..."
+echo "🔧 Configuring chroot environment..."
 
 # 基本设置
 export DEBIAN_FRONTEND=noninteractive
@@ -266,7 +266,7 @@ sleep 2
 if [ ! -f "/openwrt.img" ]; then
     clear
     echo ""
-    echo "? Error: OpenWRT image not found"
+    echo "❌ Error: OpenWRT image not found"
     echo ""
     echo "Image file should be at: /openwrt.img"
     echo ""
@@ -370,7 +370,7 @@ EOF
 
 echo -e "\nChecking OpenWRT image..."
 if [ ! -f "/openwrt.img" ]; then
-    echo -e "\n? ERROR: OpenWRT image not found!"
+    echo -e "\n❌ ERROR: OpenWRT image not found!"
     echo -e "\nImage file should be at: /openwrt.img"
     echo -e "\nPress Enter for shell..."
     read
@@ -378,7 +378,7 @@ if [ ! -f "/openwrt.img" ]; then
 fi
 
 IMG_SIZE=$(ls -lh /openwrt.img | awk '{print $5}')
-echo -e "? OpenWRT image found: $IMG_SIZE\n"
+echo -e "✅ OpenWRT image found: $IMG_SIZE\n"
 
 # ==================== 步骤1: 选择安装硬盘 ====================
 echo "══════════════════════════════════════════════════════════"
@@ -432,7 +432,7 @@ while true; do
     get_disk_list
     
     if [ $TOTAL_DISKS -eq 0 ]; then
-        echo -e "\n? No disks detected!"
+        echo -e "\n❌ No disks detected!"
         echo -e "Please check your storage devices and try again."
         echo ""
         read -p "Press Enter to rescan..." _
@@ -460,11 +460,11 @@ while true; do
                     DISK_FREE_MB=${DISK_FREE[$SELECTION]}
                     break 2  # 跳出两层循环，继续下一步
                 else
-                    echo "? Invalid selection. Please choose between 1 and $TOTAL_DISKS."
+                    echo "❌ Invalid selection. Please choose between 1 and $TOTAL_DISKS."
                 fi
                 ;;
             *)
-                echo "? Invalid input. Please enter a number or 'r' to rescan."
+                echo "❌ Invalid input. Please enter a number or 'r' to rescan."
                 ;;
         esac
     done
@@ -527,7 +527,7 @@ while true; do
     case $MODE_SELECTION in
         1)
             WRITE_MODE="direct"
-            echo -e "\n? Selected: Direct Write Mode"
+            echo -e "\n✅ Selected: Direct Write Mode"
             echo "   Will write image without expansion"
             break
             ;;
@@ -535,18 +535,18 @@ while true; do
             WRITE_MODE="expand"
             if [ $EXPANDABLE_SIZE -gt 0 ]; then
                 EXPANSION_MB=$EXPANDABLE_SIZE
-                echo -e "\n? Selected: Auto Expand Mode"
+                echo -e "\n✅ Selected: Auto Expand Mode"
                 echo "   Will expand image by $((EXPANSION_MB / 1024))GB ($EXPANSION_MB MB)"
                 echo "   to use full disk capacity"
             else
-                echo -e "\n??  Warning: Not enough space for expansion"
+                echo -e "\n⚠️  Warning: Not enough space for expansion"
                 echo "   Falling back to Direct Write Mode"
                 WRITE_MODE="direct"
             fi
             break
             ;;
         *)
-            echo "? Invalid selection. Please choose 1 or 2."
+            echo "❌ Invalid selection. Please choose 1 or 2."
             ;;
     esac
 done
@@ -571,7 +571,7 @@ else
 fi
 echo "══════════════════════════════════════════════════════════\n"
 
-echo "??  ??  ??   CRITICAL WARNING   ??  ??  ??"
+echo "⚠️  ⚠️  ⚠️   CRITICAL WARNING   ⚠️  ⚠️  ⚠️"
 echo "══════════════════════════════════════════════════════════"
 echo "This operation will:"
 echo "1. ERASE ALL DATA on /dev/$DISK_SELECTED"
@@ -585,10 +585,10 @@ while true; do
     read -p "Type 'YES' (uppercase) to confirm installation: " FINAL_CONFIRM
     
     if [ "$FINAL_CONFIRM" = "YES" ]; then
-        echo -e "\n? Confirmed. Starting installation..."
+        echo -e "\n✅ Confirmed. Starting installation..."
         break
     else
-        echo -e "\n? Installation cancelled."
+        echo -e "\n❌ Installation cancelled."
         echo -e "\nPress Enter to start over..."
         read
         exec /opt/install-openwrt.sh  # 重新启动安装程序
@@ -617,7 +617,7 @@ sleep 1
 
 if ! image_supported "/openwrt.img"; then
     echo "ERROR: Invalid firmware image"
-    echo -e "\n? ERROR: Invalid firmware image format"
+    echo -e "\n❌ ERROR: Invalid firmware image format"
     echo -e "\nPress Enter to return to installation..."
     read
     exec /opt/install-openwrt.sh
@@ -634,7 +634,7 @@ if file "$IMAGE_TMP" | grep -q "gzip compressed data"; then
     decompressed_size=$(gzip -dc "$IMAGE_TMP" 2>/dev/null | wc -c)
     if [ -z "$decompressed_size" ] || [ "$decompressed_size" -eq 0 ]; then
         echo "ERROR: Invalid firmware image, please redownload."
-        echo -e "\n? ERROR: Invalid firmware image"
+        echo -e "\n❌ ERROR: Invalid firmware image"
         echo -e "\nPress Enter to return to installation..."
         read
         exec /opt/install-openwrt.sh
@@ -649,7 +649,7 @@ if file "$IMAGE_TMP" | grep -q "gzip compressed data"; then
         echo "Error: Insufficient disk space for extraction"
         echo "Need: $((required_with_buffer / 1024 / 1024)) MB (with 20% buffer)"
         echo "available: $((available_space / 1024 / 1024)) MB"
-        echo -e "\n? ERROR: Insufficient disk space for extraction"
+        echo -e "\n❌ ERROR: Insufficient disk space for extraction"
         echo -e "\nPress Enter to return to installation..."
         read
         exec /opt/install-openwrt.sh
@@ -664,7 +664,7 @@ if file "$IMAGE_TMP" | grep -q "gzip compressed data"; then
         else
             echo "Warning: File size mismatch"
             rm -f "$IMAGE_TO_WRITE"
-            echo -e "\n? ERROR: File size mismatch during extraction"
+            echo -e "\n❌ ERROR: File size mismatch during extraction"
             echo -e "\nPress Enter to return to installation..."
             read
             exec /opt/install-openwrt.sh
@@ -672,7 +672,7 @@ if file "$IMAGE_TMP" | grep -q "gzip compressed data"; then
     else
         echo "ERROR: Failed to extract firmware"
         rm -f "$IMAGE_TO_WRITE"
-        echo -e "\n? ERROR: Failed to extract firmware"
+        echo -e "\n❌ ERROR: Failed to extract firmware"
         echo -e "\nPress Enter to return to installation..."
         read
         exec /opt/install-openwrt.sh
@@ -687,7 +687,7 @@ fi
 # ==================== 扩容处理 ====================
 if [ "$WRITE_MODE" = "expand" ] && [ $EXPANSION_MB -gt 0 ]; then
     echo "Adding expansion capacity..."
-    echo -e "\n?? Expanding image by $((EXPANSION_MB / 1024))GB..."
+    echo -e "\n📏 Expanding image by $((EXPANSION_MB / 1024))GB..."
     
     # 扩展镜像文件
     echo "Expanding image by ${EXPANSION_MB}MB..."
@@ -739,7 +739,7 @@ if [ "$WRITE_MODE" = "expand" ] && [ $EXPANSION_MB -gt 0 ]; then
         echo "Image expanded and ready for writing"
     else
         echo "Warning: Expansion failed, using original image"
-        echo -e "\n??  Expansion failed, using original image size"
+        echo -e "\n⚠️  Expansion failed, using original image size"
     fi
 fi
 
@@ -832,7 +832,7 @@ if [ $DD_EXIT -eq 0 ]; then
     # 同步磁盘
     sync
     echo "DD write completed successfully"
-    echo -e "\n\n? Installation successful!"
+    echo -e "\n\n✅ Installation successful!"
     echo -e "\nOpenWRT has been installed to /dev/$DISK_SELECTED"
     
     # 清理临时文件
@@ -843,10 +843,10 @@ if [ $DD_EXIT -eq 0 ]; then
     echo -e "           INSTALLATION COMPLETE"
     echo -e "══════════════════════════════════════════════════════════\n"
     echo -e "Summary:"
-    echo -e "  ? Target Disk: /dev/$DISK_SELECTED"
-    echo -e "  ? Write Mode: $( [ "$WRITE_MODE" = "direct" ] && echo "Direct Write" || echo "Auto Expand" )"
+    echo -e "  • Target Disk: /dev/$DISK_SELECTED"
+    echo -e "  • Write Mode: $( [ "$WRITE_MODE" = "direct" ] && echo "Direct Write" || echo "Auto Expand" )"
     if [ "$WRITE_MODE" = "expand" ]; then
-        echo -e "  ? Expanded by: $((EXPANSION_MB / 1024))GB"
+        echo -e "  • Expanded by: $((EXPANSION_MB / 1024))GB"
     fi
     echo -e "\nNext steps:"
     echo -e "1. Remove the installation media"
@@ -869,7 +869,7 @@ if [ $DD_EXIT -eq 0 ]; then
     
 else
     echo "DD write failed with error code: $DD_EXIT"
-    echo -e "\n\n? Installation failed! Error code: $DD_EXIT"
+    echo -e "\n\n❌ Installation failed! Error code: $DD_EXIT"
     echo -e "\nPossible issues:"
     echo -e "1. Disk may be in use or mounted"
     echo -e "2. Disk may be failing"
@@ -924,7 +924,7 @@ update-initramfs -c -k all 2>/dev/null || true
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-echo "? Chroot configuration complete"
+echo "✅ Chroot configuration complete"
 CHROOT_EOF
 
 chmod +x "$CHROOT_DIR/install-chroot.sh"
@@ -1217,7 +1217,7 @@ if [ -f "$ISO_PATH" ]; then
     ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
     
     echo ""
-    log_success "? ISO built successfully!"
+    log_success "✅ ISO built successfully!"
     echo ""
     log_info "Build Results:"
     log_info "  Output File: $ISO_PATH"
@@ -1257,10 +1257,10 @@ Installation Steps:
   3. Type 'YES' to confirm installation
 
 Required Tools in ISO:
-  ? losetup, resize2fs, e2fsprogs, f2fs-tools
-  ? kmod-loop, gdisk (contains sgdisk), parted
-  ? gzip for compressed image support
-  ? bc for size calculations
+  ✓ losetup, resize2fs, e2fsprogs, f2fs-tools
+  ✓ kmod-loop, gdisk (contains sgdisk), parted
+  ✓ gzip for compressed image support
+  ✓ bc for size calculations
 
 Usage:
   1. Create bootable USB: dd if="$ISO_NAME" of=/dev/sdX bs=4M status=progress
@@ -1280,25 +1280,25 @@ EOF
     
     echo ""
     echo "================================================================================"
-    echo "?? ISO Build Complete!"
+    echo "📦 ISO Build Complete!"
     echo "================================================================================"
     echo "Key features in this version:"
-    echo "  ? 3-Step Installation Process"
-    echo "  ? Automatic disk size detection"
-    echo "  ? Two write modes: Direct Write or Auto Expand"
-    echo "  ? Auto Expand: Automatically expands to use full disk"
-    echo "  ? Uses gdisk (contains sgdisk) for GPT operations"
-    echo "  ? Simple numeric disk selection (1, 2, 3...)"
-    echo "  ? Visual progress bar during writing"
-    echo "  ? Safety confirmation (must type YES)"
-    echo "  ? Installation logging at /tmp/ezotaflash.log"
+    echo "  ✓ 3-Step Installation Process"
+    echo "  ✓ Automatic disk size detection"
+    echo "  ✓ Two write modes: Direct Write or Auto Expand"
+    echo "  ✓ Auto Expand: Automatically expands to use full disk"
+    echo "  ✓ Uses gdisk (contains sgdisk) for GPT operations"
+    echo "  ✓ Simple numeric disk selection (1, 2, 3...)"
+    echo "  ✓ Visual progress bar during writing"
+    echo "  ✓ Safety confirmation (must type YES)"
+    echo "  ✓ Installation logging at /tmp/ezotaflash.log"
     echo ""
     echo "To create bootable USB:"
     echo "  sudo dd if='$ISO_PATH' of=/dev/sdX bs=4M status=progress && sync"
     echo "================================================================================"
     
-    log_success "?? All steps completed successfully!"
+    log_success "🎉 All steps completed successfully!"
 else
-    log_error "? ISO file not created: $ISO_PATH"
+    log_error "❌ ISO file not created: $ISO_PATH"
     exit 1
 fi
