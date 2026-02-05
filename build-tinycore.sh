@@ -82,7 +82,7 @@ log_success "initrd下载完成"
 
 # 尝试下载rootfs.gz（可选）
 log_info "尝试下载rootfs.gz..."
-wget -q --tries=2 --timeout=30 "${RELEASE_DIR}/distribution_files/rootfs.gz" -O rootfs.gz 2>/dev/null
+wget -q --tries=2 --timeout=30 "${RELEASE_DIR}/distribution_files/rootfs64.gz" -O rootfs.gz 2>/dev/null
 if [ -f "rootfs.gz" ]; then
     mv rootfs.gz "${ISO_DIR}/boot/rootfs.gz"
     chmod 644 "${ISO_DIR}/boot/rootfs.gz"
