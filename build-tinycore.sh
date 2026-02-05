@@ -1,5 +1,6 @@
 #!/bin/bash
-# build-tinycore-iso.sh - 基于Tiny Core Linux的极简OpenWRT安装ISO
+# build-tinycore.sh - 基于Tiny Core Linux的极简OpenWRT安装ISO
+# 遵循官方remastering指南: https://wiki.tinycorelinux.net/doku.php?id=wiki:remastering
 set -e
 
 echo "开始构建Tiny Core Linux安装ISO..."
@@ -12,11 +13,13 @@ WORK_DIR="/tmp/tinycore-build"
 ISO_DIR="${WORK_DIR}/iso"
 BOOT_DIR="${ISO_DIR}/boot"
 TC_DIR="${ISO_DIR}/tc"
-EFI_DIR="${ISO_DIR}/efi/boot"
+EXT_DIR="${ISO_DIR}/cde/optional"
+NEW_ISO_DIR="${WORK_DIR}/newiso"
 
- OPENWRT_IMG="${1:-/mnt/ezopwrt.img}"
- OUTPUT_DIR="${2:-/output}"
- ISO_NAME="${3:-openwrt-autoinstall.iso}"
+OPENWRT_IMG="${1:-assets/openwrt.img}"
+OUTPUT_DIR="${2:-output}"
+ISO_NAME="${3:-openwrt-tinycore-installer.iso}"
+
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -40,102 +43,143 @@ fi
 # 清理并创建工作目录
 log_info "创建工作目录..."
 rm -rf "${WORK_DIR}"
-mkdir -p "${ISO_DIR}" "${BOOT_DIR}" "${TC_DIR}" "${EFI_DIR}" "${OUTPUT_DIR}"
+mkdir -p "${WORK_DIR}" "${ISO_DIR}" "${NEW_ISO_DIR}" "${OUTPUT_DIR}"
 
-# 下载Tiny Core Linux核心文件
-log_info "下载Tiny Core Linux核心文件..."
+# 下载并挂载官方Tiny Core Linux ISO
+log_info "下载Tiny Core Linux官方ISO..."
+TINYCORE_MIRROR="http://tinycorelinux.net/13.x/x86_64/release"
+ISO_FILE="${WORK_DIR}/tinycore-current.iso"
 
-# Tiny Core Linux镜像URL
-TINYCORE_MIRROR="http://tinycorelinux.net/13.x/x86_64"
-TINYCORE_RELEASE="13.0"
-
-# 下载内核和initrd
-log_info "下载内核..."
-wget -q "${TINYCORE_MIRROR}/release/distribution_files/vmlinuz64" -O "${BOOT_DIR}/vmlinuz64"
-wget -q "${TINYCORE_MIRROR}/release/distribution_files/corepure64.gz" -O "${BOOT_DIR}/core.gz"
-
-# 下载rootfs
-log_info "下载rootfs..."
-# wget -q "${TINYCORE_MIRROR}/release/distribution_files/rootfs64.gz" -O "${TC_DIR}/rootfs.gz"
-
-ISO_FILE="${WORK_DIR}/tinycore-original.iso"
-if ! wget -q "${TINYCORE_MIRROR}/release/CorePure64-current.iso" -O "${ISO_FILE}"; then
-    echo "下载失败，尝试备用文件名..."
-    wget -q "${TINYCORE_MIRROR}/Core.iso" -O "${ISO_FILE}" || {
-        echo "错误: 无法下载Tiny Core ISO"
-        exit 1
-    }
+if ! wget -q "${TINYCORE_MIRROR}/CorePure64-current.iso" -O "${ISO_FILE}"; then
+    log_error "无法下载Tiny Core ISO"
+    exit 1
 fi
-# 下载扩展工具
-log_info "下载必要扩展..."
-mkdir -p "${TC_DIR}/optional"
-cd "${TC_DIR}/optional"
 
-# 基础扩展
+# 挂载ISO
+log_info "挂载官方ISO..."
+mkdir -p "${WORK_DIR}/mount"
+sudo mount -o loop "${ISO_FILE}" "${WORK_DIR}/mount" 2>/dev/null || {
+    # 尝试另一种挂载方式
+    sudo mount -t iso9660 -o loop "${ISO_FILE}" "${WORK_DIR}/mount"
+}
+
+if [ $? -ne 0 ]; then
+    log_error "无法挂载Tiny Core ISO"
+    exit 1
+fi
+
+# 复制ISO内容到工作目录
+log_info "复制ISO内容..."
+cp -r "${WORK_DIR}/mount/"* "${ISO_DIR}/"
+sync
+
+# 卸载ISO
+sudo umount "${WORK_DIR}/mount"
+
+# 创建Tiny Core Linux remastering目录结构
+log_info "设置Tiny Core目录结构..."
+mkdir -p "${TC_DIR}/optional"
+mkdir -p "${EXT_DIR}"
+
+# 复制核心文件（如果需要）
+if [ -f "${ISO_DIR}/boot/vmlinuz64" ]; then
+    log_info "找到核心文件..."
+else
+    # 如果ISO中没有核心文件，从网络下载
+    log_info "从网络下载核心文件..."
+    wget -q "http://tinycorelinux.net/13.x/x86_64/release/distribution_files/vmlinuz64" \
+        -O "${ISO_DIR}/boot/vmlinuz64"
+    wget -q "http://tinycorelinux.net/13.x/x86_64/release/distribution_files/corepure64.gz" \
+        -O "${ISO_DIR}/boot/core.gz"
+fi
+
+# 下载必要的扩展
+log_info "下载必要扩展..."
 EXTENSIONS=(
     "bash.tcz"
     "dialog.tcz"
     "parted.tcz"
-    "grub2-multi.tcz"
-    "syslinux.tcz"
-    "mpv.tcz"
+    "ntfs-3g.tcz"
+    "gptfdisk.tcz"
     "e2fsprogs.tcz"
-    "ddrescue.tcz"
+    "syslinux.tcz"
+    "grub2-multi.tcz"
+    "pv.tcz"
+    "ncurses.tcz"
+    "readline.tcz"
 )
 
 for ext in "${EXTENSIONS[@]}"; do
     echo "下载扩展: $ext"
-    wget -q "${TINYCORE_MIRROR}/tcz/$ext" -O "$ext"
-    wget -q "${TINYCORE_MIRROR}/tcz/$ext.dep" -O "$ext.dep" 2>/dev/null || true
-    wget -q "${TINYCORE_MIRROR}/tcz/$ext.md5.txt" -O "$ext.md5.txt" 2>/dev/null || true
+    if wget -q "http://tinycorelinux.net/13.x/x86_64/tcz/${ext}" -O "${EXT_DIR}/${ext}"; then
+        echo "✅ $ext"
+        # 下载依赖文件
+        wget -q "http://tinycorelinux.net/13.x/x86_64/tcz/${ext}.dep" \
+            -O "${EXT_DIR}/${ext}.dep" 2>/dev/null || true
+        wget -q "http://tinycorelinux.net/13.x/x86_64/tcz/${ext}.md5.txt" \
+            -O "${EXT_DIR}/${ext}.md5.txt" 2>/dev/null || true
+    else
+        log_warning "无法下载 $ext"
+    fi
 done
 
-# 验证下载
-log_info "验证下载文件..."
-if [ ! -f "${BOOT_DIR}/vmlinuz64" ] || [ ! -f "${BOOT_DIR}/core.gz" ]; then
-    log_error "Tiny Core核心文件下载失败"
-    exit 1
-fi
-
-# 创建启动脚本
-log_info "创建启动脚本..."
-
-# 1. 创建tce目录结构
-mkdir -p "${TC_DIR}/tce"
-
-# 2. 创建onboot.lst
-cat > "${TC_DIR}/tce/onboot.lst" << 'ONBOOT'
+# 创建onboot.lst文件
+log_info "创建onboot.lst..."
+cat > "${ISO_DIR}/cde/onboot.lst" << 'ONBOOT'
 bash.tcz
 dialog.tcz
 parted.tcz
-grub2-multi.tcz
-syslinux.tcz
-mpv.tcz
+ntfs-3g.tcz
+gptfdisk.tcz
 e2fsprogs.tcz
-ddrescue.tcz
+syslinux.tcz
+grub2-multi.tcz
+pv.tcz
+ncurses.tcz
+readline.tcz
 ONBOOT
 
-# 3. 创建OpenWRT安装脚本
-cat > "${TC_DIR}/install-openwrt.sh" << 'INSTALL_SCRIPT'
+# 创建安装脚本
+log_info "创建安装脚本..."
+cat > "${ISO_DIR}/cde/install-openwrt.sh" << 'INSTALL_SCRIPT'
 #!/bin/bash
-# OpenWRT自动安装脚本 - Tiny Core版本
+# OpenWRT自动安装脚本
 
 clear
 cat << "EOF"
 
 ╔═══════════════════════════════════════════════════════╗
-║        OpenWRT Auto Installer (Tiny Core)            ║
+║        OpenWRT Auto Installer (Tiny Core Linux)      ║
 ╚═══════════════════════════════════════════════════════╝
 
 EOF
 
-# 检查OpenWRT镜像
+# 设置路径
 OPENWRT_IMG="/mnt/sr0/openwrt.img"
+CD_MOUNT="/mnt/sr0"
+
+# 检查CD是否挂载
+if [ ! -d "$CD_MOUNT" ]; then
+    mkdir -p "$CD_MOUNT"
+fi
+
+if ! mount | grep -q "$CD_MOUNT"; then
+    echo "挂载CD-ROM..."
+    mount /dev/sr0 "$CD_MOUNT" 2>/dev/null || {
+        echo "❌ 无法挂载CD-ROM"
+        echo "请手动挂载: mount /dev/sr0 /mnt/sr0"
+        exit 1
+    }
+fi
+
+# 检查OpenWRT镜像
 if [ ! -f "$OPENWRT_IMG" ]; then
     echo "❌ ERROR: OpenWRT image not found!"
     echo "镜像应该位于: $OPENWRT_IMG"
     echo ""
-    echo "请检查ISO是否正确挂载"
+    echo "当前CD内容:"
+    ls -la "$CD_MOUNT/" 2>/dev/null || echo "无法列出CD内容"
+    echo ""
     echo "按Enter键进入shell..."
     read
     exec /bin/bash
@@ -144,37 +188,43 @@ fi
 echo "✅ OpenWRT镜像找到: $(ls -lh "$OPENWRT_IMG" | awk '{print $5}')"
 echo ""
 
-# 循环直到成功安装
+# 主安装循环
 while true; do
     # 显示可用磁盘
     echo "可用磁盘:"
     echo "================="
+    lsblk -d -o NAME,SIZE,MODEL | grep -E '^(sd|hd|nvme|vd)' || \
     fdisk -l 2>/dev/null | grep -E '^Disk /dev/(sd|hd|nvme|vd)' | awk -F'[:,]' '{print $1 " - " $2}'
     echo "================="
     echo ""
     
-    read -p "输入目标磁盘 (例如: sda): " DISK
+    read -p "输入目标磁盘 (例如: sda, nvme0n1): " DISK
     
     if [ -z "$DISK" ]; then
         echo "请输入磁盘名称"
         continue
     fi
     
-    if [ ! -b "/dev/$DISK" ]; then
-        echo "❌ 磁盘 /dev/$DISK 未找到!"
+    # 确保有/dev/前缀
+    if [[ ! "$DISK" =~ ^/dev/ ]]; then
+        DISK="/dev/$DISK"
+    fi
+    
+    if [ ! -b "$DISK" ]; then
+        echo "❌ 磁盘 $DISK 未找到!"
         continue
     fi
     
     # 显示磁盘信息
     echo ""
     echo "磁盘信息:"
-    parted /dev/$DISK print 2>/dev/null || echo "无法读取磁盘信息"
+    lsblk "$DISK" 2>/dev/null || fdisk -l "$DISK" 2>/dev/null | head -10
     echo ""
     
     # 确认
-    echo "⚠️  警告: 这将擦除 /dev/$DISK 上的所有数据!"
+    echo "⚠️  警告: 这将擦除 $DISK 上的所有数据!"
     echo ""
-    read -p "输入 'YES' 确认安装: " CONFIRM
+    read -p "输入 'YES' 确认安装 (输入其他内容取消): " CONFIRM
     
     if [ "$CONFIRM" != "YES" ]; then
         echo "操作取消."
@@ -184,35 +234,37 @@ while true; do
     # 开始安装
     clear
     echo ""
-    echo "正在安装 OpenWRT 到 /dev/$DISK..."
+    echo "正在安装 OpenWRT 到 $DISK..."
+    echo "镜像: $(ls -lh "$OPENWRT_IMG" | awk '{print $5}')"
     echo ""
     
-    # 使用pv显示进度
+    # 使用pv显示进度（如果可用）
     if command -v pv >/dev/null 2>&1; then
         echo "使用pv显示进度..."
-        pv -pet "$OPENWRT_IMG" | dd of="/dev/$DISK" bs=4M status=none
+        pv -pet "$OPENWRT_IMG" | dd of="$DISK" bs=4M status=none
     else
         echo "使用dd安装 (可能需要几分钟)..."
-        dd if="$OPENWRT_IMG" of="/dev/$DISK" bs=4M status=progress
+        dd if="$OPENWRT_IMG" of="$DISK" bs=4M status=progress
     fi
     
-    # 同步和检查
+    # 同步
     sync
-    echo ""
     
     # 验证安装
     if [ $? -eq 0 ]; then
+        echo ""
         echo "✅ 安装完成!"
         echo ""
         echo "磁盘信息:"
-        fdisk -l /dev/$DISK 2>/dev/null | head -10
+        fdisk -l "$DISK" 2>/dev/null | head -5
         echo ""
         
-        echo "系统将在10秒后重启..."
+        # 等待重启
+        echo "系统将在15秒后重启..."
         echo "按任意键取消重启并进入shell"
         
         # 倒计时
-        for i in {10..1}; do
+        for i in {15..1}; do
             echo -ne "重启倒计时: $i 秒...\r"
             if read -t 1 -n 1; then
                 echo ""
@@ -237,300 +289,213 @@ while true; do
     else
         echo "❌ 安装失败!"
         echo ""
-        echo "按Enter键重试..."
-        read
+        read -p "按Enter键重试..."
     fi
 done
 INSTALL_SCRIPT
-chmod +x "${TC_DIR}/install-openwrt.sh"
+chmod +x "${ISO_DIR}/cde/install-openwrt.sh"
 
-# 4. 创建Tiny Core启动配置
-cat > "${TC_DIR}/bootlocal.sh" << 'BOOTLOCAL'
+# 创建bootlocal.sh
+log_info "创建bootlocal.sh..."
+cat > "${ISO_DIR}/cde/bootlocal.sh" << 'BOOTLOCAL'
 #!/bin/sh
-# Tiny Core启动后自动执行
+# 自动启动安装程序
 
-# 等待网络
-sleep 2
+# 等待基本系统启动
+sleep 3
 
 # 清屏
 clear
 
-# 显示欢迎信息
-cat << "WELCOME"
+# 显示信息
+echo ""
+echo "========================================"
+echo "    OpenWRT Auto Installer"
+echo "    Tiny Core Linux"
+echo "========================================"
+echo ""
+echo "正在启动安装程序..."
+echo ""
 
-╔═══════════════════════════════════════════════════════╗
-║     OpenWRT Auto Installer - Tiny Core Linux         ║
-╚═══════════════════════════════════════════════════════╝
+# 等待扩展加载
+sleep 5
 
-正在启动安装系统，请稍候...
-WELCOME
-
-# 等待扩展加载完成
-sleep 3
-
-# 检查CDROM挂载
-if [ ! -d /mnt/sr0 ]; then
-    mkdir -p /mnt/sr0
+# 检查扩展是否已加载
+if ! command -v dialog >/dev/null 2>&1; then
+    echo "加载必要扩展..."
+    tce-load -i bash dialog parted 2>/dev/null || {
+        echo "无法加载扩展，进入shell模式"
+        exec /bin/bash
+    }
 fi
 
-# 尝试挂载CDROM
-mount /dev/sr0 /mnt/sr0 2>/dev/null || mount /dev/cdrom /mnt/sr0 2>/dev/null
-
-# 运行安装程序
-if [ -x /mnt/sr0/tc/install-openwrt.sh ]; then
-    exec /mnt/sr0/tc/install-openwrt.sh
+# 执行安装脚本
+if [ -x /mnt/sr0/cde/install-openwrt.sh ]; then
+    exec /mnt/sr0/cde/install-openwrt.sh
+elif [ -x /mnt/sr0/install-openwrt.sh ]; then
+    exec /mnt/sr0/install-openwrt.sh
 else
-    echo "❌ 安装脚本未找到"
+    echo "安装脚本未找到"
     echo ""
-    echo "手动安装步骤:"
-    echo "1. 挂载CDROM: mount /dev/sr0 /mnt/sr0"
-    echo "2. 运行安装: /mnt/sr0/tc/install-openwrt.sh"
+    echo "手动操作:"
+    echo "1. 挂载CD: mount /dev/sr0 /mnt/sr0"
+    echo "2. 运行: /mnt/sr0/cde/install-openwrt.sh"
     echo ""
     echo "按Enter键进入shell..."
     read
     exec /bin/bash
 fi
 BOOTLOCAL
-chmod +x "${TC_DIR}/bootlocal.sh"
-
-# 5. 创建opt目录
-mkdir -p "${TC_DIR}/opt"
-cat > "${TC_DIR}/opt/.filetool.lst" << 'FILETOOL'
-opt
-tc
-FILETOOL
+chmod +x "${ISO_DIR}/cde/bootlocal.sh"
 
 # 复制OpenWRT镜像到ISO
 log_info "复制OpenWRT镜像到ISO..."
-cp "${OPENWRT_IMG}" "${TC_DIR}/openwrt.img"
+cp "${OPENWRT_IMG}" "${ISO_DIR}/openwrt.img"
 
 # 创建BIOS引导配置
-log_info "创建BIOS引导配置..."
-
-mkdir -p "${ISO_DIR}/boot/grub"
-mkdir -p "${WORK_DIR}/efiboot/boot/grub"
-# ISOLINUX配置
-cat > "${ISO_DIR}/isolinux.cfg" << 'ISOLINUX_CFG'
-DEFAULT tinycore
+log_info "配置BIOS引导..."
+if [ -f "${ISO_DIR}/boot/isolinux/isolinux.cfg" ]; then
+    # 备份原始配置
+    cp "${ISO_DIR}/boot/isolinux/isolinux.cfg" "${ISO_DIR}/boot/isolinux/isolinux.cfg.orig"
+    
+    # 创建新的配置
+    cat > "${ISO_DIR}/boot/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
+DEFAULT openwrt
 PROMPT 0
 TIMEOUT 50
 UI menu.c32
 
 MENU TITLE OpenWRT Tiny Core Installer
 
-LABEL tinycore
+LABEL openwrt
   MENU LABEL ^Install OpenWRT
   MENU DEFAULT
   KERNEL /boot/vmlinuz64
-  APPEND initrd=/boot/core.gz,/boot/rootfs.gz quiet tce=CD waitusb=5
+  APPEND initrd=/boot/core.gz quiet tce=CD waitusb=5 opt=cde
 
 LABEL shell
-  MENU LABEL ^Shell (debug)
+  MENU LABEL ^Shell (debug mode)
   KERNEL /boot/vmlinuz64
-  APPEND initrd=/boot/core.gz,/boot/rootfs.gz quiet tce=CD waitusb=5 norestore
+  APPEND initrd=/boot/core.gz quiet tce=CD waitusb=5 opt=cde norestore
 ISOLINUX_CFG
+fi
 
-# 复制ISOLINUX文件
-log_info "复制ISOLINUX引导文件..."
-cp /usr/lib/ISOLINUX/isolinux.bin "${ISO_DIR}/"
-cp /usr/lib/syslinux/modules/bios/*.c32 "${ISO_DIR}/" 2>/dev/null || true
+# 准备UEFI引导
+log_info "准备UEFI引导..."
+mkdir -p "${ISO_DIR}/EFI/BOOT"
 
-# 创建UEFI引导
-log_info "创建UEFI引导..."
-
-# 1. 创建GRUB配置
-cat > "${ISO_DIR}/boot/grub/grub.cfg" << 'GRUB_CFG'
+# 复制或创建GRUB EFI文件
+if [ -f "/usr/lib/grub/x86_64-efi/monolithic/grub.efi" ]; then
+    cp "/usr/lib/grub/x86_64-efi/monolithic/grub.efi" \
+        "${ISO_DIR}/EFI/BOOT/bootx64.efi"
+else
+    # 创建简单的GRUB配置
+    mkdir -p "${ISO_DIR}/boot/grub"
+    cat > "${ISO_DIR}/boot/grub/grub.cfg" << 'GRUB_CFG'
 set timeout=5
 set default=0
 
-menuentry "Install OpenWRT (Tiny Core)" {
-    linux /boot/vmlinuz64 quiet tce=CD waitusb=5
-    initrd /boot/core.gz /boot/rootfs.gz
+menuentry "Install OpenWRT (Tiny Core Linux)" {
+    linux /boot/vmlinuz64 quiet tce=CD waitusb=5 opt=cde
+    initrd /boot/core.gz
 }
 
-menuentry "Shell (debug)" {
-    linux /boot/vmlinuz64 quiet tce=CD waitusb=5 norestore
-    initrd /boot/core.gz /boot/rootfs.gz
+menuentry "Shell (debug mode)" {
+    linux /boot/vmlinuz64 quiet tce=CD waitusb=5 opt=cde norestore
+    initrd /boot/core.gz
 }
 GRUB_CFG
-
-# 2. 创建UEFI引导镜像
-log_info "创建UEFI引导镜像..."
-mkdir -p "${WORK_DIR}/efiboot"
-cp "${BOOT_DIR}/vmlinuz64" "${WORK_DIR}/efiboot/"
-cp "${BOOT_DIR}/core.gz" "${WORK_DIR}/efiboot/"
-cp "${BOOT_DIR}/rootfs.gz" "${WORK_DIR}/efiboot/" 2>/dev/null || true
-
-# 创建EFI目录结构
-mkdir -p "${WORK_DIR}/efiboot/EFI/BOOT"
-mkdir -p "${WORK_DIR}/efiboot/boot/grub"
-
-# 复制GRUB EFI文件
-if [ -f /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed ]; then
-    cp /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed \
-        "${WORK_DIR}/efiboot/EFI/BOOT/bootx64.efi"
-elif [ -f /usr/lib/grub/x86_64-efi/monolithic/grub.efi ]; then
-    cp /usr/lib/grub/x86_64-efi/monolithic/grub.efi \
-        "${WORK_DIR}/efiboot/EFI/BOOT/bootx64.efi"
-else
-    # 生成GRUB EFI
-    grub-mkstandalone \
-        --format=x86_64-efi \
-        --output="${WORK_DIR}/efiboot/EFI/BOOT/bootx64.efi" \
-        --locales="" \
-        --fonts="" \
-        "boot/grub/grub.cfg=${ISO_DIR}/boot/grub/grub.cfg"
+    
+    # 尝试生成EFI文件
+    if command -v grub-mkstandalone >/dev/null 2>&1; then
+        grub-mkstandalone \
+            --format=x86_64-efi \
+            --output="${ISO_DIR}/EFI/BOOT/bootx64.efi" \
+            --locales="" \
+            --fonts="" \
+            "boot/grub/grub.cfg=${ISO_DIR}/boot/grub/grub.cfg" 2>/dev/null || \
+            log_warning "无法生成GRUB EFI文件"
+    fi
 fi
 
-# 复制GRUB配置文件
-cp "${ISO_DIR}/boot/grub/grub.cfg" "${WORK_DIR}/efiboot/boot/grub/"
+# 构建ISO镜像
+log_info "构建ISO镜像..."
 
-# 创建EFI引导镜像
-EFI_IMG_SIZE=16M
-dd if=/dev/zero of="${ISO_DIR}/efiboot.img" bs=1 count=0 seek=${EFI_IMG_SIZE}
-mkfs.fat -F 32 "${ISO_DIR}/efiboot.img" 2>/dev/null
+# 确保有正确的引导文件
+if [ ! -f "${ISO_DIR}/boot/isolinux/isolinux.bin" ]; then
+    log_info "复制ISOLINUX引导文件..."
+    if [ -f "/usr/lib/ISOLINUX/isolinux.bin" ]; then
+        cp "/usr/lib/ISOLINUX/isolinux.bin" "${ISO_DIR}/boot/isolinux/"
+        cp /usr/lib/syslinux/modules/bios/*.c32 "${ISO_DIR}/boot/isolinux/" 2>/dev/null || true
+    fi
+fi
 
-# 挂载并复制文件
-MOUNT_POINT="${WORK_DIR}/efimount"
-mkdir -p "${MOUNT_POINT}"
-mount -o loop "${ISO_DIR}/efiboot.img" "${MOUNT_POINT}"
-cp -r "${WORK_DIR}/efiboot/EFI" "${MOUNT_POINT}/"
-cp -r "${WORK_DIR}/efiboot/boot" "${MOUNT_POINT}/"
-sync
-umount "${MOUNT_POINT}"
+# 使用xorriso构建支持BIOS/UEFI双引导的ISO
+cd "${ISO_DIR}"
 
-# 构建支持BIOS和UEFI双引导的ISO
-log_info "构建支持BIOS+UEFI双引导的ISO..."
-
-# 首先确保EFI目录存在
-if [ -d "${NEW_ISO_DIR}/EFI" ]; then
-    log_info "检测到EFI目录，准备构建双引导ISO"
+if command -v xorriso >/dev/null 2>&1; then
+    log_info "使用xorriso构建双引导ISO..."
     
-    # 创建临时工作目录
-    EFI_TEMP="${WORK_DIR}/efi_temp"
-    mkdir -p "${EFI_TEMP}"
-    
-    # 方法1: 使用xorriso（推荐，更现代）
-    if command -v xorriso >/dev/null 2>&1; then
-        log_info "使用xorriso构建双引导ISO..."
-        
-        xorriso -as mkisofs \
-            -iso-level 3 \
-            -full-iso9660-filenames \
-            -volid "OPENWRT-INSTALL" \
-            # BIOS引导配置
-            -eltorito-boot boot/isolinux/isolinux.bin \
-            -eltorito-catalog boot/isolinux/boot.cat \
-            -no-emul-boot \
-            -boot-load-size 4 \
-            -boot-info-table \
-            # UEFI引导配置
-            -eltorito-alt-boot \
-            -e EFI/BOOT/BOOTX64.EFI \
-            -no-emul-boot \
-            # 添加MBR以支持混合模式
-            -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-            # 输出
-            -output "${OUTPUT_DIR}/${ISO_NAME}" \
-            "${NEW_ISO_DIR}" 2>&1 | tee /tmp/iso_build.log
-            
-        XORRISO_EXIT=$?
-        
-        if [ $XORRISO_EXIT -eq 0 ]; then
-            log_success "xorriso构建成功"
-        else
-            log_warning "xorriso构建失败，尝试其他方法"
-        fi
-    fi
-    
-    # 方法2: 使用genisoimage/mkisofs（传统方法）
-    if [ ! -f "${OUTPUT_DIR}/${ISO_NAME}" ] && command -v genisoimage >/dev/null 2>&1; then
-        log_info "使用genisoimage构建双引导ISO..."
-        
-        genisoimage \
-            -U \
-            -r \
-            -v \
-            -J \
-            -joliet-long \
-            -cache-inodes \
-            -V "OPENWRT-INSTALL" \
-            # BIOS引导
-            -b boot/isolinux/isolinux.bin \
-            -c boot/isolinux/boot.cat \
-            -no-emul-boot \
-            -boot-load-size 4 \
-            -boot-info-table \
-            # UEFI引导
-            -eltorito-alt-boot \
-            -e EFI/BOOT/BOOTX64.EFI \
-            -no-emul-boot \
-            -output "${OUTPUT_DIR}/${ISO_NAME}" \
-            "${NEW_ISO_DIR}" 2>&1 | tee /tmp/iso_build.log
-    fi
-    
-    # 方法3: 纯mkisofs（最兼容）
-    if [ ! -f "${OUTPUT_DIR}/${ISO_NAME}" ] && command -v mkisofs >/dev/null 2>&1; then
-        log_info "使用mkisofs构建双引导ISO..."
-        
-        mkisofs \
-            -iso-level 3 \
-            -full-iso9660-filenames \
-            -J \
-            -R \
-            -V "OPENWRT-INSTALL" \
-            # BIOS引导
-            -b boot/isolinux/isolinux.bin \
-            -c boot/isolinux/boot.cat \
-            -no-emul-boot \
-            -boot-load-size 4 \
-            -boot-info-table \
-            # UEFI引导
-            -eltorito-alt-boot \
-            -e EFI/BOOT/BOOTX64.EFI \
-            -no-emul-boot \
-            -output "${OUTPUT_DIR}/${ISO_NAME}" \
-            "${NEW_ISO_DIR}" 2>&1 | tee /tmp/iso_build.log
-    fi
-    
-    # 方法4: 如果以上都失败，使用isohybrid添加UEFI支持
-    if [ -f "${OUTPUT_DIR}/${ISO_NAME}" ]; then
-        log_info "添加isohybrid支持以增强UEFI兼容性..."
-        
-        # 检查isohybrid是否可用
-        if command -v isohybrid >/dev/null 2>&1; then
-            isohybrid --uefi "${OUTPUT_DIR}/${ISO_NAME}" 2>/dev/null && \
-                log_success "isohybrid UEFI支持添加成功"
-        fi
-    fi
-    
-else
-    log_warning "未找到EFI目录，仅构建BIOS引导ISO"
-    
-    # 构建仅BIOS引导的ISO
     xorriso -as mkisofs \
         -iso-level 3 \
+        -full-iso9660-filenames \
         -volid "OPENWRT-INSTALL" \
+        # BIOS引导配置
         -eltorito-boot boot/isolinux/isolinux.bin \
         -eltorito-catalog boot/isolinux/boot.cat \
         -no-emul-boot \
         -boot-load-size 4 \
         -boot-info-table \
+        # UEFI引导配置
+        -eltorito-alt-boot \
+        -e EFI/BOOT/bootx64.efi \
+        -no-emul-boot \
+        # 添加MBR以支持混合模式
         -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+        # 设置权限
+        -r \
+        -J \
+        # 输出
         -output "${OUTPUT_DIR}/${ISO_NAME}" \
-        "${NEW_ISO_DIR}"
+        . 2>&1 | tee /tmp/iso_build.log
+    
+    if [ $? -eq 0 ]; then
+        log_success "xorriso构建成功"
+    else
+        log_warning "xorriso构建失败，尝试genisoimage..."
+    fi
 fi
 
-# 构建ISO镜像
-log_info "构建ISO镜像..."
-cd "${ISO_DIR}"
-
-# 计算文件大小
-TOTAL_SIZE=$(du -sb . | cut -f1)
-TOTAL_SIZE_MB=$((TOTAL_SIZE / 1024 / 1024))
-
-log_info "ISO总大小: ${TOTAL_SIZE_MB}MB"
-
+# 如果xorriso失败，尝试genisoimage
+if [ ! -f "${OUTPUT_DIR}/${ISO_NAME}" ] && command -v genisoimage >/dev/null 2>&1; then
+    log_info "使用genisoimage构建ISO..."
+    
+    genisoimage \
+        -U \
+        -r \
+        -v \
+        -J \
+        -joliet-long \
+        -cache-inodes \
+        -V "OPENWRT-INSTALL" \
+        -b boot/isolinux/isolinux.bin \
+        -c boot/isolinux/boot.cat \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
+        -eltorito-alt-boot \
+        -e EFI/BOOT/bootx64.efi \
+        -no-emul-boot \
+        -o "${OUTPUT_DIR}/${ISO_NAME}" \
+        . 2>&1 | tee -a /tmp/iso_build.log
+    
+    # 如果是hybrid ISO，添加isohybrid支持
+    if [ -f "${OUTPUT_DIR}/${ISO_NAME}" ] && command -v isohybrid >/dev/null 2>&1; then
+        log_info "添加isohybrid支持..."
+        isohybrid --uefi "${OUTPUT_DIR}/${ISO_NAME}" 2>/dev/null || \
+        isohybrid "${OUTPUT_DIR}/${ISO_NAME}" 2>/dev/null
+    fi
+fi
 
 # 验证ISO
 if [ -f "${OUTPUT_DIR}/${ISO_NAME}" ]; then
@@ -546,29 +511,24 @@ if [ -f "${OUTPUT_DIR}/${ISO_NAME}" ]; then
     echo "📊 构建信息:"
     echo "   文件: ${ISO_NAME}"
     echo "   大小: ${ISO_SIZE} (${ISO_SIZE_MB}MB)"
-    echo "   卷标: OPENWRT_INSTALL"
-    echo "   引导: BIOS + UEFI"
+    echo "   卷标: OPENWRT-INSTALL"
+    echo "   引导: BIOS + UEFI (hybrid)"
     echo "   内核: Tiny Core Linux ${TINYCORE_VERSION}"
     echo ""
     echo "🎯 特性:"
-    echo "   ✓ 极小的ISO体积 (< 50MB)"
+    echo "   ✓ 基于官方Tiny Core Linux ISO"
     echo "   ✓ 支持BIOS和UEFI双引导"
     echo "   ✓ 自动启动安装程序"
-    echo "   ✓ 包含磁盘工具(parted, gdisk等)"
-    echo "   ✓ 进度显示(pv工具)"
+    echo "   ✓ 包含磁盘工具(parted, gdisk, pv等)"
+    echo "   ✓ 极小的ISO体积"
     echo ""
     echo "🚀 使用方法:"
     echo "   1. 刻录到U盘:"
-    echo "      sudo dd if=${ISO_NAME} of=/dev/sdX bs=4M status=progress"
+    echo "      dd if=${ISO_NAME} of=/dev/sdX bs=4M status=progress"
     echo "   2. 从U盘启动计算机"
     echo "   3. 系统自动进入安装界面"
-    echo "   4. 选择目标磁盘并确认安装"
+    echo "   4. 选择目标磁盘并输入'YES'确认"
     echo "   5. 等待安装完成自动重启"
-    echo ""
-    echo "💡 提示:"
-    echo "   - 安装会完全擦除目标磁盘数据"
-    echo "   - 确保已备份重要数据"
-    echo "   - 支持SSD、HDD、USB磁盘"
     echo ""
     
     # 创建构建摘要
@@ -578,20 +538,22 @@ OpenWRT Tiny Core Installer ISO
 构建时间: $(date)
 ISO文件: ${ISO_NAME}
 文件大小: ${ISO_SIZE} (${ISO_SIZE_MB}MB)
-Tiny Core版本: ${TINYCORE_VERSION}
-支持引导: BIOS + UEFI
-包含工具: bash, dialog, parted, gdisk, pv, ntfs-3g
+基于: Tiny Core Linux ${TINYCORE_VERSION}
+引导支持: BIOS + UEFI (Hybrid ISO)
+包含扩展: bash, dialog, parted, gptfdisk, e2fsprogs, pv, ntfs-3g
+安装镜像: $(basename ${OPENWRT_IMG})
 注意事项: 安装会完全擦除目标磁盘数据
 BUILD_INFO
     
     log_success "构建摘要已保存到: ${OUTPUT_DIR}/build-info.txt"
     
-    # 显示文件列表
-    echo "📁 ISO内容:"
-    find "${ISO_DIR}" -type f | sed "s|${ISO_DIR}/||" | sort | head -20
+    # 显示ISO基本信息
+    echo "📁 ISO基本信息:"
+    file "${OUTPUT_DIR}/${ISO_NAME}"
     
 else
-    log_error "ISO构建失败"
+    log_error "ISO构建失败，查看日志: /tmp/iso_build.log"
+    cat /tmp/iso_build.log
     exit 1
 fi
 
