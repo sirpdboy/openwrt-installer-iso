@@ -2,7 +2,7 @@
 # build.sh - OpenWRT ISO构建脚本（在Docker容器内运行） sirpdboy  https://github.com/sirpdboy/openwrt-installer-iso.git
 set -e
 
-echo "🚀 Starting OpenWRT ISO build inside Docker container..."
+echo "?? Starting OpenWRT ISO build inside Docker container..."
 echo "========================================================"
 
 # 从环境变量获取参数，或使用默认值
@@ -61,22 +61,30 @@ fi
 IMG_SIZE=$(ls -lh "$OPENWRT_IMG" | awk '{print $5}')
 log_success "Found OpenWRT image: $IMG_SIZE"
 
-# 修复Debian buster源
-log_info "Configuring apt sources for Debian buster..."
+# 使用Debian archive源（buster已经进入archive）
+log_info "Configuring apt sources for Debian buster (archive)..."
 cat > /etc/apt/sources.list <<EOF
-deb http://deb.debian.org/debian buster main contrib non-free
-deb http://deb.debian.org/debian buster-updates main contrib non-free
-deb http://security.debian.org/debian-security buster/updates main contrib non-free
+deb http://archive.debian.org/debian buster main contrib non-free
+deb http://archive.debian.org/debian-security buster/updates main contrib non-free
 EOF
 
-echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
-echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until
+# 配置apt忽略过期检查和认证
+cat > /etc/apt/apt.conf.d/99no-check-valid-until <<EOF
+Acquire::Check-Valid-Until "false";
+APT::Get::AllowUnauthenticated "true";
+Acquire::AllowInsecureRepositories "true";
+Acquire::AllowDowngradeToInsecureRepositories "true";
+EOF
 
 # 安装必要工具（包括扩容所需工具）
 log_info "[1.5/10] Installing required packages..."
 apt-get update
-# 先安装一些基本工具，再尝试安装其他包
-apt-get -y install debootstrap squashfs-tools xorriso isolinux syslinux-efi grub-pc-bin grub-efi-amd64-bin grub-efi mtools dosfstools parted pv grub-common grub2-common efibootmgr e2fsprogs f2fs-tools kpartx gzip bc
+
+# 安装基础工具
+apt-get -y install debootstrap squashfs-tools xorriso syslinux isolinux syslinux-efi grub-pc-bin grub-efi-amd64-bin
+
+# 安装其他必要工具
+apt-get -y install mtools dosfstools parted pv grub-common grub2-common efibootmgr e2fsprogs f2fs-tools kpartx gzip bc wget curl
 
 # 安装gdisk（包含sgdisk）
 apt-get -y install gdisk
@@ -85,14 +93,12 @@ apt-get -y install gdisk
 if command -v sgdisk >/dev/null 2>&1; then
     log_success "sgdisk (from gdisk package) installed successfully"
 else
-    log_warning "sgdisk not found, trying alternative method..."
-    # 尝试从源码编译安装
-    apt-get -y install build-essential uuid-dev libpopt-dev
-    wget https://sourceforge.net/projects/gptfdisk/files/gptfdisk/1.0.9/gptfdisk-1.0.9.tar.gz -O /tmp/gptfdisk.tar.gz
-    tar -xzf /tmp/gptfdisk.tar.gz -C /tmp/
-    cd /tmp/gptfdisk-1.0.9
-    make && make install
-    cd /
+    log_warning "sgdisk not found in gdisk package"
+    # 检查是否有sgdisk可执行文件
+    if command -v gdisk >/dev/null 2>&1; then
+        log_info "gdisk is available, creating sgdisk symlink..."
+        ln -s $(which gdisk) /usr/local/bin/sgdisk 2>/dev/null || true
+    fi
 fi
 
 # ==================== 步骤2: 创建目录结构 ====================
@@ -106,20 +112,15 @@ mkdir -p "$STAGING_DIR"/{EFI/boot,boot/grub/x86_64-efi,isolinux,live}
 
 # ==================== 步骤3: 引导Debian最小系统 ====================
 log_info "[3/10] Bootstrapping Debian minimal system..."
-DEBIAN_MIRROR="http://deb.debian.org/debian"
+# 使用archive源进行debootstrap
+DEBIAN_MIRROR="http://archive.debian.org/debian"
 
 if debootstrap --arch=amd64 --variant=minbase \
     buster "$CHROOT_DIR" "$DEBIAN_MIRROR" 2>&1 | tail -5; then
     log_success "Debian bootstrap successful"
 else
-    log_warning "First attempt failed, trying alternative mirror..."
-    DEBIAN_MIRROR="http://archive.debian.org/debian"
-    debootstrap --arch=amd64 --variant=minbase \
-        buster "$CHROOT_DIR" "$DEBIAN_MIRROR" || {
-        log_error "Debootstrap failed"
-        exit 1
-    }
-    log_success "Debian bootstrap successful with alternative mirror"
+    log_error "Debootstrap failed"
+    exit 1
 fi
 
 # ==================== 步骤4: 配置chroot环境 ====================
@@ -130,22 +131,25 @@ cat > "$CHROOT_DIR/install-chroot.sh" << 'CHROOT_EOF'
 #!/bin/bash
 set -e
 
-echo "🔧 Configuring chroot environment..."
+echo "?? Configuring chroot environment..."
 
 # 基本设置
 export DEBIAN_FRONTEND=noninteractive
 export LC_ALL=C
 export LANG=C.UTF-8
 
-# 配置APT源（使用正确的buster源）
+# 配置APT源（使用archive源）
 cat > /etc/apt/sources.list <<EOF
-deb http://deb.debian.org/debian buster main contrib non-free
-deb http://deb.debian.org/debian buster-updates main contrib non-free
-deb http://security.debian.org/debian-security buster/updates main contrib non-free
+deb http://archive.debian.org/debian buster main contrib non-free
+deb http://archive.debian.org/debian-security buster/updates main contrib non-free
 EOF
 
-echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check
-echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check
+cat > /etc/apt/apt.conf.d/99no-check <<EOF
+Acquire::Check-Valid-Until "false";
+APT::Get::AllowUnauthenticated "true";
+Acquire::AllowInsecureRepositories "true";
+Acquire::AllowDowngradeToInsecureRepositories "true";
+EOF
 
 # 设置主机名和DNS
 echo "openwrt-installer" > /etc/hostname
@@ -155,7 +159,9 @@ echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 # 更新并安装包（包括扩容所需工具）
 echo "Updating packages..."
 apt-get update
-apt-get -y install apt || true
+
+# 安装基本的apt工具
+apt-get -y install apt apt-utils || true
 apt-get -y upgrade
 
 # 安装必要的工具（分步安装，避免依赖问题）
@@ -168,10 +174,14 @@ dpkg-reconfigure --frontend=noninteractive locales
 update-locale LANG=en_US.UTF-8
 
 echo "Installing system packages..."
-apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
+# 先安装kernel和systemd
+apt-get install -y --no-install-recommends linux-image-amd64 systemd-sysv
+
+# 安装live-boot相关
+apt-get install -y live-boot live-boot-initramfs-tools
 
 echo "Installing utilities..."
-apt-get install -y parted openssh-server bash-completion cifs-utils curl dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common ntfs-3g openssh-client open-vm-tools procps vim wimtools wget pv grub-efi-amd64-bin bc
+apt-get install -y parted openssh-server bash-completion cifs-utils dbus dosfstools firmware-linux-free iputils-ping isc-dhcp-client less nfs-common ntfs-3g openssh-client procps vim wget pv grub-efi-amd64-bin bc
 
 # 安装分区工具（gdisk包含sgdisk）
 echo "Installing partition tools..."
@@ -256,7 +266,7 @@ sleep 2
 if [ ! -f "/openwrt.img" ]; then
     clear
     echo ""
-    echo "❌ Error: OpenWRT image not found"
+    echo "? Error: OpenWRT image not found"
     echo ""
     echo "Image file should be at: /openwrt.img"
     echo ""
@@ -360,7 +370,7 @@ EOF
 
 echo -e "\nChecking OpenWRT image..."
 if [ ! -f "/openwrt.img" ]; then
-    echo -e "\n❌ ERROR: OpenWRT image not found!"
+    echo -e "\n? ERROR: OpenWRT image not found!"
     echo -e "\nImage file should be at: /openwrt.img"
     echo -e "\nPress Enter for shell..."
     read
@@ -368,7 +378,7 @@ if [ ! -f "/openwrt.img" ]; then
 fi
 
 IMG_SIZE=$(ls -lh /openwrt.img | awk '{print $5}')
-echo -e "✅ OpenWRT image found: $IMG_SIZE\n"
+echo -e "? OpenWRT image found: $IMG_SIZE\n"
 
 # ==================== 步骤1: 选择安装硬盘 ====================
 echo "══════════════════════════════════════════════════════════"
@@ -378,10 +388,7 @@ echo "════════════════════════�
 # 获取磁盘列表函数
 get_disk_list() {
     # 获取所有磁盘，排除loop设备和只读设备
-    DISK_LIST=()
-    DISK_SIZES=()
-    DISK_FREE=()
-    DISK_INDEX=1
+    local disk_index=1
     
     echo "Available disks:"
     echo "----------------------------------------------------------------"
@@ -391,26 +398,26 @@ get_disk_list() {
     # 使用lsblk获取磁盘信息
     while IFS= read -r line; do
         if [ -n "$line" ]; then
-            DISK_NAME=$(echo "$line" | awk '{print $1}')
-            DISK_SIZE=$(echo "$line" | awk '{print $2}')
-            DISK_MODEL=$(echo "$line" | cut -d' ' -f3-)
+            local disk_name=$(echo "$line" | awk '{print $1}')
+            local disk_size=$(echo "$line" | awk '{print $2}')
+            local disk_model=$(echo "$line" | cut -d' ' -f3-)
             
             # 检查是否为有效磁盘（排除CD/DVD）
-            if [[ $DISK_NAME =~ ^(sd|hd|nvme|vd) ]]; then
-                DISK_LIST[DISK_INDEX]="$DISK_NAME"
-                DISK_SIZES[DISK_INDEX]=$(get_disk_size_mb "/dev/$DISK_NAME")
-                DISK_FREE[DISK_INDEX]=$(get_disk_free_mb "/dev/$DISK_NAME")
+            if [[ $disk_name =~ ^(sd|hd|nvme|vd) ]]; then
+                DISK_LIST[$disk_index]="$disk_name"
+                DISK_SIZES[$disk_index]=$(get_disk_size_mb "/dev/$disk_name")
+                DISK_FREE[$disk_index]=$(get_disk_free_mb "/dev/$disk_name")
                 
                 # 显示磁盘信息
                 printf " %-2d | /dev/%-8s | %-10s | %s\n" \
-                    "$DISK_INDEX" "$DISK_NAME" "$DISK_SIZE" "$DISK_MODEL"
+                    "$disk_index" "$disk_name" "$disk_size" "$disk_model"
                 
-                ((DISK_INDEX++))
+                ((disk_index++))
             fi
         fi
     done < <(lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^(sd|hd|nvme|vd)')
     
-    TOTAL_DISKS=$((DISK_INDEX - 1))
+    TOTAL_DISKS=$((disk_index - 1))
 }
 
 # 主循环选择磁盘
@@ -425,7 +432,7 @@ while true; do
     get_disk_list
     
     if [ $TOTAL_DISKS -eq 0 ]; then
-        echo -e "\n❌ No disks detected!"
+        echo -e "\n? No disks detected!"
         echo -e "Please check your storage devices and try again."
         echo ""
         read -p "Press Enter to rescan..." _
@@ -453,11 +460,11 @@ while true; do
                     DISK_FREE_MB=${DISK_FREE[$SELECTION]}
                     break 2  # 跳出两层循环，继续下一步
                 else
-                    echo "❌ Invalid selection. Please choose between 1 and $TOTAL_DISKS."
+                    echo "? Invalid selection. Please choose between 1 and $TOTAL_DISKS."
                 fi
                 ;;
             *)
-                echo "❌ Invalid input. Please enter a number or 'r' to rescan."
+                echo "? Invalid input. Please enter a number or 'r' to rescan."
                 ;;
         esac
     done
@@ -520,7 +527,7 @@ while true; do
     case $MODE_SELECTION in
         1)
             WRITE_MODE="direct"
-            echo -e "\n✅ Selected: Direct Write Mode"
+            echo -e "\n? Selected: Direct Write Mode"
             echo "   Will write image without expansion"
             break
             ;;
@@ -528,18 +535,18 @@ while true; do
             WRITE_MODE="expand"
             if [ $EXPANDABLE_SIZE -gt 0 ]; then
                 EXPANSION_MB=$EXPANDABLE_SIZE
-                echo -e "\n✅ Selected: Auto Expand Mode"
+                echo -e "\n? Selected: Auto Expand Mode"
                 echo "   Will expand image by $((EXPANSION_MB / 1024))GB ($EXPANSION_MB MB)"
                 echo "   to use full disk capacity"
             else
-                echo -e "\n⚠️  Warning: Not enough space for expansion"
+                echo -e "\n??  Warning: Not enough space for expansion"
                 echo "   Falling back to Direct Write Mode"
                 WRITE_MODE="direct"
             fi
             break
             ;;
         *)
-            echo "❌ Invalid selection. Please choose 1 or 2."
+            echo "? Invalid selection. Please choose 1 or 2."
             ;;
     esac
 done
@@ -564,7 +571,7 @@ else
 fi
 echo "══════════════════════════════════════════════════════════\n"
 
-echo "⚠️  ⚠️  ⚠️   CRITICAL WARNING   ⚠️  ⚠️  ⚠️"
+echo "??  ??  ??   CRITICAL WARNING   ??  ??  ??"
 echo "══════════════════════════════════════════════════════════"
 echo "This operation will:"
 echo "1. ERASE ALL DATA on /dev/$DISK_SELECTED"
@@ -578,10 +585,10 @@ while true; do
     read -p "Type 'YES' (uppercase) to confirm installation: " FINAL_CONFIRM
     
     if [ "$FINAL_CONFIRM" = "YES" ]; then
-        echo -e "\n✅ Confirmed. Starting installation..."
+        echo -e "\n? Confirmed. Starting installation..."
         break
     else
-        echo -e "\n❌ Installation cancelled."
+        echo -e "\n? Installation cancelled."
         echo -e "\nPress Enter to start over..."
         read
         exec /opt/install-openwrt.sh  # 重新启动安装程序
@@ -610,7 +617,7 @@ sleep 1
 
 if ! image_supported "/openwrt.img"; then
     echo "ERROR: Invalid firmware image"
-    echo -e "\n❌ ERROR: Invalid firmware image format"
+    echo -e "\n? ERROR: Invalid firmware image format"
     echo -e "\nPress Enter to return to installation..."
     read
     exec /opt/install-openwrt.sh
@@ -627,7 +634,7 @@ if file "$IMAGE_TMP" | grep -q "gzip compressed data"; then
     decompressed_size=$(gzip -dc "$IMAGE_TMP" 2>/dev/null | wc -c)
     if [ -z "$decompressed_size" ] || [ "$decompressed_size" -eq 0 ]; then
         echo "ERROR: Invalid firmware image, please redownload."
-        echo -e "\n❌ ERROR: Invalid firmware image"
+        echo -e "\n? ERROR: Invalid firmware image"
         echo -e "\nPress Enter to return to installation..."
         read
         exec /opt/install-openwrt.sh
@@ -642,7 +649,7 @@ if file "$IMAGE_TMP" | grep -q "gzip compressed data"; then
         echo "Error: Insufficient disk space for extraction"
         echo "Need: $((required_with_buffer / 1024 / 1024)) MB (with 20% buffer)"
         echo "available: $((available_space / 1024 / 1024)) MB"
-        echo -e "\n❌ ERROR: Insufficient disk space for extraction"
+        echo -e "\n? ERROR: Insufficient disk space for extraction"
         echo -e "\nPress Enter to return to installation..."
         read
         exec /opt/install-openwrt.sh
@@ -657,7 +664,7 @@ if file "$IMAGE_TMP" | grep -q "gzip compressed data"; then
         else
             echo "Warning: File size mismatch"
             rm -f "$IMAGE_TO_WRITE"
-            echo -e "\n❌ ERROR: File size mismatch during extraction"
+            echo -e "\n? ERROR: File size mismatch during extraction"
             echo -e "\nPress Enter to return to installation..."
             read
             exec /opt/install-openwrt.sh
@@ -665,7 +672,7 @@ if file "$IMAGE_TMP" | grep -q "gzip compressed data"; then
     else
         echo "ERROR: Failed to extract firmware"
         rm -f "$IMAGE_TO_WRITE"
-        echo -e "\n❌ ERROR: Failed to extract firmware"
+        echo -e "\n? ERROR: Failed to extract firmware"
         echo -e "\nPress Enter to return to installation..."
         read
         exec /opt/install-openwrt.sh
@@ -680,7 +687,7 @@ fi
 # ==================== 扩容处理 ====================
 if [ "$WRITE_MODE" = "expand" ] && [ $EXPANSION_MB -gt 0 ]; then
     echo "Adding expansion capacity..."
-    echo -e "\n📏 Expanding image by $((EXPANSION_MB / 1024))GB..."
+    echo -e "\n?? Expanding image by $((EXPANSION_MB / 1024))GB..."
     
     # 扩展镜像文件
     echo "Expanding image by ${EXPANSION_MB}MB..."
@@ -732,7 +739,7 @@ if [ "$WRITE_MODE" = "expand" ] && [ $EXPANSION_MB -gt 0 ]; then
         echo "Image expanded and ready for writing"
     else
         echo "Warning: Expansion failed, using original image"
-        echo -e "\n⚠️  Expansion failed, using original image size"
+        echo -e "\n??  Expansion failed, using original image size"
     fi
 fi
 
@@ -825,7 +832,7 @@ if [ $DD_EXIT -eq 0 ]; then
     # 同步磁盘
     sync
     echo "DD write completed successfully"
-    echo -e "\n\n✅ Installation successful!"
+    echo -e "\n\n? Installation successful!"
     echo -e "\nOpenWRT has been installed to /dev/$DISK_SELECTED"
     
     # 清理临时文件
@@ -836,10 +843,10 @@ if [ $DD_EXIT -eq 0 ]; then
     echo -e "           INSTALLATION COMPLETE"
     echo -e "══════════════════════════════════════════════════════════\n"
     echo -e "Summary:"
-    echo -e "  • Target Disk: /dev/$DISK_SELECTED"
-    echo -e "  • Write Mode: $( [ "$WRITE_MODE" = "direct" ] && echo "Direct Write" || echo "Auto Expand" )"
+    echo -e "  ? Target Disk: /dev/$DISK_SELECTED"
+    echo -e "  ? Write Mode: $( [ "$WRITE_MODE" = "direct" ] && echo "Direct Write" || echo "Auto Expand" )"
     if [ "$WRITE_MODE" = "expand" ]; then
-        echo -e "  • Expanded by: $((EXPANSION_MB / 1024))GB"
+        echo -e "  ? Expanded by: $((EXPANSION_MB / 1024))GB"
     fi
     echo -e "\nNext steps:"
     echo -e "1. Remove the installation media"
@@ -862,7 +869,7 @@ if [ $DD_EXIT -eq 0 ]; then
     
 else
     echo "DD write failed with error code: $DD_EXIT"
-    echo -e "\n\n❌ Installation failed! Error code: $DD_EXIT"
+    echo -e "\n\n? Installation failed! Error code: $DD_EXIT"
     echo -e "\nPossible issues:"
     echo -e "1. Disk may be in use or mounted"
     echo -e "2. Disk may be failing"
@@ -917,7 +924,7 @@ update-initramfs -c -k all 2>/dev/null || true
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-echo "✅ Chroot configuration complete"
+echo "? Chroot configuration complete"
 CHROOT_EOF
 
 chmod +x "$CHROOT_DIR/install-chroot.sh"
@@ -1210,7 +1217,7 @@ if [ -f "$ISO_PATH" ]; then
     ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
     
     echo ""
-    log_success "✅ ISO built successfully!"
+    log_success "? ISO built successfully!"
     echo ""
     log_info "Build Results:"
     log_info "  Output File: $ISO_PATH"
@@ -1250,10 +1257,10 @@ Installation Steps:
   3. Type 'YES' to confirm installation
 
 Required Tools in ISO:
-  ✓ losetup, resize2fs, e2fsprogs, f2fs-tools
-  ✓ kmod-loop, gdisk (contains sgdisk), parted
-  ✓ gzip for compressed image support
-  ✓ bc for size calculations
+  ? losetup, resize2fs, e2fsprogs, f2fs-tools
+  ? kmod-loop, gdisk (contains sgdisk), parted
+  ? gzip for compressed image support
+  ? bc for size calculations
 
 Usage:
   1. Create bootable USB: dd if="$ISO_NAME" of=/dev/sdX bs=4M status=progress
@@ -1273,25 +1280,25 @@ EOF
     
     echo ""
     echo "================================================================================"
-    echo "📦 ISO Build Complete!"
+    echo "?? ISO Build Complete!"
     echo "================================================================================"
     echo "Key features in this version:"
-    echo "  ✓ 3-Step Installation Process"
-    echo "  ✓ Automatic disk size detection"
-    echo "  ✓ Two write modes: Direct Write or Auto Expand"
-    echo "  ✓ Auto Expand: Automatically expands to use full disk"
-    echo "  ✓ Uses gdisk (contains sgdisk) for GPT operations"
-    echo "  ✓ Simple numeric disk selection (1, 2, 3...)"
-    echo "  ✓ Visual progress bar during writing"
-    echo "  ✓ Safety confirmation (must type YES)"
-    echo "  ✓ Installation logging at /tmp/ezotaflash.log"
+    echo "  ? 3-Step Installation Process"
+    echo "  ? Automatic disk size detection"
+    echo "  ? Two write modes: Direct Write or Auto Expand"
+    echo "  ? Auto Expand: Automatically expands to use full disk"
+    echo "  ? Uses gdisk (contains sgdisk) for GPT operations"
+    echo "  ? Simple numeric disk selection (1, 2, 3...)"
+    echo "  ? Visual progress bar during writing"
+    echo "  ? Safety confirmation (must type YES)"
+    echo "  ? Installation logging at /tmp/ezotaflash.log"
     echo ""
     echo "To create bootable USB:"
     echo "  sudo dd if='$ISO_PATH' of=/dev/sdX bs=4M status=progress && sync"
     echo "================================================================================"
     
-    log_success "🎉 All steps completed successfully!"
+    log_success "?? All steps completed successfully!"
 else
-    log_error "❌ ISO file not created: $ISO_PATH"
+    log_error "? ISO file not created: $ISO_PATH"
     exit 1
 fi
