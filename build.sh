@@ -641,6 +641,10 @@ LABEL linux
   MENU DEFAULT
   KERNEL /live/vmlinuz
   APPEND initrd=/live/initrd boot=live
+LABEL shell
+  MENU LABEL Emergency Shell
+  KERNEL /live/vmlinuz
+  APPEND initrd=/live/initrd.img console=tty0 init=/bin/sh
 ISOLINUX_CFG
 
 # 创建GRUB配置
@@ -662,6 +666,11 @@ fi
 menuentry "Install OpenWRT x86-UEFI Installer [EFI/GRUB]" {
     linux ($root)/live/vmlinuz boot=live
     initrd ($root)/live/initrd
+}
+
+menuentry "Emergency Shell" {
+    linux /live/vmlinuz console=tty0 init=/bin/sh
+    initrd /live/initrd.img
 }
 GRUB_CFG
 
