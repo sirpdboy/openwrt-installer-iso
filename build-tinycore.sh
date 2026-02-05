@@ -71,7 +71,7 @@ fi
 
 # 下载rootfs（可选，Tiny Core Linux通常不需要单独的rootfs）
 log_info "下载rootfs.gz..."
-wget -q --tries=2 --timeout=20 "${RELEASE_DIR}/distribution_files/rootfs.gz" -O "${ISO_DIR}/boot/rootfs.gz" 2>/dev/null || {
+wget -q --tries=2 --timeout=20 "${RELEASE_DIR}/distribution_files/rootfs64.gz" -O "${ISO_DIR}/boot/rootfs.gz" 2>/dev/null || {
     log_warning "无法下载rootfs.gz，创建空文件"
     echo "Tiny Core Linux不需要单独的rootfs" > "${ISO_DIR}/boot/rootfs.gz"
 }
