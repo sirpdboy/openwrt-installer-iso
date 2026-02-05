@@ -99,13 +99,13 @@ EXTENSIONS=(
     "bash.tcz"
     "dialog.tcz"
     "parted.tcz"
-    "ntfs-3g.tcz"
-    "gptfdisk.tcz"
+
+    "ncursesw.tcz"
+    "gdisk.tcz"
     "e2fsprogs.tcz"
     "syslinux.tcz"
     "grub2-multi.tcz"
-    "pv.tcz"
-    "ncurses.tcz"
+    "mpv.tcz"
     "readline.tcz"
 )
 
@@ -351,12 +351,12 @@ chmod +x "${ISO_DIR}/cde/bootlocal.sh"
 # 复制OpenWRT镜像到ISO
 log_info "复制OpenWRT镜像到ISO..."
 cp "${OPENWRT_IMG}" "${ISO_DIR}/openwrt.img"
-
+mkdir -p  ${ISO_DIR}/boot/isolinux
 # 创建BIOS引导配置
 log_info "配置BIOS引导..."
 if [ -f "${ISO_DIR}/boot/isolinux/isolinux.cfg" ]; then
     # 备份原始配置
-    cp "${ISO_DIR}/boot/isolinux/isolinux.cfg" "${ISO_DIR}/boot/isolinux/isolinux.cfg.orig"
+    # cp "${ISO_DIR}/boot/isolinux/isolinux.cfg" "${ISO_DIR}/boot/isolinux/isolinux.cfg.orig"
     
     # 创建新的配置
     cat > "${ISO_DIR}/boot/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
