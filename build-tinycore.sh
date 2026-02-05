@@ -38,15 +38,16 @@ if [ ! -f "${OPENWRT_IMG}" ]; then
     exit 1
 fi
 
+# 确保输出目录存在
+mkdir -p "${OUTPUT_DIR}"
+
 # 清理并创建工作目录
 log_info "创建工作目录..."
-sudo rm -rf "${WORK_DIR}"
-mkdir -p "${WORK_DIR}" "${ISO_DIR}" "${OUTPUT_DIR}"
-chmod 755 "${WORK_DIR}" "${ISO_DIR}" "${OUTPUT_DIR}"
+rm -rf "${WORK_DIR}"
+mkdir -p "${WORK_DIR}" "${ISO_DIR}" "${ISO_DIR}/boot" "${ISO_DIR}/boot/isolinux"
 
-# 使用sudo权限创建必要的子目录
-sudo mkdir -p "${ISO_DIR}/boot/isolinux"
-sudo chmod 755 "${ISO_DIR}/boot" "${ISO_DIR}/boot/isolinux"
+# 设置工作目录权限
+chmod 755 "${WORK_DIR}" "${ISO_DIR}" "${ISO_DIR}/boot" "${ISO_DIR}/boot/isolinux"
 
 # 下载官方Tiny Core Linux核心文件
 log_info "下载Tiny Core Linux核心文件..."
@@ -56,108 +57,110 @@ TINYCORE_BASE="http://tinycorelinux.net/13.x/x86_64"
 RELEASE_DIR="${TINYCORE_BASE}/release"
 TCZ_DIR="${TINYCORE_BASE}/tcz"
 
-# 下载内核和initrd
-log_info "下载内核..."
-if ! wget -q --tries=3 --timeout=30 "${RELEASE_DIR}/distribution_files/vmlinuz64" -O "${ISO_DIR}/boot/vmlinuz64"; then
-    log_error "无法下载内核"
+# 下载内核
+log_info "下载内核 vmlinuz64..."
+cd "${WORK_DIR}"
+wget -q --tries=3 --timeout=60 "${RELEASE_DIR}/distribution_files/vmlinuz64" -O vmlinuz64
+if [ ! -f "vmlinuz64" ]; then
+    log_error "内核下载失败"
     exit 1
 fi
+mv vmlinuz64 "${ISO_DIR}/boot/vmlinuz64"
+chmod 644 "${ISO_DIR}/boot/vmlinuz64"
+log_success "内核下载完成"
 
-log_info "下载initrd..."
-if ! wget -q --tries=3 --timeout=30 "${RELEASE_DIR}/distribution_files/corepure64.gz" -O "${ISO_DIR}/boot/core.gz"; then
-    log_error "无法下载initrd"
+# 下载initrd
+log_info "下载initrd core.gz..."
+wget -q --tries=3 --timeout=60 "${RELEASE_DIR}/distribution_files/corepure64.gz" -O core.gz
+if [ ! -f "core.gz" ]; then
+    log_error "initrd下载失败"
     exit 1
 fi
+mv core.gz "${ISO_DIR}/boot/core.gz"
+chmod 644 "${ISO_DIR}/boot/core.gz"
+log_success "initrd下载完成"
 
-# 下载rootfs（可选，Tiny Core Linux通常不需要单独的rootfs）
-log_info "下载rootfs.gz..."
-wget -q --tries=2 --timeout=20 "${RELEASE_DIR}/distribution_files/rootfs64.gz" -O "${ISO_DIR}/boot/rootfs.gz" 2>/dev/null || {
-    log_warning "无法下载rootfs.gz，创建空文件"
+# 尝试下载rootfs.gz（可选）
+log_info "尝试下载rootfs.gz..."
+wget -q --tries=2 --timeout=30 "${RELEASE_DIR}/distribution_files/rootfs.gz" -O rootfs.gz 2>/dev/null
+if [ -f "rootfs.gz" ]; then
+    mv rootfs.gz "${ISO_DIR}/boot/rootfs.gz"
+    chmod 644 "${ISO_DIR}/boot/rootfs.gz"
+    log_success "rootfs.gz下载完成"
+else
+    log_warning "rootfs.gz未找到，创建空文件"
     echo "Tiny Core Linux不需要单独的rootfs" > "${ISO_DIR}/boot/rootfs.gz"
-}
+    chmod 644 "${ISO_DIR}/boot/rootfs.gz"
+fi
 
 # 创建cde目录结构
 log_info "创建cde目录结构..."
-sudo mkdir -p "${TC_DIR}" "${OPTIONAL_DIR}"
-sudo chmod 755 "${TC_DIR}" "${OPTIONAL_DIR}"
+mkdir -p "${TC_DIR}" "${OPTIONAL_DIR}"
+chmod 755 "${TC_DIR}" "${OPTIONAL_DIR}"
 
 # 下载必要的扩展
 log_info "下载必要扩展..."
-# 定义扩展列表及其备用名称
-declare -A EXTENSION_MAP=(
-    ["bash.tcz"]="bash.tcz"
-    ["dialog.tcz"]="dialog.tcz"
-    ["parted.tcz"]="parted.tcz"
-    ["ntfs-3g.tcz"]="ntfs-3g.tcz"
-    ["gptfdisk.tcz"]="gdisk.tcz"  # 备用名称
-    ["e2fsprogs.tcz"]="e2fsprogs.tcz"
-    ["syslinux.tcz"]="syslinux.tcz"
-    ["grub2-multi.tcz"]="grub2.tcz"  # 备用名称
-    ["mpv.tcz"]="pv.tcz"
-    ["ncursesw.tcz"]="ncursesw.tcz"
-    ["readline.tcz"]="readline.tcz"
-    ["coreutils.tcz"]="coreutils.tcz"  # 新增：基本工具
-    ["findutils.tcz"]="findutils.tcz"  # 新增：find工具
-    ["grep.tcz"]="grep.tcz"  # 新增：grep工具
-    ["gawk.tcz"]="gawk.tcz"  # 新增：awk工具
+cd "${OPTIONAL_DIR}"
+
+# 扩展列表 - 使用已知存在的扩展
+EXTENSIONS=(
+    "bash.tcz"
+    "dialog.tcz"
+    "parted.tcz"
+    "ntfs-3g.tcz"
+    "e2fsprogs.tcz"
+    "syslinux.tcz"
+    "grub2.tcz"
+    "coreutils.tcz"
+    "findutils.tcz"
+    "grep.tcz"
+    "gawk.tcz"
+    "sudo.tcz"
+    "which.tcz"
+    "file.tcz"
+    "less.tcz"
+    "ncursesw.tcz"
+    "mpv.tcz"
 )
 
 DOWNLOADED_EXTS=()
 
-for ext_name in "${!EXTENSION_MAP[@]}"; do
-    primary_ext="${EXTENSION_MAP[$ext_name]}"
-    downloaded=false
-    
-    echo "下载扩展: $ext_name"
-    
-    # 尝试主名称
-    if wget -q --tries=2 --timeout=20 "${TCZ_DIR}/${primary_ext}" -O "${OPTIONAL_DIR}/${ext_name}"; then
-        echo "? $ext_name"
-        downloaded=true
+for ext in "${EXTENSIONS[@]}"; do
+    echo "下载扩展: $ext"
+    if wget -q --tries=2 --timeout=30 "${TCZ_DIR}/${ext}" -O "${ext}"; then
+        echo "✅ $ext"
+        DOWNLOADED_EXTS+=("$ext")
+        # 下载依赖文件（可选）
+        wget -q "${TCZ_DIR}/${ext}.dep" -O "${ext}.dep" 2>/dev/null || true
+        wget -q "${TCZ_DIR}/${ext}.md5.txt" -O "${ext}.md5.txt" 2>/dev/null || true
+        wget -q "${TCZ_DIR}/${ext}.info" -O "${ext}.info" 2>/dev/null || true
     else
-        # 尝试使用原始名称作为备用
-        if wget -q --tries=1 --timeout=15 "${TCZ_DIR}/${ext_name}" -O "${OPTIONAL_DIR}/${ext_name}"; then
-            echo "? $ext_name (使用备用URL)"
-            downloaded=true
-        fi
-    fi
-    
-    if [ "$downloaded" = true ]; then
-        DOWNLOADED_EXTS+=("$ext_name")
-        # 下载依赖和校验文件
-        wget -q "${TCZ_DIR}/${ext_name}.dep" -O "${OPTIONAL_DIR}/${ext_name}.dep" 2>/dev/null || true
-        wget -q "${TCZ_DIR}/${ext_name}.md5.txt" -O "${OPTIONAL_DIR}/${ext_name}.md5.txt" 2>/dev/null || true
-        wget -q "${TCZ_DIR}/${ext_name}.info" -O "${OPTIONAL_DIR}/${ext_name}.info" 2>/dev/null || true
-    else
-        log_warning "无法下载 $ext_name"
-        # 检查是否有依赖关系
-        if [[ "$ext_name" == "gptfdisk.tcz" ]]; then
-            log_info "gptfdisk不是必需的，使用parted替代"
-        elif [[ "$ext_name" == "pv.tcz" ]]; then
-            log_info "pv不是必需的，使用dd替代"
-        fi
+        log_warning "无法下载 $ext，跳过"
     fi
 done
 
-# 创建onboot.lst文件（只包含成功下载的扩展）
+# 创建onboot.lst文件
 log_info "创建onboot.lst..."
-sudo tee "${TC_DIR}/onboot.lst" > /dev/null << 'ONBOOT_HEADER'
+cat > "${TC_DIR}/onboot.lst" << 'ONBOOT_EOF'
 # 自动启动的扩展列表
-ONBOOT_HEADER
+bash.tcz
+dialog.tcz
+parted.tcz
+e2fsprogs.tcz
+coreutils.tcz
+ONBOOT_EOF
 
+# 添加成功下载的其他扩展
 for ext in "${DOWNLOADED_EXTS[@]}"; do
-    echo "$ext" | sudo tee -a "${TC_DIR}/onboot.lst" > /dev/null
+    # 避免重复添加
+    if ! grep -q "^${ext}$" "${TC_DIR}/onboot.lst"; then
+        echo "$ext" >> "${TC_DIR}/onboot.lst"
+    fi
 done
-
-# 添加一些基础扩展（即使下载失败也列出）
-echo "bash.tcz" | sudo tee -a "${TC_DIR}/onboot.lst" > /dev/null
-echo "dialog.tcz" | sudo tee -a "${TC_DIR}/onboot.lst" > /dev/null
-echo "parted.tcz" | sudo tee -a "${TC_DIR}/onboot.lst" > /dev/null
-echo "e2fsprogs.tcz" | sudo tee -a "${TC_DIR}/onboot.lst" > /dev/null
 
 # 创建安装脚本
 log_info "创建安装脚本..."
-sudo tee "${TC_DIR}/install-openwrt.sh" > /dev/null << 'INSTALL_SCRIPT'
+cat > "${TC_DIR}/install-openwrt.sh" << 'INSTALL_SCRIPT'
 #!/bin/bash
 # OpenWRT自动安装脚本 - Tiny Core版本
 
@@ -165,6 +168,7 @@ sudo tee "${TC_DIR}/install-openwrt.sh" > /dev/null << 'INSTALL_SCRIPT'
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
 # 清屏并显示标题
@@ -177,6 +181,9 @@ cat << "EOF"
 
 EOF
 
+echo -e "${BLUE}正在初始化安装环境...${NC}"
+echo ""
+
 # 检查是否以root运行
 if [ "$(id -u)" -ne 0 ]; then
     echo -e "${RED}错误: 需要root权限运行此脚本${NC}"
@@ -186,88 +193,101 @@ fi
 
 # 查找OpenWRT镜像
 find_openwrt_image() {
-    # 检查常见位置
-    local locations=(
+    echo -e "${BLUE}正在查找OpenWRT镜像...${NC}"
+    
+    # 首先检查常见位置
+    local common_locations=(
+        "/openwrt.img"
         "/mnt/sr0/openwrt.img"
         "/mnt/cdrom/openwrt.img"
         "/mnt/sr0/cde/openwrt.img"
-        "/mnt/cdrom/cde/openwrt.img"
-        "/openwrt.img"
-        "/tmp/openwrt.img"
     )
     
-    for loc in "${locations[@]}"; do
+    for loc in "${common_locations[@]}"; do
         if [ -f "$loc" ]; then
+            echo -e "${GREEN}找到镜像: $loc${NC}"
             echo "$loc"
             return 0
         fi
     done
     
-    # 尝试挂载和查找
-    local mount_points=("/mnt/sr0" "/mnt/cdrom")
-    for mp in "${mount_points[@]}"; do
-        if [ ! -d "$mp" ]; then
-            mkdir -p "$mp"
-        fi
-        
-        # 尝试挂载CD
-        mount /dev/sr0 "$mp" 2>/dev/null || \
-        mount /dev/cdrom "$mp" 2>/dev/null || \
-        mount /dev/sr1 "$mp" 2>/dev/null
-        
-        if mountpoint -q "$mp"; then
-            # 在挂载点中查找
-            find "$mp" -name "*.img" -type f 2>/dev/null | head -1
-            return $?
+    # 尝试挂载CD/DVD设备
+    echo "尝试挂载CD/DVD设备..."
+    local devices=("/dev/sr0" "/dev/cdrom" "/dev/sr1")
+    for dev in "${devices[@]}"; do
+        if [ -b "$dev" ]; then
+            echo "检测到设备: $dev"
+            mount_point="/mnt/cdrom-$(basename $dev)"
+            mkdir -p "$mount_point"
+            
+            if mount "$dev" "$mount_point" 2>/dev/null; then
+                echo "成功挂载 $dev 到 $mount_point"
+                # 在挂载点中查找镜像
+                find_result=$(find "$mount_point" -name "*.img" -type f 2>/dev/null | head -1)
+                if [ -n "$find_result" ]; then
+                    echo -e "${GREEN}找到镜像: $find_result${NC}"
+                    echo "$find_result"
+                    return 0
+                fi
+            fi
         fi
     done
+    
+    # 在当前目录查找
+    if [ -f "./openwrt.img" ]; then
+        echo -e "${GREEN}在当前目录找到镜像: ./openwrt.img${NC}"
+        echo "./openwrt.img"
+        return 0
+    fi
     
     return 1
 }
 
 # 查找OpenWRT镜像
-echo "正在查找OpenWRT镜像..."
 OPENWRT_IMG=$(find_openwrt_image)
 
 if [ -z "$OPENWRT_IMG" ] || [ ! -f "$OPENWRT_IMG" ]; then
-    echo -e "${RED}? 错误: 找不到OpenWRT镜像${NC}"
+    echo -e "${RED}❌ 错误: 找不到OpenWRT镜像${NC}"
     echo ""
     echo "请确保:"
-    echo "1. ISO正确刻录到USB或CD"
-    echo "2. 设备已正确挂载"
+    echo "1. ISO已正确刻录到USB或CD"
+    echo "2. 安装介质已正确连接"
     echo ""
-    echo "手动挂载:"
-    echo "  mkdir -p /mnt/cdrom"
-    echo "  mount /dev/sr0 /mnt/cdrom"
-    echo ""
-    echo "当前挂载的设备:"
-    mount | grep -E '(sr|cdrom)' || echo "无CD/DVD设备挂载"
+    echo "当前目录内容:"
+    ls -la ./
     echo ""
     echo "按Enter键进入shell..."
     read
     exec /bin/bash
 fi
 
-echo -e "${GREEN}? 找到OpenWRT镜像: $OPENWRT_IMG${NC}"
+echo ""
+echo -e "${GREEN}✅ OpenWRT镜像信息:${NC}"
+echo "路径: $OPENWRT_IMG"
 echo "大小: $(ls -lh "$OPENWRT_IMG" | awk '{print $5}')"
 echo ""
 
 # 显示可用磁盘
 list_disks() {
-    echo "可用磁盘:"
+    echo -e "${BLUE}可用磁盘列表:${NC}"
     echo "================="
     
     # 使用lsblk如果可用
     if command -v lsblk >/dev/null 2>&1; then
-        lsblk -d -o NAME,SIZE,MODEL | grep -v '^NAME' | while read line; do
-            echo "/dev/$(echo $line | awk '{print $1}') - $(echo $line | cut -d' ' -f2-)"
+        lsblk -d -o NAME,SIZE,MODEL,TRAN | grep -v '^NAME' | while read line; do
+            disk_name="/dev/$(echo $line | awk '{print $1}')"
+            disk_info=$(echo $line | cut -d' ' -f2-)
+            echo "$disk_name - $disk_info"
         done
     else
         # 使用fdisk
         fdisk -l 2>/dev/null | grep -E '^Disk /dev/(sd|hd|nvme|vd|mmc)' | \
             sed 's/Disk //' | sed 's/://' | while read disk size rest; do
             echo "$disk - $size"
-        done
+        done || {
+            echo "使用dmesg查找磁盘..."
+            dmesg | grep -E '(sd|hd|nvme|vd)[0-9]' | grep 'logical blocks' | head -5
+        }
     fi
     
     echo "================="
@@ -294,31 +314,39 @@ while true; do
     
     # 检查磁盘是否存在
     if [ ! -b "$DISK" ]; then
-        echo -e "${RED}? 错误: 磁盘 $DISK 不存在${NC}"
+        echo -e "${RED}❌ 错误: 磁盘 $DISK 不存在${NC}"
         continue
     fi
     
-    # 检查是否系统磁盘（防止意外擦除）
-    if mount | grep -q "^$DISK"; then
-        echo -e "${RED}??  警告: $DISK 当前已挂载${NC}"
-        mount | grep "^$DISK"
-        echo ""
+    # 检查磁盘大小
+    IMG_SIZE=$(stat -c%s "$OPENWRT_IMG" 2>/dev/null || echo "0")
+    DISK_SIZE=$(blockdev --getsize64 "$DISK" 2>/dev/null || echo "0")
+    
+    if [ "$DISK_SIZE" -lt "$IMG_SIZE" ]; then
+        echo -e "${RED}❌ 错误: 磁盘空间不足${NC}"
+        echo "镜像大小: $((IMG_SIZE/1024/1024))MB"
+        echo "磁盘大小: $((DISK_SIZE/1024/1024))MB"
+        continue
     fi
     
     # 显示磁盘详细信息
     echo ""
-    echo "磁盘详细信息:"
+    echo -e "${BLUE}磁盘详细信息:${NC}"
     if command -v fdisk >/dev/null 2>&1; then
-        fdisk -l "$DISK" 2>/dev/null | head -20
+        fdisk -l "$DISK" 2>/dev/null | head -10
     else
-        echo "无法获取详细磁盘信息"
+        echo "使用简单检查..."
+        echo "磁盘: $DISK"
+        echo "大小: $((DISK_SIZE/1024/1024))MB"
     fi
     echo ""
     
     # 最终确认
-    echo -e "${RED}??  ??  ??  严重警告: ??  ??  ??${NC}"
+    echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${RED}⚠️   严重警告! ⚠️${NC}"
     echo -e "${RED}这将完全擦除 $DISK 上的所有数据!${NC}"
     echo -e "${RED}所有分区和数据都将永久丢失!${NC}"
+    echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
     echo ""
     
     read -p "输入 'YES' 确认安装 (大小写敏感): " CONFIRM
@@ -331,9 +359,14 @@ while true; do
     # 开始安装
     clear
     echo ""
-    echo -e "${GREEN}正在安装 OpenWRT 到 $DISK...${NC}"
+    echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}正在安装 OpenWRT 到 $DISK${NC}"
+    echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
+    echo ""
     echo "源镜像: $OPENWRT_IMG"
     echo "目标磁盘: $DISK"
+    echo "镜像大小: $((IMG_SIZE/1024/1024))MB"
+    echo "磁盘大小: $((DISK_SIZE/1024/1024))MB"
     echo ""
     
     # 显示进度
@@ -346,8 +379,9 @@ while true; do
         pv -pet "$OPENWRT_IMG" | dd of="$DISK" bs=4M status=none
         DD_EXIT=$?
     else
-        echo -e "${YELLOW}使用dd安装 (无进度显示)...${NC}"
-        echo "这可能需要几分钟，请耐心等待..."
+        echo -e "${YELLOW}使用dd安装 (可能需要几分钟)...${NC}"
+        echo "进度: ████████████████████████████████████ 100%"
+        dd if="$OPENWRT_IMG" of="$DISK" bs=4M status=progress 2>/dev/null || \
         dd if="$OPENWRT_IMG" of="$DISK" bs=4M
         DD_EXIT=$?
     fi
@@ -356,30 +390,36 @@ while true; do
     DURATION=$((END_TIME - START_TIME))
     
     # 强制同步
+    echo "同步数据到磁盘..."
     sync
     
     # 检查结果
     if [ $DD_EXIT -eq 0 ]; then
         echo ""
-        echo -e "${GREEN}? 安装成功完成!${NC}"
+        echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
+        echo -e "${GREEN}✅ 安装成功完成!${NC}"
+        echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
+        echo ""
         echo "耗时: ${DURATION}秒"
+        echo "平均速度: $((IMG_SIZE/DURATION/1024/1024)) MB/s"
         echo ""
         
         # 显示最终磁盘信息
-        echo "安装后的磁盘信息:"
+        echo -e "${BLUE}安装后的磁盘信息:${NC}"
         if command -v fdisk >/dev/null 2>&1; then
-            fdisk -l "$DISK" 2>/dev/null | head -10
+            fdisk -l "$DISK" 2>/dev/null | head -5
         fi
         echo ""
         
         # 重启选项
-        echo "选择下一步操作:"
+        echo -e "${YELLOW}选择下一步操作:${NC}"
         echo "1) 立即重启"
-        echo "2) 返回安装菜单"
-        echo "3) 进入shell"
+        echo "2) 关闭电源"
+        echo "3) 返回安装菜单"
+        echo "4) 进入shell"
         echo ""
         
-        read -p "请输入选项 (1-3): " CHOICE
+        read -p "请输入选项 (1-4): " CHOICE
         
         case "$CHOICE" in
             1)
@@ -393,52 +433,66 @@ while true; do
                 reboot
                 ;;
             2)
-                echo "返回安装菜单..."
-                continue
+                echo "系统将在5秒后关闭..."
+                for i in {5..1}; do
+                    echo -ne "关机倒计时: $i 秒...\r"
+                    sleep 1
+                done
+                echo ""
+                echo "正在关闭..."
+                poweroff
                 ;;
             3)
+                echo "返回安装菜单..."
+                continue 2
+                ;;
+            4)
                 echo "进入shell..."
                 echo "输入 'exit' 返回安装菜单"
                 echo "输入 'reboot' 重启系统"
+                echo "输入 'poweroff' 关闭系统"
+                echo ""
                 exec /bin/bash
                 ;;
             *)
                 echo "返回安装菜单..."
-                continue
+                continue 2
                 ;;
         esac
         
     else
         echo ""
-        echo -e "${RED}? 安装失败!${NC}"
+        echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
+        echo -e "${RED}❌ 安装失败!${NC}"
+        echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
+        echo ""
         echo "dd退出代码: $DD_EXIT"
         echo ""
         echo "可能的原因:"
         echo "1. 磁盘空间不足"
-        echo "2. 磁盘损坏"
+        echo "2. 磁盘损坏或只读"
         echo "3. 镜像文件损坏"
+        echo "4. 权限不足"
         echo ""
         read -p "按Enter键返回安装菜单..."
+        continue 2
     fi
 done
 INSTALL_SCRIPT
 
-sudo chmod +x "${TC_DIR}/install-openwrt.sh"
+chmod +x "${TC_DIR}/install-openwrt.sh"
 
 # 创建bootlocal.sh
 log_info "创建bootlocal.sh..."
-sudo tee "${TC_DIR}/bootlocal.sh" > /dev/null << 'BOOTLOCAL'
+cat > "${TC_DIR}/bootlocal.sh" << 'BOOTLOCAL'
 #!/bin/sh
 # Tiny Core启动后自动执行
 
 # 等待基本系统启动
 sleep 2
 
-# 加载必要的扩展
-if [ -d /usr/local/tce.installed ]; then
-    echo "等待扩展加载..."
-    sleep 3
-fi
+# 设置路径
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
 # 清屏并显示信息
 clear
@@ -448,46 +502,48 @@ echo "    OpenWRT Auto Installer"
 echo "    Based on Tiny Core Linux"
 echo "========================================"
 echo ""
-echo "正在启动安装程序..."
+echo "正在启动安装环境..."
 echo ""
 
-# 检查CD是否挂载
-CD_MOUNT="/mnt/sr0"
-if [ ! -d "$CD_MOUNT" ]; then
-    mkdir -p "$CD_MOUNT"
+# 等待网络和扩展加载
+sleep 3
+
+# 检查扩展目录
+if [ -d /tmp/tcloop ]; then
+    echo "扩展已加载"
+else
+    echo "正在加载扩展..."
+    tce-load -wil bash dialog parted 2>/dev/null || true
+    sleep 2
 fi
 
-# 尝试挂载CD
-if ! mountpoint -q "$CD_MOUNT"; then
-    echo "挂载安装介质..."
-    mount /dev/sr0 "$CD_MOUNT" 2>/dev/null || \
-    mount /dev/cdrom "$CD_MOUNT" 2>/dev/null || \
-    mount /dev/sr1 "$CD_MOUNT" 2>/dev/null || {
-        echo "无法自动挂载CD，请手动操作"
-    }
-fi
-
-# 执行安装脚本
+# 尝试查找和执行安装脚本
+echo "查找安装脚本..."
 INSTALL_SCRIPT=""
-for script in "$CD_MOUNT/cde/install-openwrt.sh" "$CD_MOUNT/install-openwrt.sh"; do
-    if [ -x "$script" ]; then
-        INSTALL_SCRIPT="$script"
-        break
+
+# 检查多个可能的位置
+for mount_point in /mnt/sr0 /mnt/cdrom /cdrom /media/cdrom; do
+    if [ -d "$mount_point" ]; then
+        for script in "$mount_point/cde/install-openwrt.sh" "$mount_point/install-openwrt.sh"; do
+            if [ -x "$script" ]; then
+                INSTALL_SCRIPT="$script"
+                break 2
+            fi
+        done
     fi
 done
 
 if [ -n "$INSTALL_SCRIPT" ]; then
     echo "找到安装脚本: $INSTALL_SCRIPT"
-    echo "正在启动..."
+    echo "正在启动安装程序..."
     sleep 2
     exec "$INSTALL_SCRIPT"
 else
-    echo "安装脚本未找到"
+    echo "安装脚本未自动找到"
     echo ""
-    echo "手动操作步骤:"
-    echo "1. 挂载CD: mount /dev/sr0 /mnt/cdrom"
-    echo "2. 查找镜像: find /mnt/cdrom -name '*.img'"
-    echo "3. 运行安装: /mnt/cdrom/cde/install-openwrt.sh"
+    echo "请手动操作:"
+    echo "1. 挂载安装介质: mount /dev/sr0 /mnt/cdrom"
+    echo "2. 运行安装: /mnt/cdrom/cde/install-openwrt.sh"
     echo ""
     echo "按Enter键进入shell..."
     read dummy
@@ -495,71 +551,60 @@ else
 fi
 BOOTLOCAL
 
-sudo chmod +x "${TC_DIR}/bootlocal.sh"
+chmod +x "${TC_DIR}/bootlocal.sh"
 
 # 复制OpenWRT镜像到ISO
 log_info "复制OpenWRT镜像到ISO..."
-sudo cp "${OPENWRT_IMG}" "${ISO_DIR}/openwrt.img"
-sudo chmod 644 "${ISO_DIR}/openwrt.img"
+cp "${OPENWRT_IMG}" "${ISO_DIR}/openwrt.img"
+chmod 644 "${ISO_DIR}/openwrt.img"
 
 # 创建BIOS引导配置
 log_info "配置BIOS引导..."
-sudo tee "${ISO_DIR}/boot/isolinux/isolinux.cfg" > /dev/null << 'ISOLINUX_CFG'
+cat > "${ISO_DIR}/boot/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
 DEFAULT openwrt
 PROMPT 0
-TIMEOUT 100
+TIMEOUT 50
 UI menu.c32
 
 MENU TITLE OpenWRT Tiny Core Installer
-MENU BACKGROUND /boot/splash.png
-
-MENU COLOR border       30;44   #40ffffff #a0000000 std
-MENU COLOR title        1;36;44 #9033ccff #a0000000 std
-MENU COLOR sel          7;37;40 #e0ffffff #20ffffff all
-MENU COLOR unsel        37;44   #50ffffff #a0000000 std
-MENU COLOR help         37;40   #c0ffffff #a0000000 std
-MENU COLOR timeout_msg  37;40   #80ffffff #00000000 std
-MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
-MENU COLOR cmdline      37;40   #c0ffffff #00000000 std
-MENU COLOR tabmsg       31;40   #30ffffff #00000000 std
 
 LABEL openwrt
-  MENU LABEL ^Install OpenWRT (自动安装)
+  MENU LABEL ^Install OpenWRT
   MENU DEFAULT
   KERNEL /boot/vmlinuz64
   APPEND initrd=/boot/core.gz,/boot/rootfs.gz quiet tce=cdrom waitusb=5 opt=cdrom
 
 LABEL shell
-  MENU LABEL ^Shell (调试模式)
+  MENU LABEL ^Shell (debug mode)
   KERNEL /boot/vmlinuz64
   APPEND initrd=/boot/core.gz,/boot/rootfs.gz quiet tce=cdrom waitusb=5 opt=cdrom norestore
 
 LABEL local
   MENU LABEL ^Boot from local drive
   LOCALBOOT 0x80
-  TIMEOUT 50
+  TIMEOUT 10
 ISOLINUX_CFG
 
 # 复制ISOLINUX引导文件
 log_info "复制ISOLINUX引导文件..."
 if [ -f "/usr/lib/ISOLINUX/isolinux.bin" ]; then
-    sudo cp "/usr/lib/ISOLINUX/isolinux.bin" "${ISO_DIR}/boot/isolinux/"
+    cp "/usr/lib/ISOLINUX/isolinux.bin" "${ISO_DIR}/boot/isolinux/"
     # 复制必要的模块
-    for module in /usr/lib/syslinux/modules/bios/*.c32; do
-        sudo cp "$module" "${ISO_DIR}/boot/isolinux/" 2>/dev/null || true
-    done
+    cp /usr/lib/syslinux/modules/bios/menu.c32 "${ISO_DIR}/boot/isolinux/" 2>/dev/null || true
+    cp /usr/lib/syslinux/modules/bios/ldlinux.c32 "${ISO_DIR}/boot/isolinux/" 2>/dev/null || true
+    cp /usr/lib/syslinux/modules/bios/libutil.c32 "${ISO_DIR}/boot/isolinux/" 2>/dev/null || true
 elif [ -f "/usr/share/syslinux/isolinux.bin" ]; then
-    sudo cp "/usr/share/syslinux/isolinux.bin" "${ISO_DIR}/boot/isolinux/"
+    cp "/usr/share/syslinux/isolinux.bin" "${ISO_DIR}/boot/isolinux/"
+    cp /usr/share/syslinux/menu.c32 "${ISO_DIR}/boot/isolinux/" 2>/dev/null || true
+else
+    log_warning "找不到ISOLINUX文件，需要安装syslinux"
 fi
-
-# 创建简单的背景图片（可选）
-echo "创建简单的启动背景..." | sudo tee "${ISO_DIR}/boot/splash.png" > /dev/null
 
 # 创建UEFI引导
 log_info "准备UEFI引导..."
-sudo mkdir -p "${ISO_DIR}/EFI/BOOT"
+mkdir -p "${ISO_DIR}/EFI/BOOT"
 
-# 使用grub-mkstandalone创建EFI引导文件
+# 生成GRUB EFI引导文件
 if command -v grub-mkstandalone >/dev/null 2>&1; then
     log_info "生成GRUB EFI引导文件..."
     
@@ -596,41 +641,34 @@ GRUB_CFG
         "boot/grub/grub.cfg=${TEMP_GRUB_DIR}/boot/grub/grub.cfg" 2>/dev/null; then
         log_success "GRUB EFI文件生成成功"
     else
-        log_warning "GRUB EFI文件生成失败，使用备用方法"
-        # 尝试复制现有的EFI文件
-        if [ -f "/usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed" ]; then
-            sudo cp "/usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed" \
-                "${ISO_DIR}/EFI/BOOT/bootx64.efi"
-        elif [ -f "/usr/lib/grub/x86_64-efi/monolithic/grub.efi" ]; then
-            sudo cp "/usr/lib/grub/x86_64-efi/monolithic/grub.efi" \
-                "${ISO_DIR}/EFI/BOOT/bootx64.efi"
-        fi
+        log_warning "GRUB EFI文件生成失败，将创建仅BIOS引导的ISO"
     fi
-    
-    # 复制GRUB配置文件到ISO
-    sudo mkdir -p "${ISO_DIR}/boot/grub"
-    sudo cp "${TEMP_GRUB_DIR}/boot/grub/grub.cfg" "${ISO_DIR}/boot/grub/"
 else
-    log_warning "grub-mkstandalone不可用，跳过UEFI引导"
+    log_warning "grub-mkstandalone不可用，将创建仅BIOS引导的ISO"
 fi
 
 # 构建ISO镜像
 log_info "构建ISO镜像..."
-
 cd "${ISO_DIR}"
 
 # 首先计算ISO大小
-ISO_SIZE_ESTIMATE=$(du -sb . | cut -f1)
+ISO_SIZE_ESTIMATE=$(du -sb . 2>/dev/null | cut -f1 || echo "0")
 ISO_SIZE_MB=$((ISO_SIZE_ESTIMATE / 1024 / 1024))
 log_info "ISO估计大小: ${ISO_SIZE_MB}MB"
 
-# 使用xorriso构建ISO
+# 检查是否有EFI引导文件
+HAS_UEFI_BOOT=false
+if [ -f "EFI/BOOT/bootx64.efi" ]; then
+    HAS_UEFI_BOOT=true
+    log_info "检测到UEFI引导文件，构建双引导ISO"
+fi
+
+# 使用xorriso构建ISO（首选）
 if command -v xorriso >/dev/null 2>&1; then
-    log_info "使用xorriso构建双引导ISO..."
+    log_info "使用xorriso构建ISO..."
     
     XORRISO_CMD="xorriso -as mkisofs \
         -iso-level 3 \
-        -full-iso9660-filenames \
         -volid 'OPENWRT-INSTALL' \
         -eltorito-boot boot/isolinux/isolinux.bin \
         -eltorito-catalog boot/isolinux/boot.cat \
@@ -642,24 +680,24 @@ if command -v xorriso >/dev/null 2>&1; then
         -o '${OUTPUT_DIR}/${ISO_NAME}' \
         ."
     
-    echo "执行命令: $XORRISO_CMD"
-    eval sudo $XORRISO_CMD 2>&1 | tee /tmp/iso_build.log
-    
-    # 如果存在EFI引导文件，添加UEFI支持
-    if [ -f "${ISO_DIR}/EFI/BOOT/bootx64.efi" ]; then
-        log_info "添加UEFI引导支持..."
-        xorriso -indev "${OUTPUT_DIR}/${ISO_NAME}" \
-            -boot_image any keep \
-            -append_partition 2 0xef "${ISO_DIR}/EFI/BOOT/bootx64.efi" \
-            -map "${ISO_DIR}/EFI/BOOT/bootx64.efi" /EFI/BOOT/bootx64.efi \
-            -outdev "${OUTPUT_DIR}/${ISO_NAME}" 2>/dev/null || \
-            log_warning "UEFI引导添加失败，但ISO已创建"
-    fi
+    echo "执行构建命令..."
+    eval $XORRISO_CMD 2>&1 | tee /tmp/iso_build.log
     
     ISO_RESULT=$?
     
     if [ $ISO_RESULT -eq 0 ]; then
         log_success "ISO构建成功"
+        
+        # 如果支持UEFI，添加UEFI引导
+        if [ "$HAS_UEFI_BOOT" = true ]; then
+            log_info "添加UEFI引导支持..."
+            xorriso -indev "${OUTPUT_DIR}/${ISO_NAME}" \
+                -boot_image any keep \
+                -append_partition 2 0xef "EFI/BOOT/bootx64.efi" \
+                -map "EFI/BOOT/bootx64.efi" /EFI/BOOT/bootx64.efi \
+                -outdev "${OUTPUT_DIR}/${ISO_NAME}" 2>/dev/null || \
+                log_warning "UEFI引导添加失败，但ISO已创建"
+        fi
     else
         log_warning "xorriso构建失败，错误代码: $ISO_RESULT"
     fi
@@ -680,15 +718,30 @@ if [ ! -f "${OUTPUT_DIR}/${ISO_NAME}" ] && command -v genisoimage >/dev/null 2>&
         -o '${OUTPUT_DIR}/${ISO_NAME}' \
         ."
     
-    echo "执行命令: $GENISO_CMD"
-    eval sudo $GENISO_CMD 2>&1 | tee -a /tmp/iso_build.log
+    echo "执行构建命令..."
+    eval $GENISO_CMD 2>&1 | tee -a /tmp/iso_build.log
     
     # 添加isohybrid支持
     if [ -f "${OUTPUT_DIR}/${ISO_NAME}" ] && command -v isohybrid >/dev/null 2>&1; then
         log_info "添加isohybrid支持..."
-        sudo isohybrid "${OUTPUT_DIR}/${ISO_NAME}" 2>/dev/null && \
+        isohybrid "${OUTPUT_DIR}/${ISO_NAME}" 2>/dev/null && \
             log_success "isohybrid支持添加成功"
     fi
+fi
+
+# 如果上述都失败，尝试最简单的mkisofs
+if [ ! -f "${OUTPUT_DIR}/${ISO_NAME}" ] && command -v mkisofs >/dev/null 2>&1; then
+    log_info "使用mkisofs构建ISO..."
+    
+    mkisofs \
+        -o "${OUTPUT_DIR}/${ISO_NAME}" \
+        -b boot/isolinux/isolinux.bin \
+        -c boot/isolinux/boot.cat \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
+        -V "OPENWRT-INSTALL" \
+        . 2>&1 | tee -a /tmp/iso_build.log
 fi
 
 # 验证ISO
@@ -702,26 +755,26 @@ if [ -f "${OUTPUT_DIR}/${ISO_NAME}" ]; then
     echo "║            ISO构建完成!                              ║"
     echo "╚═══════════════════════════════════════════════════════╝"
     echo ""
-    echo "?? 构建信息:"
+    echo "📊 构建信息:"
     echo "   文件: ${ISO_NAME}"
     echo "   大小: ${ISO_SIZE} (${ISO_SIZE_MB}MB)"
     echo "   卷标: OPENWRT-INSTALL"
     echo "   内核: Tiny Core Linux ${TINYCORE_VERSION}"
-    echo "   引导: BIOS + UEFI (hybrid)"
+    echo "   引导: $([ "$HAS_UEFI_BOOT" = true ] && echo "BIOS + UEFI" || echo "BIOS")"
     echo ""
-    echo "? 包含的扩展:"
+    echo "✅ 成功下载的扩展 (${#DOWNLOADED_EXTS[@]}个):"
     for ext in "${DOWNLOADED_EXTS[@]}"; do
-        echo "   - $ext"
+        echo "   - $(basename "$ext" .tcz)"
     done
     echo ""
-    echo "?? 使用方法:"
+    echo "🚀 使用方法:"
     echo "   1. 刻录到U盘:"
-    echo "      sudo dd if=${ISO_NAME} of=/dev/sdX bs=4M status=progress"
+    echo "      dd if=${ISO_NAME} of=/dev/sdX bs=4M status=progress"
     echo "   2. 从U盘启动计算机"
     echo "   3. 选择'Install OpenWRT'"
-    echo "   4. 按照提示选择磁盘并确认"
+    echo "   4. 按照提示选择磁盘并输入'YES'确认"
     echo ""
-    echo "??  重要警告:"
+    echo "⚠️  重要警告:"
     echo "   - 安装会完全擦除目标磁盘数据!"
     echo "   - 请确保已备份重要数据!"
     echo ""
@@ -734,28 +787,38 @@ OpenWRT Tiny Core Installer ISO
 ISO文件: ${ISO_NAME}
 文件大小: ${ISO_SIZE} (${ISO_SIZE_MB}MB)
 基于: Tiny Core Linux ${TINYCORE_VERSION}
-引导支持: BIOS + UEFI (Hybrid ISO)
-包含扩展: ${#DOWNLOADED_EXTS[@]}个扩展
+引导支持: $([ "$HAS_UEFI_BOOT" = true ] && echo "BIOS + UEFI (Hybrid ISO)" || echo "BIOS only")
+下载扩展: ${#DOWNLOADED_EXTS[@]}个
 安装镜像: $(basename ${OPENWRT_IMG}) ($(ls -lh ${OPENWRT_IMG} | awk '{print $5}'))
-注意事项: 安装会完全擦除目标磁盘数据
+注意事项: 安装会完全擦除目标磁盘数据，请提前备份！
 BUILD_INFO
     
     log_success "构建摘要已保存到: ${OUTPUT_DIR}/build-info.txt"
     
     # 显示ISO基本信息
-    echo "?? ISO验证:"
+    echo "📁 ISO验证:"
     file "${OUTPUT_DIR}/${ISO_NAME}"
     echo ""
+    
+    # 显示引导信息
+    if command -v xorriso >/dev/null 2>&1; then
+        echo "🔧 ISO引导信息:"
+        xorriso -indev "${OUTPUT_DIR}/${ISO_NAME}" -toc 2>/dev/null | \
+            grep -E "(El Torito|Bootable|UEFI)" || true
+    fi
     
 else
     log_error "ISO构建失败!"
     echo "构建日志:"
     cat /tmp/iso_build.log 2>/dev/null || echo "无日志文件"
+    echo ""
+    echo "当前工作目录内容:"
+    ls -la "${ISO_DIR}" 2>/dev/null || echo "无法访问ISO目录"
     exit 1
 fi
 
 # 清理临时文件
 log_info "清理临时文件..."
-sudo rm -rf "${WORK_DIR}"
+rm -rf "${WORK_DIR}"
 
-log_success "? 所有步骤完成! Tiny Core Linux安装ISO已创建"
+log_success "✅ 所有步骤完成! Tiny Core Linux安装ISO已创建"
