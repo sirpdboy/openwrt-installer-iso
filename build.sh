@@ -1,5 +1,5 @@
 #!/bin/bash
-# build.sh - OpenWRT ISO构建脚本（在Docker容器内运行） sirpdboy  https://github.com/sirpdboy/openwrt-installer-iso.git
+# build.sh - OpenWRT ISO构建脚本（在Docker容器内运行） sirpdboy 2025-2026  https://github.com/sirpdboy/openwrt-installer-iso.git
 set -e
 
 echo "?? Starting OpenWRT ISO build inside Docker container..."
@@ -69,10 +69,10 @@ EOF
 echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
 echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until
 
-# 安装必要工具（包括扩容所需工具）
+# 安装必要工具
 log_info "Installing required packages..."
 apt-get update
-apt-get -y install debootstrap squashfs-tools xorriso isolinux syslinux-efi grub-pc-bin grub-efi-amd64-bin grub-efi mtools dosfstools parted pv grub-common grub2-common efibootmgr e2fsprogs f2fs-tools kpartx gdisk sgdisk gzip
+apt-get -y install debootstrap squashfs-tools xorriso isolinux syslinux-efi grub-pc-bin grub-efi-amd64-bin grub-efi mtools dosfstools parted pv grub-common grub2-common efibootmgr
 
 # ==================== 步骤2: 创建目录结构 ====================
 log_info "[2/10] Creating directory structure..."
@@ -111,10 +111,37 @@ set -e
 
 echo "?? Configuring chroot environment..."
 
-# 基本设置
-export DEBIAN_FRONTEND=noninteractive
-export LC_ALL=C
-export LANG=C.UTF-8
+
+# 禁用systemd日志服务
+systemctl mask systemd-journald.service 2>/dev/null || true
+systemctl mask systemd-journald.socket 2>/dev/null || true
+systemctl mask systemd-journald-dev-log.socket 2>/dev/null || true
+systemctl mask syslog.socket 2>/dev/null || true
+
+# 配置journald不输出到控制台
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/00-quiet.conf << 'JOURNAL_CONF'
+[Journal]
+Storage=volatile
+RuntimeMaxUse=10M
+ForwardToConsole=no
+ForwardToSyslog=no
+MaxLevelStore=err
+MaxLevelSyslog=err
+MaxLevelConsole=emerg
+JOURNAL_CONF
+
+# 禁用timers和其他服务
+systemctl mask apt-daily.timer 2>/dev/null || true
+systemctl mask apt-daily-upgrade.timer 2>/dev/null || true
+systemctl mask systemd-tmpfiles-clean.timer 2>/dev/null || true
+systemctl mask logrotate.timer 2>/dev/null || true
+
+# 配置内核参数
+cat > /etc/default/grub << 'GRUB_CONF'
+GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=0 console=ttyS0 console=tty0 ignore_loglevel systemd.show_status=0 systemd.log_level=err"
+GRUB_CMDLINE_LINUX=""
+GRUB_CONF
 
 # 配置APT源
 cat > /etc/apt/sources.list <<EOF
@@ -130,25 +157,77 @@ echo "openwrt-installer" > /etc/hostname
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 
-# 更新并安装包（包括扩容所需工具）
+# 更新并安装包
 echo "Updating packages..."
-apt-get update
-apt-get -y install apt || true
-apt-get -y upgrade
+apt-get update --no-install-recommends
+apt-get -y install apt --no-install-recommends || true
+apt-get -y upgrade --no-install-recommends
 echo "Setting locale..."
-apt-get -y install locales
-sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
-dpkg-reconfigure --frontend=noninteractive locales
-update-locale LANG=en_US.UTF-8
-apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv
-apt-get install -y parted openssh-server bash-completion cifs-utils curl dbus dosfstools firmware-linux-free gddrescue gdisk iputils-ping isc-dhcp-client less nfs-common ntfs-3g openssh-client open-vm-tools procps vim wimtools wget pv grub-efi-amd64-bin dialog whiptail losetup e2fsprogs f2fs-tools kpartx gzip sgdisk bc
+apt-get install -y --no-install-recommends \
+    locales \
+    fonts-wqy-microhei
 
-# 安装kmod-loop模块（用于扩容）
-echo "Installing kernel modules..."
-apt-get install -y kmod
-# 加载loop模块
-modprobe loop 2>/dev/null || true
+# 如果上述失败，尝试备用方案
+if [ $? -ne 0 ]; then
+    echo "尝试备用字体源..."
+    # 下载直接字体文件
+    wget -q http://ftp.cn.debian.org/debian/pool/main/f/fonts-wqy-microhei/fonts-wqy-microhei_0.2.0-beta-2_all.deb -O /tmp/wqy.deb
+    dpkg -i /tmp/wqy.deb 2>/dev/null || true
+    apt-get -f install -y
+fi
 
+
+# 配置locale（强制方法）
+cat > /etc/locale.gen << 'LOCALE'
+en_US.UTF-8 UTF-8
+zh_CN.UTF-8 UTF-8
+zh_CN.GBK GBK
+LOCALE
+
+# 生成locale
+/usr/sbin/locale-gen
+
+# 设置系统范围的语言
+cat > /etc/default/locale << 'LOCALE_CONF'
+LANG="zh_CN.UTF-8"
+LANGUAGE="zh_CN:zh"
+LC_ALL="zh_CN.UTF-8"
+LC_CTYPE="zh_CN.UTF-8"
+LC_MESSAGES="zh_CN.UTF-8"
+LOCALE_CONF
+
+# 配置终端
+cat > /etc/profile.d/terminal-chinese.sh << 'TERMINAL'
+# 终端中文支持
+if [ "$TERM" = "linux" ]; then
+    # 设置控制台编码
+    export LANG=zh_CN.UTF-8
+    export LANGUAGE=zh_CN:zh
+    
+    # 加载中文字体（如果可用）
+    if [ -f /usr/share/consolefonts/Uni2-Fixed16.psf.gz ]; then
+        loadfont Uni2-Fixed16 2>/dev/null || true
+    fi
+fi
+
+# 通用设置
+export LESSCHARSET=utf-8
+alias ll='ls -la --color=auto'
+TERMINAL
+
+# 激活配置
+. /etc/default/locale
+. /etc/profile.d/terminal-chinese.sh
+
+
+
+
+
+apt-get install -y --no-install-recommends linux-image-amd64 live-boot systemd-sysv 
+apt-get install -y --no-install-recommends openssh-server bash-completion dbus dosfstools firmware-linux-free gddrescue iputils-ping isc-dhcp-client less nfs-common open-vm-tools procps wimtools pv grub-efi-amd64-bin dialog whiptail 
+
+    
+    
 # 清理包缓存
 apt-get clean
 
@@ -213,7 +292,7 @@ cat << "WELCOME"
 System is starting up, please wait...
 WELCOME
 
-sleep 2
+sleep 10
 
 if [ ! -f "/openwrt.img" ]; then
     clear
@@ -243,75 +322,165 @@ ExecStart=-/sbin/agetty --autologin root --noclear %I linux
 Type=idle
 GETTY_OVERRIDE
 
-# 创建安装脚本（包含扩容功能）
+# 创建安装脚本
 cat > /opt/install-openwrt.sh << 'INSTALL_SCRIPT'
 #!/bin/bash
 
-# 工具函数：获取系统磁盘
-get_system_disk() {
-    local boot_dev=$(mount | grep ' /boot' | awk '{print $1}' 2>/dev/null)
-    if [ -z "$boot_dev" ]; then
-        boot_dev=$(mount | grep ' / ' | awk '{print $1}' | sed 's/[0-9]*$//')
-    fi
+
+clean_system_output() {
+    # 1. 停止所有日志服务
+    systemctl stop systemd-journald 2>/dev/null || true
+    systemctl stop rsyslog 2>/dev/null || true
+    systemctl stop syslog 2>/dev/null || true
     
-    if [ -n "$boot_dev" ]; then
-        echo "$boot_dev" | sed 's/p[0-9]*$//' | sed 's/[0-9]*$//'
-    else
-        # 回退方案：使用第一个磁盘
-        lsblk -d -n -o NAME | grep -E '^(sd|hd|nvme|vd)' | head -1
-    fi
+    # 2. 禁用控制台输出
+    
+pkill -9 systemd-timesyncd 2>/dev/null || true
+pkill -9 journald 2>/dev/null || true
+    echo 0 > /proc/sys/kernel/printk 2>/dev/null || true
+    dmesg -n 1 2>/dev/null || true
+    
+    # 3. 清理屏幕
+    clear
+    printf "\033c"  # 真正的终端重置
+    stty sane 2>/dev/null || true
 }
 
-# 工具函数：验证镜像文件
-image_supported() {
-    local image_file="$1"
+# === 第二步：设置干净的环境 ===
+setup_clean_env() {
+    # 使用纯英文环境避免乱码
+    export LANG=C
+    export LC_ALL=C
+    export LANGUAGE=en_US
+    export TERM=linux
     
-    if [ ! -f "$image_file" ]; then
-        return 1
-    fi
+    # 简单的ASCII编码
+    export LESSCHARSET=ascii
+    export MANPAGER=cat
     
-    # 检查是否为有效的镜像文件
-    if file "$image_file" | grep -q "gzip compressed data"; then
+    # 清理提示符
+    PS1='# '
+}
+
+    clean_system_output
+    setup_clean_env
+
+# === 中文环境初始化 ===
+init_chinese_env() {
+    # 检查是否已经设置
+    if [ "$LANG" = "zh_CN.UTF-8" ]; then
         return 0
-    elif file "$image_file" | grep -q "filesystem data"; then
-        return 0
-    else
-        return 1
     fi
-}
-
-# 工具函数：获取磁盘大小（MB）
-get_disk_size_mb() {
-    local disk="$1"
-    if [ -b "$disk" ]; then
-        local size_bytes=$(blockdev --getsize64 "$disk" 2>/dev/null)
-        if [ -n "$size_bytes" ]; then
-            echo $((size_bytes / 1024 / 1024))
-        else
-            echo 0
-        fi
-    else
-        echo 0
-    fi
-}
-
-# 工具函数：获取磁盘可用空间（MB）
-get_disk_free_mb() {
-    local disk="$1"
-    if [ -b "$disk" ]; then
-        # 使用lsblk获取未分区空间
-        local free_space=$(lsblk -b "$disk" -o SIZE | tail -1)
-        echo $((free_space / 1024 / 1024))
-    else
-        echo 0
-    fi
-}
-
-pkill -9 systemd-timesyncd 2>/dev/null
-pkill -9 journald 2>/dev/null
-echo 0 > /proc/sys/kernel/printk 2>/dev/null
     
+    # 设置环境变量
+    export LANG=zh_CN.UTF-8 2>/dev/null || export LANG=C.UTF-8
+    export LANGUAGE=zh_CN:zh 2>/dev/null || export LANGUAGE=en_US:en
+    export LC_ALL=$LANG
+    export LC_CTYPE=$LANG
+    export TERM=linux
+    
+    # 检查字体
+    if ! fc-list 2>/dev/null | grep -q -i "wqy\|unifont\|dejavu"; then
+        echo "? 未检测到中文字体，使用英文界面"
+        USE_ENGLISH=1
+    else
+        USE_ENGLISH=0
+    fi
+}
+
+# === 多语言消息函数 ===
+t() {
+    local key="$1"
+    
+    if [ "$USE_ENGLISH" = "1" ] || [ "$LANG" != "zh_CN.UTF-8" ]; then
+        # 英文消息
+        case "$key" in
+            "welcome")
+                echo "========================================"
+                echo "      OpenWRT Auto Installer v1.0"
+                echo "========================================"
+                ;;
+            "select_disk")
+                echo "Select disk number (1-\$TOTAL) or 'r' to rescan: "
+                ;;
+            "rescan")
+                echo "Rescanning disks..."
+                ;;
+            "invalid_selection")
+                echo "Invalid selection!"
+                ;;
+            "selected_disk")
+                echo "Selected disk: "
+                ;;
+            "warning")
+                echo "WARNING: This will ERASE ALL data on the disk!"
+                ;;
+            "confirm")
+                echo "Type 'YES' to confirm installation: "
+                ;;
+            "installing")
+                echo "Installing OpenWRT to disk..."
+                ;;
+            "success")
+                echo "Installation completed successfully!"
+                ;;
+            "reboot")
+                echo "System will reboot in 10 seconds..."
+                ;;
+            *)
+                echo "$key"
+                ;;
+        esac
+    else
+        # 中文消息（使用base64避免编码问题）
+        case "$key" in
+            "welcome")
+                echo "========================================"
+                echo ""
+                echo "5Lit5paHIE9wZW5XUlQg6L+Z5Liq5a6J5YWo5a6M5oiQ57O757ufIHYxLjA=" | base64 -d
+                echo ""
+                echo "========================================"
+                ;;
+            "select_disk")
+                echo "6K+36YWN572u5a6J5YWo5a6M5oiQ57yW56CBICgxLSRUT1RBTCkg5ZKM5Y+RICdyJyDnu5/orqHnlJ/miJD77yM5Zyw5bCG6L+Z5LiqJ3En5LiN6IO96KKr5Y+R6YCB77ya" | base64 -d
+                ;;
+            "rescan")
+                echo "6YeN6KaB6K+35rGC5a6J5YWo5a6M5oiQ5LitLi4u" | base64 -d
+                ;;
+            "invalid_selection")
+                echo "5Y+W5raI5LiN6IO96KKr5Y+R6YCB77yB" | base64 -d
+                ;;
+            "selected_disk")
+                echo "5Y+W5raI5a6J5YWo5a6M5oiQ77ya" | base64 -d
+                ;;
+            "warning")
+                echo "8J+agO+8jOivt+WcqOa1j+iniOWZqOeahOa1i+ivleeCueWHu+S4jeWIsOWPr+iDveaAp++8jA==" | base64 -d
+                ;;
+            "confirm")
+                echo "6K+36YGN5YqgJ1lFUycg6L+Z5qC35o+U5Y+377ya" | base64 -d
+                ;;
+            "installing")
+                echo "5a6J5YWo5Lit5paH5Lmf5Y+R6YCB5a6J5YWo5a6M5oiQ5LitLi4u" | base64 -d
+                ;;
+            "success")
+                echo "5a6J5YWo5Lit5paH5Y+R6YCB5oiQ5Yqf77yB" | base64 -d
+                ;;
+            "reboot")
+                echo "57O757uf5Lit5paH5L2/55SoMTDlj5HmlbTvvIE=" | base64 -d
+                ;;
+            *)
+                echo "$key" | base64 -d 2>/dev/null || echo "$key"
+                ;;
+        esac
+    fi
+}
+
+init_chinese_env
+
 clear
+# 获取磁盘列表函数
+get_disk_list() {
+
 cat << "EOF"
 
 ╔═══════════════════════════════════════════════════════╗
@@ -322,7 +491,7 @@ EOF
 
 echo -e "\nChecking OpenWRT image..."
 if [ ! -f "/openwrt.img" ]; then
-    echo -e "\n? ERROR: OpenWRT image not found!"
+    echo -e "\nERROR: OpenWRT image not found!"
     echo -e "\nImage file should be at: /openwrt.img"
     echo -e "\nPress Enter for shell..."
     read
@@ -330,24 +499,14 @@ if [ ! -f "/openwrt.img" ]; then
 fi
 
 IMG_SIZE=$(ls -lh /openwrt.img | awk '{print $5}')
-echo -e "? OpenWRT image found: $IMG_SIZE\n"
+echo -e "OpenWRT image found: $IMG_SIZE\n"
 
-# ==================== 步骤1: 选择安装硬盘 ====================
-echo "══════════════════════════════════════════════════════════"
-echo "                  STEP 1: SELECT DISK"
-echo "══════════════════════════════════════════════════════════\n"
-
-# 获取磁盘列表函数
-get_disk_list() {
-    # 获取所有磁盘，排除loop设备和只读设备
     DISK_LIST=()
     DISK_INDEX=1
     
-    echo "Available disks:"
-    echo "----------------------------------------------------------------"
-    echo " ID | Device      | Size        | Model"
-    echo "----|-------------|-------------|--------------------------------"
+    echo "Scanning available disks.../ 找到可用磁盘..."
     
+    echo -e "==============================================\n"
     # 使用lsblk获取磁盘信息
     while IFS= read -r line; do
         if [ -n "$line" ]; then
@@ -358,340 +517,101 @@ get_disk_list() {
             # 检查是否为有效磁盘（排除CD/DVD）
             if [[ $DISK_NAME =~ ^(sd|hd|nvme|vd) ]]; then
                 DISK_LIST[DISK_INDEX]="$DISK_NAME"
-                DISK_SIZES[DISK_INDEX]=$(get_disk_size_mb "/dev/$DISK_NAME")
-                DISK_FREE[DISK_INDEX]=$(get_disk_free_mb "/dev/$DISK_NAME")
-                
-                # 显示磁盘信息
-                printf " %-2d | /dev/%-8s | %-10s | %s\n" \
-                    "$DISK_INDEX" "$DISK_NAME" "$DISK_SIZE" "$DISK_MODEL"
-                
+                echo "  [$DISK_INDEX] /dev/$DISK_NAME - $DISK_SIZE - $DISK_MODEL"
                 ((DISK_INDEX++))
             fi
         fi
     done < <(lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null | grep -E '^(sd|hd|nvme|vd)')
     
     TOTAL_DISKS=$((DISK_INDEX - 1))
+
+    echo -e "==============================================\n"
+    
 }
 
-# 主循环选择磁盘
-DISK_SELECTED=""
+# 主循环
 while true; do
     # 获取磁盘列表
-    unset DISK_LIST DISK_SIZES DISK_FREE
-    declare -A DISK_LIST
-    declare -A DISK_SIZES
-    declare -A DISK_FREE
-    
     get_disk_list
     
+    
     if [ $TOTAL_DISKS -eq 0 ]; then
-        echo -e "\n? No disks detected!"
+        echo -e "\nNo disks detected!"
         echo -e "Please check your storage devices and try again."
-        echo ""
+	echo ""
         read -p "Press Enter to rescan..." _
         clear
         continue
     fi
     
-    echo -e "\n══════════════════════════════════════════════════════════"
-    echo "Please select target disk:"
-    echo ""
-    
     # 获取用户选择
     while true; do
-        read -p "Enter disk number (1-$TOTAL_DISKS) or 'r' to rescan: " SELECTION
-        
+        read -p "Select disk number (1-$TOTAL_DISKS) or 'r' to rescan: " SELECTION
+
         case $SELECTION in
             [Rr])
-                clear
-                break 2  # 跳出两层循环，重新扫描
+                get_disk_list
                 ;;
             [0-9]*)
                 if [[ $SELECTION -ge 1 && $SELECTION -le $TOTAL_DISKS ]]; then
-                    DISK_SELECTED=${DISK_LIST[$SELECTION]}
-                    DISK_SIZE_MB=${DISK_SIZES[$SELECTION]}
-                    DISK_FREE_MB=${DISK_FREE[$SELECTION]}
-                    break 2  # 跳出两层循环，继续下一步
+                    TARGET_DISK=${DISK_LIST[$SELECTION]}
+                    break 2  # 跳出两层循环，继续安装
                 else
-                    echo "? Invalid selection. Please choose between 1 and $TOTAL_DISKS."
+                    echo "Invalid selection. Please choose between 1 and $TOTAL_DISKS."
                 fi
                 ;;
             *)
-                echo "? Invalid input. Please enter a number or 'r' to rescan."
+                echo "Invalid input. Please enter a number or 'r' to rescan."
                 ;;
         esac
     done
 done
 
-# 显示选择的磁盘信息
+# 确认安装
 clear
 echo -e "\n══════════════════════════════════════════════════════════"
-echo "                  SELECTED DISK"
-echo "══════════════════════════════════════════════════════════\n"
-echo "Device:     /dev/$DISK_SELECTED"
-echo "Total Size: $((DISK_SIZE_MB / 1024))GB ($((DISK_SIZE_MB))MB)"
-echo "Free Space: $((DISK_FREE_MB / 1024))GB ($((DISK_FREE_MB))MB)"
-echo ""
+echo -e "           CONFIRM INSTALLATION"
+echo -e "══════════════════════════════════════════════════════════\n"
+echo -e "Target disk: /dev/$TARGET_DISK"
+echo -e "\n     WARNING: This will ERASE ALL DATA on /dev/$TARGET_DISK!   "
+echo -e "\nALL existing partitions and data will be permanently deleted!"
+echo -e "\n══════════════════════════════════════════════════════════\n"
 
-# ==================== 步骤2: 选择写入模式 ====================
-echo "══════════════════════════════════════════════════════════"
-echo "                 STEP 2: SELECT MODE"
-echo "══════════════════════════════════════════════════════════\n"
-
-# 计算镜像大小
-IMAGE_TMP="/openwrt.img"
-if file "$IMAGE_TMP" | grep -q "gzip compressed data"; then
-    # 如果是压缩镜像，估计解压后大小
-    ORIGINAL_SIZE=$(gzip -dc "$IMAGE_TMP" 2>/dev/null | wc -c)
-    ORIGINAL_SIZE_MB=$((ORIGINAL_SIZE / 1024 / 1024))
-else
-    # 如果是原始镜像，直接获取大小
-    ORIGINAL_SIZE=$(du -sb "$IMAGE_TMP" 2>/dev/null | cut -f1)
-    ORIGINAL_SIZE_MB=$((ORIGINAL_SIZE / 1024 / 1024))
-fi
-
-# 计算可用扩容空间
-EXPANDABLE_SIZE=$((DISK_SIZE_MB - ORIGINAL_SIZE_MB - 1024))  # 保留1GB空间
-if [ $EXPANDABLE_SIZE -lt 0 ]; then
-    EXPANDABLE_SIZE=0
-fi
-
-echo "Image size:        $((ORIGINAL_SIZE_MB / 1024))GB ($ORIGINAL_SIZE_MB MB)"
-echo "Disk size:         $((DISK_SIZE_MB / 1024))GB ($DISK_SIZE_MB MB)"
-echo "Available for expansion: $((EXPANDABLE_SIZE / 1024))GB ($EXPANDABLE_SIZE MB)"
-echo ""
-
-echo "Please select installation mode:"
-echo "══════════════════════════════════════════════════════════"
-echo "  [1] Direct Write - Write image directly without expansion"
-echo "  [2] Auto Expand - Automatically expand to use full disk"
-echo "══════════════════════════════════════════════════════════\n"
-
-# 获取写入模式选择
-WRITE_MODE=""
 while true; do
-    read -p "Select mode (1 or 2): " MODE_SELECTION
+    read -p "Type 'YES' to continue or 'NO' to cancel: " CONFIRM
     
-    case $MODE_SELECTION in
-        1)
-            WRITE_MODE="direct"
-            echo -e "\n? Selected: Direct Write Mode"
-            echo "   Will write image without expansion"
+    case $CONFIRM in
+        YES|yes|Y|y)
+            echo -e "\nProceeding with installation...\n"
             break
             ;;
-        2)
-            WRITE_MODE="expand"
-            if [ $EXPANDABLE_SIZE -gt 0 ]; then
-                EXPANSION_MB=$EXPANDABLE_SIZE
-                echo -e "\n? Selected: Auto Expand Mode"
-                echo "   Will expand image by $((EXPANSION_MB / 1024))GB ($EXPANSION_MB MB)"
-                echo "   to use full disk capacity"
-            else
-                echo -e "\n??  Warning: Not enough space for expansion"
-                echo "   Falling back to Direct Write Mode"
-                WRITE_MODE="direct"
-            fi
-            break
+        NO|no|N|n)
+            echo -e "\nInstallation cancelled."    
+	    echo ""
+            read -p "Press Enter to return to disk selection..." _
+            exec /opt/install-openwrt.sh  # 重新启动安装程序
             ;;
         *)
-            echo "? Invalid selection. Please choose 1 or 2."
+            echo "Please type 'YES' to confirm or 'NO' to cancel."
             ;;
     esac
-done
-
-sleep 2
-clear
-
-# ==================== 步骤3: 确认写盘 ====================
-echo -e "\n══════════════════════════════════════════════════════════"
-echo "                  STEP 3: CONFIRMATION"
-echo "══════════════════════════════════════════════════════════\n"
-
-echo "Installation Summary:"
-echo "══════════════════════════════════════════════════════════"
-echo "Target Disk:      /dev/$DISK_SELECTED"
-echo "Disk Size:        $((DISK_SIZE_MB / 1024))GB"
-echo "Image Size:       $((ORIGINAL_SIZE_MB / 1024))GB"
-echo "Write Mode:       $( [ "$WRITE_MODE" = "direct" ] && echo "Direct Write" || echo "Auto Expand (+$((EXPANSION_MB / 1024))GB)" )"
-echo "══════════════════════════════════════════════════════════\n"
-
-echo "??  ??  ??   CRITICAL WARNING   ??  ??  ??"
-echo "══════════════════════════════════════════════════════════"
-echo "This operation will:"
-echo "1. ERASE ALL DATA on /dev/$DISK_SELECTED"
-echo "2. DESTROY all existing partitions"
-echo "3. PERMANENTLY delete all files"
-echo "══════════════════════════════════════════════════════════\n"
-
-# 最终确认
-FINAL_CONFIRM=""
-while true; do
-    read -p "Type 'YES' (uppercase) to confirm installation: " FINAL_CONFIRM
-    
-    if [ "$FINAL_CONFIRM" = "YES" ]; then
-        echo -e "\n? Confirmed. Starting installation..."
-        break
-    else
-        echo -e "\n? Installation cancelled."
-        echo -e "\nPress Enter to start over..."
-        read
-        exec /opt/install-openwrt.sh  # 重新启动安装程序
-    fi
 done
 
 # 开始安装
 clear
 echo -e "\n══════════════════════════════════════════════════════════"
-echo "                INSTALLATION IN PROGRESS"
-echo "══════════════════════════════════════════════════════════\n"
-echo "Target Disk: /dev/$DISK_SELECTED"
-echo "Write Mode:  $( [ "$WRITE_MODE" = "direct" ] && echo "Direct Write" || echo "Auto Expand" )"
-echo ""
-echo "This may take several minutes. Please wait..."
-echo "══════════════════════════════════════════════════════════\n"
-
-# 创建日志文件
-LOG_FILE="/tmp/ezotaflash.log"
-echo "Starting OpenWRT installation at $(date)" > $LOG_FILE
-chmod 644 $LOG_FILE
-
-# 验证镜像文件
-echo "Verifying firmware image..." 
-sleep 1
-
-if ! image_supported "/openwrt.img"; then
-    echo "ERROR: Invalid firmware image" 
-    echo -e "\n? ERROR: Invalid firmware image format"
-    echo -e "\nPress Enter to return to installation..."
-    read
-    exec /opt/install-openwrt.sh
-fi
-
-# 检查是否为压缩镜像
-IMAGE_TMP="/openwrt.img"
-IMAGE_TO_WRITE="/tmp/final_image.img"
-
-if file "$IMAGE_TMP" | grep -q "gzip compressed data"; then
-    echo "Image is compressed, decompressing..." 
-    
-    # 获取解压后大小
-    decompressed_size=$(gzip -dc "$IMAGE_TMP" 2>/dev/null | wc -c)
-    if [ -z "$decompressed_size" ] || [ "$decompressed_size" -eq 0 ]; then
-        echo "ERROR: Invalid firmware image, please redownload." 
-        echo -e "\n? ERROR: Invalid firmware image"
-        echo -e "\nPress Enter to return to installation..."
-        read
-        exec /opt/install-openwrt.sh
-    fi
-    
-    # 检查可用空间
-    available_space=$(df -k /tmp 2>/dev/null | tail -1 | awk '{print $4}')
-    available_space=$((available_space * 1024))
-    required_with_buffer=$((decompressed_size * 200 / 100))
-    
-    if [ $required_with_buffer -gt $available_space ]; then
-        echo "Error: Insufficient disk space for extraction" 
-        echo "Need: $((required_with_buffer / 1024 / 1024)) MB (with 100% buffer)" 
-        echo "available: $((available_space / 1024 / 1024)) MB" 
-        echo -e "\n? ERROR: Insufficient disk space for extraction"
-        echo -e "\nPress Enter to return to installation..."
-        read
-        exec /opt/install-openwrt.sh
-    fi
-    
-    # 解压镜像
-    echo "Extracting firmware..." 
-    if gzip -dc "$IMAGE_TMP" > "$IMAGE_TO_WRITE"; then
-        actual_size=$(du -sb "$IMAGE_TO_WRITE" 2>/dev/null | cut -f1)
-        if [ "$actual_size" -eq "$decompressed_size" ]; then
-            echo "Decompression successful" 
-        else
-            echo "Warning: File size mismatch" 
-            rm -f "$IMAGE_TO_WRITE"
-            echo -e "\n? ERROR: File size mismatch during extraction"
-            echo -e "\nPress Enter to return to installation..."
-            read
-            exec /opt/install-openwrt.sh
-        fi
-    else
-        echo "ERROR: Failed to extract firmware" 
-        rm -f "$IMAGE_TO_WRITE"
-        echo -e "\n? ERROR: Failed to extract firmware"
-        echo -e "\nPress Enter to return to installation..."
-        read
-        exec /opt/install-openwrt.sh
-    fi
-else
-    echo "Image is not compressed, using directly..." 
-    cp "$IMAGE_TMP" "$IMAGE_TO_WRITE"
-    actual_size=$(du -sb "$IMAGE_TO_WRITE" 2>/dev/null | cut -f1)
-    decompressed_size=$actual_size
-fi
-
-# ==================== 扩容处理 ====================
-if [ "$WRITE_MODE" = "expand" ] && [ $EXPANSION_MB -gt 0 ]; then
-    echo "Adding expansion capacity..." 
-    echo -e "\n?? Expanding image by $((EXPANSION_MB / 1024))GB..."
-    
-    # 扩展镜像文件
-    echo "Expanding image by ${EXPANSION_MB}MB..." 
-    dd if=/dev/zero bs=1M count=$EXPANSION_MB >> "$IMAGE_TO_WRITE" 2>/dev/null
-    
-    if [ $? -eq 0 ]; then
-        echo "Expansion successful" 
-        
-        # 修复GPT分区表
-        if command -v sgdisk >/dev/null 2>&1; then
-            echo "Fixing GPT partition table..." 
-            sgdisk -e "$IMAGE_TO_WRITE" >/dev/null 2>&1 || true
-        fi
-        
-        # 调整分区大小
-        if command -v parted >/dev/null 2>&1; then
-            echo "Resizing partition..." 
-            
-            # 使用parted调整分区
-            LOOP_DEV=$(losetup -f --show -P "$IMAGE_TO_WRITE" 2>/dev/null)
-            
-            if [ -n "$LOOP_DEV" ]; then
-                # 通常OpenWRT镜像使用第二个分区作为根分区
-                PART_NUM=2
-                
-                # 检查分区是否存在
-                if [ -b "${LOOP_DEV}p${PART_NUM}" ] || [ -b "${LOOP_DEV}${PART_NUM}" ]; then
-                    # 扩展分区
-                    echo -e "resizepart ${PART_NUM} -1\\nq" | parted "$IMAGE_TO_WRITE" >/dev/null 2>&1
-                    
-                    # 扩展文件系统
-                    PART_DEV="${LOOP_DEV}p${PART_NUM}"
-                    [ ! -b "$PART_DEV" ] && PART_DEV="${LOOP_DEV}${PART_NUM}"
-                    
-                    if [ -b "$PART_DEV" ]; then
-                        # 检查文件系统类型并扩展
-                        if e2fsck -f -y "$PART_DEV" >/dev/null 2>&1; then
-                            resize2fs "$PART_DEV" >/dev/null 2>&1
-                            echo "Filesystem resized successfully" 
-                        fi
-                    fi
-                fi
-                
-                # 卸载loop设备
-                losetup -d "$LOOP_DEV" 2>/dev/null || true
-            fi
-        fi
-        
-        echo "Image expanded and ready for writing" 
-    else
-        echo "Warning: Expansion failed, using original image" 
-        echo -e "\n??  Expansion failed, using original image size"
-    fi
-fi
+echo -e "           INSTALLING OPENWRT"
+echo -e "══════════════════════════════════════════════════════════\n"
+echo -e "Target: /dev/$TARGET_DISK"
+echo -e "Image size: $IMG_SIZE"
+echo -e "\nThis may take several minutes. Please wait...\n"
+echo -e "══════════════════════════════════════════════════════════\n"
 
 # 显示进度条函数
 show_progress() {
     local pid=$1
-    local total_size=${2:-0}
     local delay=0.1
+    local spinstr='|/-\'
     
     echo -n "Writing image: ["
     
@@ -712,8 +632,9 @@ show_progress() {
             # 尝试从/proc获取进度信息
             if [ -f "/proc/$pid/io" ]; then
                 bytes_written=$(grep "^write_bytes" "/proc/$pid/io" | awk '{print $2}')
-                if [ -n "$bytes_written" ] && [ "$total_size" -gt 0 ]; then
-                    percentage=$((bytes_written * 100 / total_size))
+                total_bytes=$(ls -l /openwrt.img | awk '{print $5}')
+                if [ -n "$bytes_written" ] && [ "$total_bytes" -gt 0 ]; then
+                    percentage=$((bytes_written * 100 / total_bytes))
                     if [ $percentage -gt 100 ]; then
                         percentage=100
                     fi
@@ -729,7 +650,7 @@ show_progress() {
                     for ((i=0; i<empty; i++)); do
                         echo -n " "
                     done
-                    echo -ne "] ${percentage}%"
+                    echo -ne "] \n     ${percentage}%"
                 fi
             fi
         fi
@@ -741,33 +662,21 @@ show_progress() {
     return $?
 }
 
-# 执行安装
-echo -e "\nStarting installation process...\n"
-echo "Writing image to /dev/$DISK_SELECTED..." 
+# 执行安装（禁用所有输出日志）
+echo -e "Starting installation process...\n"
 
-# 获取最终镜像大小
-FINAL_SIZE=$(du -sb "$IMAGE_TO_WRITE" 2>/dev/null | cut -f1)
-[ -z "$FINAL_SIZE" ] && FINAL_SIZE=0
-
-# 停止可能干扰的服务
-echo "Stopping services..." 
-pkill -9 dropbear uhttpd nginx 2>/dev/null || true
-sleep 2
-sync
-
-# 使用dd写入镜像
-echo "DD writing image to /dev/$DISK_SELECTED..." 
+# 使用dd写入镜像，禁用所有状态输出
 if command -v pv >/dev/null 2>&1; then
     # 使用pv显示进度
-    pv -p -t -e -r "$IMAGE_TO_WRITE" | dd of="/dev/$DISK_SELECTED" bs=4M 2>/dev/null
+    pv -p -t -e -r /openwrt.img | dd of="/dev/$TARGET_DISK" bs=4M 2>/dev/null
     DD_EXIT=$?
 else
     # 使用静默dd
-    dd if="$IMAGE_TO_WRITE" of="/dev/$DISK_SELECTED" bs=4M 2>/dev/null &
+    dd if=/openwrt.img of="/dev/$TARGET_DISK" bs=4M 2>/dev/null &
     DD_PID=$!
     
     # 显示自定义进度
-    show_progress $DD_PID $FINAL_SIZE
+    show_progress $DD_PID
     DD_EXIT=$?
 fi
 
@@ -775,31 +684,17 @@ fi
 if [ $DD_EXIT -eq 0 ]; then
     # 同步磁盘
     sync
-    echo "DD write completed successfully" 
-    echo -e "\n\n? Installation successful!"
-    echo -e "\nOpenWRT has been installed to /dev/$DISK_SELECTED"
-    
-    # 清理临时文件
-    rm -f "$IMAGE_TO_WRITE" 2>/dev/null || true
+    echo -e "\n\nInstallation successful!"
+    echo -e "\nOpenWRT has been installed to /dev/$TARGET_DISK"
     
     # 显示安装后信息
     echo -e "\n══════════════════════════════════════════════════════════"
     echo -e "           INSTALLATION COMPLETE"
     echo -e "══════════════════════════════════════════════════════════\n"
-    echo -e "Summary:"
-    echo -e "  ? Target Disk: /dev/$DISK_SELECTED"
-    echo -e "  ? Write Mode: $( [ "$WRITE_MODE" = "direct" ] && echo "Direct Write" || echo "Auto Expand" )"
-    if [ "$WRITE_MODE" = "expand" ]; then
-        echo -e "  ? Expanded by: $((EXPANSION_MB / 1024))GB"
-    fi
-    echo -e "\nNext steps:"
+    echo -e "Next steps:"
     echo -e "1. Remove the installation media"
     echo -e "2. Boot from the newly installed disk"
     echo -e "3. OpenWRT should start automatically"
-    echo -e "\n══════════════════════════════════════════════════════════\n"
-    
-    # 显示安装日志
-    echo -e "Installation log saved to: $LOG_FILE"
     echo -e "\n══════════════════════════════════════════════════════════\n"
     
     # 倒计时重启
@@ -812,19 +707,17 @@ if [ $DD_EXIT -eq 0 ]; then
     
     echo -e "\nRebooting now..."
     sleep 2
-    echo "Rebooting system" 
     reboot -f
     
 else
-    echo "DD write failed with error code: $DD_EXIT" 
-    echo -e "\n\n? Installation failed! Error code: $DD_EXIT"
+    echo -e "\n\nInstallation failed! Error code: $DD_EXIT"
     echo -e "\nPossible issues:"
     echo -e "1. Disk may be in use or mounted"
     echo -e "2. Disk may be failing"
     echo -e "3. Not enough space on target disk"
     echo -e "\nPlease check the disk and try again.\n"
     echo ""
-    read -p "Press Enter to restart installation..." _
+    read -p "Press Enter to return to disk selection..." _
     exec /opt/install-openwrt.sh  # 重新启动安装程序
 fi
 INSTALL_SCRIPT
@@ -884,11 +777,79 @@ mount -o bind /dev "${CHROOT_DIR}/dev"
 mount -o bind /sys "${CHROOT_DIR}/sys"
 
 log_info "Running chroot configuration..."
-chroot "$CHROOT_DIR" /install-chroot.sh
+chroot "$CHROOT_DIR" /install-chroot.sh 2>&1 
 
 # 清理chroot
 rm -f "$CHROOT_DIR/install-chroot.sh"
 
+# === 第六阶段：额外的精简步骤 ===
+
+# 1. 清理chroot中的缓存和临时文件
+chroot "${CHROOT_DIR}" /bin/bash -c "
+# 清理APT缓存
+apt-get clean 2>/dev/null || true
+
+# 清理日志
+find /var/log -type f -delete 2>/dev/null || true
+
+# 清理临时文件
+rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
+
+# 清理bash历史
+rm -f /root/.bash_history 2>/dev/null || true
+
+# 清理包管理器状态文件
+rm -f /var/lib/dpkg/status-old 2>/dev/null || true
+rm -f /var/lib/apt/lists/* 2>/dev/null || true
+
+# 清理系统d-bus缓存
+rm -rf /var/lib/dbus/machine-id 2>/dev/null || true
+
+# 清理网络配置缓存
+rm -rf /var/lib/systemd/random-seed 2>/dev/null || true
+"
+
+# 2. 手动清理不需要的文件
+for dir in "${CHROOT_DIR}/usr/share/locale" "${CHROOT_DIR}/usr/share/doc" \
+           "${CHROOT_DIR}/usr/share/man" "${CHROOT_DIR}/usr/share/info"; do
+    if [ -d "$dir" ]; then
+        rm -rf "$dir"
+    fi
+done
+
+# 3. 清理不必要的内核模块 (再次确保)
+if [ -d "${CHROOT_DIR}/lib/modules" ]; then
+    KERNEL_VERSION=$(ls "${CHROOT_DIR}/lib/modules/" | head -n1)
+    MODULES_PATH="${CHROOT_DIR}/lib/modules/${KERNEL_VERSION}"
+
+    # 创建必要的模块列表
+    KEEP_MODS="
+kernel/fs/ext4
+kernel/fs/fat
+kernel/fs/vfat
+kernel/drivers/usb/storage
+kernel/drivers/ata
+kernel/drivers/scsi
+kernel/drivers/nvme
+kernel/drivers/block
+kernel/drivers/hid
+kernel/drivers/input
+kernel/drivers/net/ethernet
+"
+
+    # 备份然后清理
+    mkdir -p "${MODULES_PATH}/kernel-keep"
+    for mod in $KEEP_MODS; do
+        if [ -d "${MODULES_PATH}/kernel/${mod}" ]; then
+            mkdir -p "${MODULES_PATH}/kernel-keep/${mod}"
+            mv "${MODULES_PATH}/kernel/${mod}"/* "${MODULES_PATH}/kernel-keep/${mod}/" 2>/dev/null || true
+        fi
+    done
+
+    # 替换模块目录
+    rm -rf "${MODULES_PATH}/kernel"
+    mv "${MODULES_PATH}/kernel-keep" "${MODULES_PATH}/kernel"
+fi
 # 创建网络配置文件
 cat > "${CHROOT_DIR}/etc/systemd/network/99-dhcp.network" <<EOF
 [Match]
@@ -937,10 +898,15 @@ EOF
 # 创建squashfs，使用排除列表
 if mksquashfs "$CHROOT_DIR" "$STAGING_DIR/live/filesystem.squashfs" \
     -comp xz \
+    -Xbcj x86 \
     -b 1M \
     -noappend \
     -no-progress \
-    -wildcards \
+    -no-recovery \
+    -always-use-fragments \
+    -all-root \
+    -processors 2 \
+    -mem 1G \
     -ef "$WORK_DIR/squashfs-exclude.txt"; then
     SQUASHFS_SIZE=$(ls -lh "$STAGING_DIR/live/filesystem.squashfs" | awk '{print $5}')
     log_success "Squashfs created successfully: $SQUASHFS_SIZE"
@@ -963,27 +929,13 @@ UI vesamenu.c32
 
 MENU TITLE OpenWRT Auto Installer
 DEFAULT linux
-TIMEOUT 10
-MENU RESOLUTION 640 480
-MENU COLOR border       30;44   #40ffffff #a0000000 std
-MENU COLOR title        1;36;44 #9033ccff #a0000000 std
-MENU COLOR sel          7;37;40 #e0ffffff #20ffffff all
-MENU COLOR unsel        37;44   #50ffffff #a0000000 std
-MENU COLOR help         37;40   #c0ffffff #a0000000 std
-MENU COLOR timeout_msg  37;40   #80ffffff #00000000 std
-MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
-MENU COLOR msg07        37;40   #90ffffff #a0000000 std
-MENU COLOR tabmsg       31;40   #30ffffff #00000000 std
+TIMEOUT 3
 
 LABEL linux
   MENU LABEL ^Install OpenWRT
   MENU DEFAULT
   KERNEL /live/vmlinuz
   APPEND initrd=/live/initrd boot=live
-LABEL shell
-  MENU LABEL Emergency Shell
-  KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd.img console=tty0 init=/bin/sh
 ISOLINUX_CFG
 
 # 创建GRUB配置
@@ -991,7 +943,7 @@ cat > "$STAGING_DIR/boot/grub/grub.cfg" << 'GRUB_CFG'
 search --set=root --file /DEBIAN_CUSTOM
 
 set default="0"
-set timeout=10
+set timeout=3
 
 insmod efi_gop
 insmod font
@@ -1005,11 +957,6 @@ fi
 menuentry "Install OpenWRT x86-UEFI Installer [EFI/GRUB]" {
     linux ($root)/live/vmlinuz boot=live
     initrd ($root)/live/initrd
-}
-
-menuentry "Emergency Shell" {
-    linux /live/vmlinuz console=tty0 init=/bin/sh
-    initrd /live/initrd.img
 }
 GRUB_CFG
 
@@ -1163,7 +1110,7 @@ log_info "[10/10] Verifying build..."
 
 if [ -f "$ISO_PATH" ]; then
     ISO_SIZE=$(ls -lh "$ISO_PATH" | awk '{print $5}')
-    
+
     echo ""
     log_success "? ISO built successfully!"
     echo ""
@@ -1172,9 +1119,9 @@ if [ -f "$ISO_PATH" ]; then
     log_info "  File Size:   $ISO_SIZE"
     log_info "  Volume ID:   OPENWRT_INSTALL"
     echo ""
-    
+
     # 创建构建信息文件
-    cat > "$OUTPUT_DIR/Iso-build-info.txt" << EOF
+    cat > "$OUTPUT_DIR/build-info.txt" << EOF
 OpenWRT Installer ISO Build Information
 ========================================
 Build Date:      $(date)
@@ -1187,63 +1134,44 @@ Boot Support:    BIOS + UEFI
 Boot Timeout:    10 seconds
 
 Installation Features:
-  - 3-Step Installation Process
-  - Automatic disk size detection
-  - Two write modes: Direct Write or Auto Expand
-  - Auto Expand: Automatically expands to use full disk capacity
   - Simple numeric disk selection (1, 2, 3, etc.)
+  - Clean, minimal output (no verbose logs)
   - Visual progress indicator
-  - Safety confirmation before writing (Type YES)
+  - Safety confirmation before writing
   - Automatic reboot after installation
-  - Installation log at /tmp/ezotaflash.log
-
-Installation Steps:
-  1. Select target disk from list
-  2. Choose write mode:
-      [1] Direct Write - Write image directly without expansion
-      [2] Auto Expand - Automatically expand to use full disk
-  3. Type 'YES' to confirm installation
-
-Required Tools in ISO:
-  ? losetup, resize2fs, e2fsprogs, f2fs-tools
-  ? kmod-loop, gdisk, sgdisk, parted
-  ? gzip for compressed image support
-  ? bc for size calculations
 
 Usage:
   1. Create bootable USB: dd if="$ISO_NAME" of=/dev/sdX bs=4M status=progress
   2. Boot from USB in UEFI or Legacy mode
-  3. Follow the 3-step installation process
-  4. Wait for automatic reboot
+  3. Select target disk using numbers
+  4. Confirm installation
+  5. Wait for automatic reboot
+  6. souce https://github.com/sirpdboy/openwrt-installer-iso.git
 
 Notes:
-  - Supports both compressed (.img.gz) and raw (.img) images
-  - Auto Expand mode automatically calculates available space
-  - GPT partition table is preserved and extended
-  - Filesystem is automatically resized
-  - source: https://github.com/sirpdboy/openwrt-installer-iso.git
+  - Installation is completely silent (no dd logs)
+  - Use numbers instead of disk names (simpler)
+  - Press Ctrl+C during reboot countdown to cancel
 EOF
-    
-    log_success "Build info saved to: $OUTPUT_DIR/Iso-build-info.txt"
-    
+
+    log_success "Build info saved to: $OUTPUT_DIR/build-info.txt"
+
     echo ""
     echo "================================================================================"
     echo "?? ISO Build Complete!"
     echo "================================================================================"
-    echo "Key features in this version:"
-    echo "  ? 3-Step Installation Process"
-    echo "  ? Automatic disk size detection"
-    echo "  ? Two write modes: Direct Write or Auto Expand"
-    echo "  ? Auto Expand: Automatically expands to use full disk"
-    echo "  ? Simple numeric disk selection (1, 2, 3...)"
+    echo "Key improvements in this version:"
+    echo "  ? Clean, minimal installation output (no verbose logs)"
+    echo "  ? Simple numeric disk selection (1, 2, 3... instead of sda, sdb)"
     echo "  ? Visual progress bar during writing"
-    echo "  ? Safety confirmation (must type YES)"
-    echo "  ? Installation logging at /tmp/ezotaflash.log"
+    echo "  ? Enhanced safety with confirmation step"
     echo ""
     echo "To create bootable USB:"
     echo "  sudo dd if='$ISO_PATH' of=/dev/sdX bs=4M status=progress && sync"
+    echo ""
+    echo "  souce https://github.com/sirpdboy/openwrt-installer-iso.git"
     echo "================================================================================"
-    
+
     log_success "?? All steps completed successfully!"
 else
     log_error "? ISO file not created: $ISO_PATH"
