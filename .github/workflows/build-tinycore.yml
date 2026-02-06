@@ -68,22 +68,6 @@ jobs:
             iproute2 \
             net-tools \
             && rm -rf /var/lib/apt/lists/*
-        
-        # 检查并安装mkisofs（如果genisoimage未提供）
-        RUN if ! command -v mkisofs >/dev/null 2>&1 && ! command -v genisoimage >/dev/null 2>&1; then \
-            apt-get update && apt-get install -y mkisofs; \
-        fi
-        
-        # 创建工作目录
-        WORKDIR /builder
-        
-        # 创建必要的目录
-        RUN mkdir -p /mnt /output
-        
-        # 设置构建脚本（将在运行时挂载）
-        ENTRYPOINT ["bash", "-c"]
-        CMD ["echo '请挂载构建脚本并运行'"]
-        DOCKEREOF
     
     - name: 准备OpenWRT镜像
       id: prepare_image
@@ -157,29 +141,6 @@ jobs:
                 "$(pwd)/assets/ezopwrt.img" \
                 "$(pwd)/output" \
                 "openwrt-installer.iso"
-    
-            # 检查结果
-            if [ \$? -eq 0 ] && [ -f "output/openwrt-installer.iso" ]; then
-                echo "✅ ISO构建成功"
-                echo "文件: output/openwrt-installer.iso"
-                echo "大小: \$(du -h output/openwrt-installer.iso | cut -f1)"
-            else
-                echo "❌ ISO构建失败"
-                echo "output目录内容:"
-                ls -la output/ 2>/dev/null || echo "output目录不存在"
-                exit 1
-            fi
-    - name: 运行ISO构建
-      run: |
-        echo "🔨 开始构建ISO..."
-            chmod +x build-tinycore.sh
-            docker run --rm \
-                -v "$(pwd)/assets/ezopwrt.img:/mnt/openwrt.img:ro" \
-                -v "$(pwd)/build-tinycore.sh:/build.sh:ro" \
-                -v "output:/output" \  
-                ubuntu-22.04 \
-        /docker-build.sh /mnt/openwrt.img /output openwrt-installer.iso
-        ls output/*.iso
     
     - name: 验证ISO文件
       run: |
