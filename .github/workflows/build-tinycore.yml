@@ -1,4 +1,4 @@
-name: Build-Tinycore
+name: build-tinycore
 
 
 on:
@@ -6,7 +6,7 @@ on:
     branches: [ main, master ]
     paths:
       - 'build-tinycore.sh'
-      - '.github/workflows/Build-Tinycore.yml'
+      - '.github/workflows/build-tinycore.yml'
   workflow_dispatch:
     inputs:
       openwrt_image_url:
