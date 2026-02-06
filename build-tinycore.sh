@@ -107,7 +107,6 @@ EXTENSIONS=(
     "bash.tcz"
     "dialog.tcz"
     "parted.tcz"
-    "ntfs-3g.tcz"
     "e2fsprogs.tcz"
     "syslinux.tcz"
     "grub2-multi.tcz"
@@ -115,7 +114,6 @@ EXTENSIONS=(
     "findutils.tcz"
     "grep.tcz"
     "gawk.tcz"
-
     "file.tcz"
     "less.tcz"
     "ncursesw.tcz"
