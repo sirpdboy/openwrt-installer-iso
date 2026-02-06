@@ -172,14 +172,14 @@ jobs:
     - name: 运行ISO构建
       run: |
         echo "🔨 开始构建ISO..."
-              chmod +x build-tinycore.sh
-               # 运行Docker
+            chmod +x build-tinycore.sh
             docker run --rm \
                 -v "$(pwd)/assets/ezopwrt.img:/mnt/openwrt.img:ro" \
                 -v "$(pwd)/build-tinycore.sh:/build.sh:ro" \
                 -v "output:/output" \  
                 ubuntu-22.04 \
         /docker-build.sh /mnt/openwrt.img /output openwrt-installer.iso
+        ls output/*.iso
     
     - name: 验证ISO文件
       run: |
