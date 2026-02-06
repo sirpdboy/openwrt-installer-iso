@@ -180,15 +180,7 @@ jobs:
                 -v "output:/output" \  
                 ubuntu-22.04 \
         /docker-build.sh /mnt/openwrt.img /output openwrt-installer.iso
-        
-                if [ -f "output/openwrt-installer.iso" ]; then
-                    echo "ISO大小: \$(du -h output/openwrt-installer.iso | cut -f1)"
-            else
-                echo "❌ ISO构建失败"
-                exit 1
-            fi
     
-
     - name: 验证ISO文件
       run: |
         if ls output/*.iso 1>/dev/null 2>&1; then
