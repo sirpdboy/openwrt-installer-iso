@@ -154,7 +154,7 @@ jobs:
             chmod 777 output
     
             "./build-tinycore.sh" \
-                "$(pwd)/assets/ezopwrt.img" \
+                "$(pwd)/assets/openwrt.img" \
                 "$(pwd)/output" \
                 "openwrt-installer.iso"
     
