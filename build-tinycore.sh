@@ -30,13 +30,9 @@ log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+ 
+echo   OPENWRT_IMG:$OPENWRT_IMG    OUTPUT:$OUTPUT_DIR  ISO:$ISO_NAME
 
-# 检查必要文件
-log_info "检查必要文件..."
-if [ ! -f "${OPENWRT_IMG}" ]; then
-    log_error "找不到OpenWRT镜像: ${OPENWRT_IMG}"
-    exit 1
-fi
 
 # 确保输出目录存在
 mkdir -p "${OUTPUT_DIR}"
