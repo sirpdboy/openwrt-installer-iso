@@ -72,49 +72,65 @@ jobs:
     - name: 准备OpenWRT镜像
       id: prepare_image
       run: |
-        echo "📥 准备OpenWRT镜像..."
-        
-        # 创建目录
         mkdir -p assets
         
-        # 检查是否有提供的URL
-        if [[ -n "${{ github.event.inputs.openwrt_image_url }}" ]]; then
-            echo "使用提供的OpenWRT URL"
-            OPENWRT_URL="${{ github.event.inputs.openwrt_image_url }}"
-        else
-            # 使用默认镜像
-            OPENWRT_URL="https://github.com/sirpdboy/openwrt/releases/download/v2024.09.01/2024.09.01-x86-64-generic-squashfs-combined.img.gz"
+        # 下载OpenWRT镜像
+        echo "下载OpenWRT镜像..."
+        
+        # 方法1: 尝试下载最新版本
+        REPO="sirpdboy/openwrt"
+        echo "获取最新版本..."
+        
+        # 获取最新版本
+        LATEST_RELEASE=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.tag_name // empty')
+        
+        if [ -z "$LATEST_RELEASE" ]; then
+            echo "无法获取最新版本，使用硬编码版本"
+            LATEST_RELEASE="v2024.09.01"
         fi
         
-        echo "下载URL: $OPENWRT_URL"
+        echo "最新版本: $LATEST_RELEASE"
+        
+        # 获取下载URL
+        DOWNLOAD_URLS=$(curl -sL "https://api.github.com/repos/$REPO/releases/tags/$LATEST_RELEASE" | \
+              jq -r '.assets[] | select(.name | endswith("img.gz")) | .browser_download_url' 2>/dev/null || echo "")
+        
+        if [ -z "$DOWNLOAD_URLS" ]; then
+            echo "无法获取下载URL，使用备用方法"
+            # 备用URL
+            DOWNLOAD_URLS="https://github.com/sirpdboy/openwrt/releases/download/v2024.09.01/2024.09.01-x86-64-generic-squashfs-combined.img.gz"
+        fi
+        
+        FIRST_URL=$(echo "$DOWNLOAD_URLS" | head -n1)
+        echo "下载URL: $FIRST_URL"
         
         # 下载镜像
-        if wget -q --tries=3 --timeout=30 -O "assets/ezopwrt.img.gz" "$OPENWRT_URL"; then
-            echo "✅ 下载成功"
+        wget --tries=3 --timeout=60 -q "$FIRST_URL" -O assets/openwrt.img.gz
+        
+        # 如果wget失败，尝试curl
+        if [ ! -f "assets/openwrt.img.gz" ] || [ ! -s "assets/openwrt.img.gz" ]; then
+            echo "wget下载失败，尝试curl..."
+            curl -L -o "assets/openwrt.img.gz" --connect-timeout 30 --retry 3 "$FIRST_URL"
+        fi
+        
+        if [ -f "assets/openwrt.img.gz" ] && [ -s "assets/openwrt.img.gz" ]; then
+            echo "✅ 下载完成"
+            echo "压缩文件大小: $(ls -lh assets/openwrt.img.gz | awk '{print $5}')"
             
             # 解压
-            if gzip -t "assets/ezopwrt.img.gz" 2>/dev/null; then
-                echo "解压gzip文件..."
-                gzip -d "assets/ezopwrt.img.gz"
-                echo "✅ 解压完成"
-            else
-                echo "不是gzip文件，直接使用"
-                mv "assets/ezopwrt.img.gz" "assets/ezopwrt.img"
-            fi
+            echo "解压镜像..."
+            gzip -d assets/openwrt.img.gz
             
-            # 验证文件
-            if [ -f "assets/ezopwrt.img" ]; then
-                IMG_SIZE=$(du -h "assets/ezopwrt.img" | cut -f1)
-                echo "镜像大小: $IMG_SIZE"
-                echo "img_path=assets/ezopwrt.img" >> $GITHUB_OUTPUT
+            if [ -f "assets/openwrt.img" ]; then
+                echo "✅ 解压成功"
+                echo "镜像大小: $(ls -lh assets/openwrt.img | awk '{print $5}')"
             else
-                echo "❌ 镜像文件创建失败"
+                echo "❌ 解压失败"
                 exit 1
-            fi
+          fi
         else
-            echo "❌ 下载失败，创建测试镜像"
-            dd if=/dev/zero of=assets/ezopwrt.img bs=1M count=10
-            echo "img_path=assets/ezopwrt.img" >> $GITHUB_OUTPUT
+          echo "❌ 下载失败"
+            exit
         fi
 
     - name: 运行ISO构建
